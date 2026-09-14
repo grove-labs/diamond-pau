@@ -844,6 +844,75 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         assertEq(midnight.debt(marketId, victim), seedUnits);
     }
 
+    // The approval bounds what Midnight can pull, so the spend can only overshoot the bound if the
+    // loan token itself moves more than Midnight asked for. Mocked because no live token does.
+    function test_attack_loanTokenOvercharges_buyMidnight() external {
+        uint256 maxAssetsIn = _buyerAssets(attackUnits, TICK_98);
+        uint256 balance     = loanToken.balanceOf(address(almProxy));
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+
+        bytes[] memory balances = new bytes[](2);
+        balances[0] = abi.encode(balance);
+        balances[1] = abi.encode(balance - maxAssetsIn - 1);
+
+        vm.mockCalls(
+            address(loanToken),
+            abi.encodeWithSignature("balanceOf(address)", address(almProxy)),
+            balances
+        );
+
+        vm.expectRevert("MidnightFacet/max-assets-in-exceeded");
+        _buy(offer, attackUnits, maxAssetsIn);
+    }
+
+    // Every take is capped at the proxy's credit, so debt can only appear if the venue reports it
+    // against the proxy anyway. Mocked because Midnight cannot be driven into that state.
+    function test_attack_debtReported_buyMidnight() external {
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeWithSignature("debt(bytes32,address)", marketId, address(almProxy)),
+            abi.encode(uint128(1))
+        );
+
+        vm.expectRevert("MidnightFacet/debt-not-zero");
+        _buy(offer, attackUnits, type(uint256).max);
+    }
+
+    function test_attack_debtReported_sellMidnight() external {
+        Offer memory offer = _offer(true, TICK_99, attackUnits);
+
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeWithSignature("debt(bytes32,address)", marketId, address(almProxy)),
+            abi.encode(uint128(1))
+        );
+
+        vm.expectRevert("MidnightFacet/debt-not-zero");
+        _sell(offer, attackUnits, 1);
+    }
+
+    function test_attack_debtReported_redeemMidnight() external {
+        // The victim repays part of its debt so there is something in the redeemable pool.
+        deal(address(loanToken), victim, attackUnits);
+
+        vm.startPrank(victim);
+        loanToken.approve(MIDNIGHT, attackUnits);
+        midnight.repay(market, attackUnits, victim, address(0), "");
+        vm.stopPrank();
+
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeWithSignature("debt(bytes32,address)", marketId, address(almProxy)),
+            abi.encode(uint128(1))
+        );
+
+        vm.expectRevert("MidnightFacet/debt-not-zero");
+        _redeem(attackUnits, 1);
+    }
+
 }
 
 contract MainnetController_Pendle_Attack_Tests is Pendle_TestBase {
