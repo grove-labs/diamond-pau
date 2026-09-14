@@ -6,7 +6,7 @@ Protocol behavior described here was checked against the Morpho Midnight codebas
 
 ## Overview
 
-Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a `Market` struct (loan token, maturity, collateral tiers with oracle and LLTV, optional gates) and is identified by `id = keccak256(abi.encode(market))`. Inside a market every position is denominated in **units**: one unit is a claim on one loan token at maturity.
+Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a `Market` struct (loan token, maturity, collateral tiers with oracle and LLTV, optional gates) and is identified by its `id`: the CREATE2 address the singleton would store the encoded config at, `keccak256(0xff ‖ market.midnight ‖ 0 ‖ keccak256(SSTORE2_PREFIX ‖ abi.encode(market)))`, computed by `MidnightUtils.toId`. Inside a market every position is denominated in **units**: one unit is a claim on one loan token at maturity.
 
 - A **borrower** supplies collateral and **sells** units: it receives the discounted price now and owes one loan token per unit at maturity (debt).
 - A **lender** **buys** units at a discount and holds credit. At or after maturity, once borrowers have repaid, credit is **redeemed** at par.
@@ -65,7 +65,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 **Untouched market:** `settlementFee` reverts (`MarketNotCreated()`) on a market that has never been created on the singleton. Anyone can create one with a single permissionless `touchMarket(market)` call; the facet does not do it.
 
-**Post-maturity:** Midnight refuses to let a borrower take on new debt after maturity (`CannotIncreaseDebtPostMaturity()`), so entries close by themselves.
+**Post-maturity:** Midnight refuses to let a maker take on new debt after maturity (`CannotIncreaseDebtPostMaturity()`), but a maker that already holds credit can still sell it, so a `buy` from such a maker succeeds after maturity. The facet does not check maturity; closing entry means zeroing `maxBuyTick`.
 
 ### Sell (exit early, take makers' buy offers)
 
@@ -122,7 +122,7 @@ Sets the governance limits for one market. The struct fits one storage slot:
 | `maxLossFactor`    | `uint128` | Highest market loss factor a buy tolerates, as a fraction of `type(uint128).max`. `0` means no socialized loss is tolerated.            |
 
 - All values default to zero, the strictest setting: nothing is onboarded, nothing can be entered.
-- `minSellTick` is an exit floor and has to stay reachable: below par net of the settlement fee, or every sell reverts on price. It cannot be zeroed once set without also cutting off `redeem`, so closing a market means zeroing `maxBuyTick` and leaving the exits configured.
+- `minSellTick` is an exit floor and has to stay reachable: below par net of the settlement fee, or every sell reverts on price. `setMarketConfig` rejects a zero `minSellTick` outright, so a market once onboarded cannot be un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving the exits configured.
 - The fee and loss guards apply to entry only. Exits are never blocked by market conditions the facet can observe; they are bounded by `minAssetsOut` and the rate limits.
 
 **Event:** `MidnightMarketConfigSet(marketId, maxBuyTick, minSellTick, maxContinuousFee, maxLossFactor)`
@@ -157,7 +157,7 @@ All three are denominated in the market's loan token and sized by measured balan
 
 ### Immutable Venue
 
-The Midnight singleton is an immutable, non-upgradeable contract with no owner over funds. Its `configurator` can enable LLTV and liquidation-cursor tiers and appoint a `feeSetter`; the fee setter can move the settlement and continuous fees of any market within hard-coded ceilings. Neither role can touch positions or move loan tokens. The facet binds to one singleton at construction, so a repoint requires a new facet deployment and a governance spell.
+The Midnight singleton is an immutable, non-upgradeable contract with no owner over funds. Its `configurator` can enable LLTV and liquidation-cursor tiers, replace itself, and appoint three roles: a `feeSetter` who can move the settlement and continuous fees of any market within hard-coded ceilings, a `feeClaimer` who withdraws accrued continuous fee out of a market's repayment pool (`claimContinuousFee` decrements `withdrawable`, so it competes with lenders for the same pool `redeem` draws from), and a `tickSpacingSetter` who can only refine a market's tick spacing. None of them can touch positions or move a lender's loan tokens. The facet binds to one singleton at construction, so a repoint requires a new facet deployment and a governance spell.
 
 ### Maker Callbacks Run Inside Our Take
 
@@ -230,10 +230,11 @@ All interactive functions are `nonReentrant`.
 | `RateLimits/rate-limit-exceeded`         | rate limits | trade exceeding the configured limit                                                      |
 | `RateLimits/zero-maxAmount`              | rate limits | key unconfigured                                                                          |
 | `MarketNotCreated()`                     | Midnight    | market never touched on the singleton                                                     |
-| `RatifierUnauthorized()`, `NotRatified()`| Midnight    | maker has not authorized its ratifier, or the ratifier does not recognize the offer       |
+| `RatifierUnauthorized()`                 | Midnight    | maker has not authorized its ratifier                                                     |
+| `NotRatified()`                          | ratifier    | the maker's `SetterRatifier` does not recognize the offer (bubbles through Midnight)      |
 | `ConsumedUnits()`, `ConsumedAssets()`    | Midnight    | offer already filled past its cap, including by someone else in the same block            |
 | `OfferExpired()`, `OfferNotStarted()`    | Midnight    | offer outside its validity window                                                         |
-| `CannotIncreaseDebtPostMaturity()`       | Midnight    | `buy` after maturity                                                                      |
+| `CannotIncreaseDebtPostMaturity()`       | Midnight    | `buy` after maturity from a maker that would have to incur debt to fill it                |
 | `SellerIsLiquidatable()`                 | Midnight    | the maker selling to us would be left unhealthy                                           |
 | `MarketLossFactorMaxedOut()`             | Midnight    | market has lost everything; no takes are possible                                         |
 
@@ -260,7 +261,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 
 - **`lossFactor` per market**: any increase means a liquidation socialized bad debt against the position. Entry is gated by `maxLossFactor`; the write-down on the existing position is immediate and unrecoverable.
 - **Fee changes** (`continuousFee`, settlement fee schedule): raised fees widen the spread on every trade and can push `maxBuyTick` under the fee (`MidnightFacet/max-buy-tick-below-fee`) or `minSellTick` over par, wedging that side until governance reconfigures.
-- **`feeSetter` and tier changes** by the singleton's `configurator`: the only privileged levers on the venue.
+- **Role and tier changes** by the singleton's `configurator` (`feeSetter`, `feeClaimer`, `tickSpacingSetter`, tiers, the configurator itself): the privileged levers on the venue. Fee claims reduce `withdrawable`, so they show up as slower redemption.
 - **`withdrawable` vs. credit** around maturity: redemption is first come first served out of repayments. Slow repayment after maturity means slow redemption, not loss, unless liquidations fall short.
 - **Oracle health** of every collateral tier in the market: a stale or manipulated oracle is what turns a borrower's default into a lender's loss.
 - **Maker concentration**: the position's exit before maturity depends on makers willing to buy. A single maker on both sides of the book is a liquidity risk, not a solvency one.
