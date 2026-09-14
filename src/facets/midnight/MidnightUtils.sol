@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-// Structs are vendored verbatim from morpho-org/midnight src/interfaces/IMidnight.sol because the
-// market id is a hash over abi.encode(market): any layout drift silently changes every id.
-// https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/interfaces/IMidnight.sol
+// Every `upstream:` reference in this file is a path under
+// https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932
+//
+// Structs are vendored verbatim from upstream: src/interfaces/IMidnight.sol because the market id
+// is a hash over abi.encode(market): any layout drift silently changes every id.
 
 struct CollateralParams {
     address token;
@@ -47,15 +49,15 @@ library MidnightUtils {
     /*** Constants                                                                              ***/
     /**********************************************************************************************/
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/TickLib.sol#L5-L8
+    // upstream: src/libraries/TickLib.sol#L5-L8
     int256  internal constant LN_ONE_PLUS_DELTA   = 0.004987541511039073e18;  // floor(ln(1.005)e18)
     uint256 internal constant MAX_TICK            = 6744;
     uint256 internal constant PRICE_ROUNDING_STEP = 1e11;  // 1e-7 WAD, prices round to multiples
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/ConstantsLib.sol#L18
+    // upstream: src/libraries/ConstantsLib.sol#L18
     uint32 internal constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/IdLib.sol#L23
+    // upstream: src/libraries/IdLib.sol#L23
     // Creation code prefix that deploys the appended data as runtime bytecode.
     bytes internal constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
 
@@ -63,9 +65,10 @@ library MidnightUtils {
     /*** Internal View/Pure Functions                                                           ***/
     /**********************************************************************************************/
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/IdLib.sol#L25-L36
-    // The singleton exposes no toId view. The id is the CREATE2 address (salt 0) of the market
-    // config stored as bytecode, so it is a pure function of the full config.
+    // upstream: src/libraries/IdLib.sol#L25-L36
+    // The singleton exposes no toId view. The id is the full CREATE2 hash (salt 0) of the market
+    // config stored as bytecode; its low 20 bytes are the address the config lives at. It is a
+    // pure function of the full config.
     function toId(Market memory market) internal pure returns (bytes32) {
         return keccak256(
             abi.encodePacked(
@@ -77,7 +80,7 @@ library MidnightUtils {
         );
     }
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/TickLib.sol#L50-L58
+    // upstream: src/libraries/TickLib.sol#L50-L58
     // The singleton exposes no tickToPrice view; bounding offer prices on-chain needs the exact
     // conversion Midnight uses internally. The only deviation is the require string.
     function tickToPrice(uint256 tick) internal pure returns (uint256) {
@@ -93,7 +96,7 @@ library MidnightUtils {
         }
     }
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/TickLib.sol#L17-L22
+    // upstream: src/libraries/TickLib.sol#L17-L22
     // Returns x / d rounded to the nearest integer with ties rounded down, without overflow checks.
     function divHalfDownUnchecked(uint256 x, uint256 d) internal pure returns (uint256) {
         unchecked {
@@ -101,7 +104,7 @@ library MidnightUtils {
         }
     }
 
-    // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/TickLib.sol#L24-L48
+    // upstream: src/libraries/TickLib.sol#L24-L48
     function wExp(int256 x) internal pure returns (uint256) {
         unchecked {
             if (x < 0) {
