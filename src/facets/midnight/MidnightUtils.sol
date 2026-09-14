@@ -48,7 +48,7 @@ library MidnightUtils {
     /**********************************************************************************************/
 
     // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/libraries/TickLib.sol#L5-L8
-    int256  internal constant LN_ONE_PLUS_DELTA   = 0.004987541511039073e18;  // floor(ln(1.005) * 1e18)
+    int256  internal constant LN_ONE_PLUS_DELTA   = 0.004987541511039073e18;  // floor(ln(1.005)e18)
     uint256 internal constant MAX_TICK            = 6744;
     uint256 internal constant PRICE_ROUNDING_STEP = 1e11;  // 1e-7 WAD, prices round to multiples
 
