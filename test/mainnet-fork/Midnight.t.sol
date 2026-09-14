@@ -1352,52 +1352,177 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         return Ethereum.USDS;
     }
 
+    function test_buyMidnight_usds_rateLimitedBoundary() external {
+        uint256 limit = _buyerAssets(seedUnits, TICK_98);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey, limit, limit / 1 days);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits + 1);
+
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _buy(offer, seedUnits + 1, type(uint256).max);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+    }
+
     function test_buyMidnight_usds() external {
         _setSettlementFee(SETTLEMENT_FEE);
 
         uint256 expected     = _buyerAssets(seedUnits, TICK_98);
         uint256 makerAssets  = _makerSellerAssets(seedUnits, TICK_98);
+        uint256 makerBalance = loanToken.balanceOf(maker);
         uint256 venueBalance = loanToken.balanceOf(MIDNIGHT);
 
-        assertEq(_buy(_offer(false, TICK_98, seedUnits), seedUnits, expected), expected);
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
 
-        assertEq(loanToken.balanceOf(address(almProxy)), proxyBalance - expected);
-        assertEq(loanToken.balanceOf(MIDNIGHT),          venueBalance + expected - makerAssets);
-        assertEq(_credit(),                              seedUnits);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - expected);
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+        assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance);
+        assertEq(loanToken.balanceOf(maker),                       makerBalance);
+        assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance);
+        assertEq(_credit(),                                        0);
+        assertEq(midnight.debt(marketId, address(almProxy)),       0);
+        assertEq(midnight.consumed(maker, offer.group),            0);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
+
+        vm.record();
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightBuy(marketId, seedUnits, expected);
+
+        assertEq(_buy(offer, seedUnits, type(uint256).max), expected);
+
+        _assertReentrancyGuardWrittenToTwice();
+
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+        assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - expected);
+        assertEq(loanToken.balanceOf(maker),                       makerBalance + makerAssets);
+        assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + expected - makerAssets);
+        assertEq(_credit(),                                        seedUnits);
+        assertEq(midnight.debt(marketId, address(almProxy)),       0);
+        assertEq(midnight.consumed(maker, offer.group),            seedUnits);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - expected);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
+    }
+
+    function test_sellMidnight_usds_rateLimitedBoundary() external {
+        _seedCredit();
+
+        uint256 units = seedUnits / 2;
+        uint256 limit = _sellerAssets(units, TICK_99);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(sellKey, limit, limit / 1 days);
+
+        Offer memory offer = _offer(true, TICK_99, units + 2);
+
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _sell(offer, units + 2, 1);
+
+        _sell(_offer(true, TICK_99, units), units, 1);
     }
 
     function test_sellMidnight_usds() external {
-        uint256 spent = _seedCredit();
-        uint256 units = seedUnits / 2;
+        uint256 seedSpent = _seedCredit();
 
         _setSettlementFee(SETTLEMENT_FEE);
 
+        uint256 units        = seedUnits / 2;
         uint256 expected     = _sellerAssets(units, TICK_99);
         uint256 makerAssets  = _makerBuyerAssets(units, TICK_99);
+        uint256 makerBalance = loanToken.balanceOf(maker);
         uint256 venueBalance = loanToken.balanceOf(MIDNIGHT);
 
-        assertEq(_sell(_offer(true, TICK_99, units), units, expected), expected);
+        Offer memory offer = _offer(true, TICK_99, units);
 
-        assertEq(loanToken.balanceOf(address(almProxy)),  proxyBalance - spent + expected);
-        assertEq(loanToken.balanceOf(MIDNIGHT),           venueBalance + makerAssets - expected);
-        assertEq(_credit(),                               seedUnits - units);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  rateLimit - spent + expected);
-        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+        assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - seedSpent);
+        assertEq(loanToken.balanceOf(maker),                       makerBalance);
+        assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance);
+        assertEq(_credit(),                                        seedUnits);
+        assertEq(midnight.debt(marketId, address(almProxy)),       0);
+        assertEq(midnight.consumed(maker, offer.group),            0);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
+
+        vm.record();
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightSell(marketId, units, expected);
+
+        assertEq(_sell(offer, units, expected), expected);
+
+        _assertReentrancyGuardWrittenToTwice();
+
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+        assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - seedSpent + expected);
+        assertEq(loanToken.balanceOf(maker),                       makerBalance - makerAssets);
+        assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + makerAssets - expected);
+        assertEq(_credit(),                                        seedUnits - units);
+        assertEq(midnight.debt(marketId, address(almProxy)),       0);
+        assertEq(midnight.consumed(maker, offer.group),            units);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent + expected);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit - expected);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
+    }
+
+    function test_redeemMidnight_usds_rateLimitedBoundary() external {
+        _seedCredit();
+
+        uint256 limit = seedUnits / 2;
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(redeemKey, limit, limit / 1 days);
+
+        _repay(seedUnits);
+
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _redeem(limit + 1, 1);
+
+        _redeem(limit, 1);
     }
 
     function test_redeemMidnight_usds() external {
-        uint256 spent = _seedCredit();
-        uint256 units = seedUnits / 2;
+        uint256 seedSpent = _seedCredit();
+
+        uint256 units        = seedUnits / 2;
+        uint256 makerBalance = loanToken.balanceOf(maker);
+        uint256 venueBalance = loanToken.balanceOf(MIDNIGHT);
 
         _repay(units);
 
+        assertEq(loanToken.balanceOf(address(almProxy)),     proxyBalance - seedSpent);
+        assertEq(loanToken.balanceOf(maker),                 makerBalance - units);
+        assertEq(loanToken.balanceOf(MIDNIGHT),              venueBalance + units);
+        assertEq(_credit(),                                  seedUnits);
+        assertEq(midnight.debt(marketId, address(almProxy)), 0);
+        assertEq(midnight.withdrawable(marketId),            units);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit);
+
+        vm.record();
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightRedeem(marketId, units, units);
+
         assertEq(_redeem(units, units), units);
 
-        assertEq(loanToken.balanceOf(address(almProxy)),    proxyBalance - spent + units);
-        assertEq(_credit(),                                 seedUnits - units);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),    rateLimit - spent + units);
-        assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit - units);
+        _assertReentrancyGuardWrittenToTwice();
+
+        assertEq(loanToken.balanceOf(address(almProxy)),     proxyBalance - seedSpent + units);
+        assertEq(loanToken.balanceOf(maker),                 makerBalance - units);
+        assertEq(loanToken.balanceOf(MIDNIGHT),              venueBalance);
+        assertEq(_credit(),                                  seedUnits - units);
+        assertEq(midnight.debt(marketId, address(almProxy)), 0);
+        assertEq(midnight.withdrawable(marketId),            0);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent + units);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit - units);
     }
 
 }

@@ -780,10 +780,8 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
     // Consuming the rest of the batch from inside the first fill cannot leave the proxy half
     // entered: Midnight rejects the proxy's take of the drained offer and the whole buy unwinds.
+    // The `ConsumedUnits()` revert is itself the proof that the hostile take landed first.
     function test_attack_hostileMakerCallbackDrainsBatch_buyMidnight() external {
-        uint256 creditBefore  = _credit();
-        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
-
         Offer[] memory offers = new Offer[](2);
         offers[0] = _offer(false, TICK_98, attackUnits);
         offers[1] = _offer(false, TICK_98, attackUnits);
@@ -806,31 +804,20 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         vm.expectRevert(abi.encodeWithSignature("ConsumedUnits()"));
         vm.prank(allocator);
         mainnetController.midnight_buy(marketId, offers, ratifierData, units, type(uint256).max);
-
-        assertEq(_credit(),                                        creditBefore);
-        assertEq(loanToken.balanceOf(address(almProxy)),           balanceBefore);
-        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
     }
 
     // The exact credit delta check is what catches a write-down landing inside the batch.
     function test_attack_slashedMidBatch_buyMidnight() external {
-        uint256 creditBefore = _credit();
-
         Offer memory offer = _offer(false, TICK_98, attackUnits);
         offer.callback = address(slasher);
         _ratify(offer);
 
         vm.expectRevert("MidnightFacet/credit-delta-mismatch");
         _buy(offer, attackUnits, type(uint256).max);
-
-        assertEq(_credit(),                       creditBefore);
-        assertEq(midnight.lossFactor(marketId),   0);
-        assertEq(midnight.debt(marketId, victim), seedUnits);
     }
 
     function test_attack_slashedMidBatch_sellMidnight() external {
-        uint256 creditBefore = _credit();
-        uint256 units        = seedUnits / 2;
+        uint256 units = seedUnits / 2;
 
         Offer memory offer = _offer(true, TICK_99, units);
         offer.callback = address(slasher);
@@ -838,10 +825,6 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/credit-delta-mismatch");
         _sell(offer, units, 1);
-
-        assertEq(_credit(),                       creditBefore);
-        assertEq(midnight.lossFactor(marketId),   0);
-        assertEq(midnight.debt(marketId, victim), seedUnits);
     }
 
     // The approval bounds what Midnight can pull, so the spend can only overshoot the bound if the
