@@ -34,9 +34,11 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   with dust-sized depth on every market and none listed.
 - **Trust assumptions:**
   - The singleton has no owner over positions or funds. Its `configurator` can enable
-    LLTV and liquidation-cursor tiers and appoint a `feeSetter`; the fee setter can move
-    any market's settlement and continuous fees within hard-coded ceilings. Neither can
-    move loan tokens or touch positions.
+    LLTV and liquidation-cursor tiers, replace itself, and appoint a `feeSetter` (moves
+    any market's settlement and continuous fees within hard-coded ceilings), a
+    `feeClaimer` (withdraws accrued continuous fee out of a market's repayment pool,
+    reducing `withdrawable`) and a `tickSpacingSetter` (refines tick spacing only). None
+    of them can touch positions or move a lender's loan tokens.
   - Lender losses are socialized: a liquidation that cannot cover a borrower's debt
     writes the shortfall down across all lenders in the market through a monotone
     `lossFactor`. Oracle failure on any collateral tier is therefore a lender loss.
@@ -70,8 +72,9 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   `minSellTick != 0` marks the market onboarded and gates `sell` and `redeem`.
 - **External calls:** none
 - **Zero-amount semantics:** all-zero config is the default and means not onboarded.
-  `minSellTick` cannot be zeroed once set without cutting off `redeem`, by design: closing
-  a market means zeroing `maxBuyTick` and leaving the exits configured.
+  A zero `minSellTick` is rejected outright, so an onboarded market cannot be
+  un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving
+  the exits configured.
 
 ### `buy(bytes32 marketId, Offer[] calldata offers, bytes[] calldata ratifierData, uint256[] calldata units, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
 
