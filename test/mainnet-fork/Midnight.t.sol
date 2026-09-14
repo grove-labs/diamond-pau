@@ -14,7 +14,6 @@ interface IMidnightLike {
 abstract contract Midnight_TestBase is ForkTestBase {
 
     // https://docs.morpho.org/get-started/resources/addresses/#morpho-midnight
-    address internal constant MIDNIGHT        = 0x471686c42792F93528B000beF54bC10E3aa2045f;
     address internal constant SETTER_RATIFIER = 0xb72c416382c8A6399D0765CebfB032F040B00B3c;
 
     // Live mainnet markets at the pinned block, from GET /v0/midnight/markets?chain_ids=1.

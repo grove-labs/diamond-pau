@@ -18,6 +18,7 @@ import { FarmFacet }          from "../../src/facets/farm/FarmFacet.sol";
 import { LayerZeroFacet }     from "../../src/facets/layer-zero/LayerZeroFacet.sol";
 import { MapleFacet }         from "../../src/facets/maple/MapleFacet.sol";
 import { MerklFacet }         from "../../src/facets/merkl/MerklFacet.sol";
+import { MidnightFacet }      from "../../src/facets/midnight/MidnightFacet.sol";
 import { NFATHaloFacet }      from "../../src/facets/nfat-halo/NFATHaloFacet.sol";
 import { NFATPrimeFacet }     from "../../src/facets/nfat-prime/NFATPrimeFacet.sol";
 import { OTCFacet }           from "../../src/facets/otc/OTCFacet.sol";
@@ -53,6 +54,7 @@ contract FacetVersions_Tests is Test {
     LayerZeroFacet     internal layerZeroFacet;
     MapleFacet         internal mapleFacet;
     MerklFacet         internal merklFacet;
+    MidnightFacet      internal midnightFacet;
     NFATHaloFacet      internal nfatHaloFacet;
     NFATPrimeFacet     internal nfatPrimeFacet;
     OTCFacet           internal otcFacet;
@@ -85,6 +87,7 @@ contract FacetVersions_Tests is Test {
         layerZeroFacet     = new LayerZeroFacet();
         mapleFacet         = new MapleFacet();
         merklFacet         = new MerklFacet();
+        midnightFacet      = new MidnightFacet(MOCK_ADDRESS);
         nfatHaloFacet      = new NFATHaloFacet();
         nfatPrimeFacet     = new NFATPrimeFacet();
         otcFacet           = new OTCFacet();
@@ -118,6 +121,7 @@ contract FacetVersions_Tests is Test {
         assertEq(layerZeroFacet.VERSION(),     "1.0.0");
         assertEq(mapleFacet.VERSION(),         "1.0.0");
         assertEq(merklFacet.VERSION(),         "1.0.0");
+        assertEq(midnightFacet.VERSION(),      "1.0.0");
         assertEq(nfatHaloFacet.VERSION(),      "1.0.0");
         assertEq(nfatPrimeFacet.VERSION(),     "1.0.0");
         assertEq(otcFacet.VERSION(),           "1.0.0");

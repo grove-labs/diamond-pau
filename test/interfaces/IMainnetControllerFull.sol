@@ -18,6 +18,7 @@ import { IFarmController }          from "../../src/facets/farm/IFarmController.
 import { ILayerZeroController }     from "../../src/facets/layer-zero/ILayerZeroController.sol";
 import { IMapleController }         from "../../src/facets/maple/IMapleController.sol";
 import { IMerklController }         from "../../src/facets/merkl/IMerklController.sol";
+import { IMidnightController }      from "../../src/facets/midnight/IMidnightController.sol";
 import { INFATHaloController }      from "../../src/facets/nfat-halo/INFATHaloController.sol";
 import { INFATPrimeController }     from "../../src/facets/nfat-prime/INFATPrimeController.sol";
 import { IOTCController }           from "../../src/facets/otc/IOTCController.sol";
@@ -50,6 +51,7 @@ interface IMainnetControllerFull is
     ILayerZeroController,
     IMapleController,
     IMerklController,
+    IMidnightController,
     INFATHaloController,
     INFATPrimeController,
     IOTCController,
