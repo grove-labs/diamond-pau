@@ -44,6 +44,10 @@ contract MidnightUtilsHarness {
         return MidnightUtils.minSellPrice(maxYield, timeToMaturity, continuousFee);
     }
 
+    function continuousFeePerSecond(uint256 cbpsPerYear) external pure returns (uint256) {
+        return MidnightUtils.continuousFeePerSecond(cbpsPerYear);
+    }
+
 }
 
 contract MidnightUtilsTestBase is Test {
@@ -282,6 +286,37 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         assertGe(sellFloor, buyCap);
         assertLe(sellFloor - buyCap, 1);
         assertLe(sellFloor, 1e18);
+    }
+
+}
+
+contract MidnightUtils_ContinuousFee_Tests is MidnightUtilsTestBase {
+
+    // Centi-basis points a year, grouped as percent_bp_cbp, so 1_00_00 is one percent a year.
+    function test_continuousFeePerSecond_anchors() external view {
+        assertEq(harness.continuousFeePerSecond(0),       0);
+        assertEq(harness.continuousFeePerSecond(1),       31_709);
+        assertEq(harness.continuousFeePerSecond(20_00),   63_419_583);
+        assertEq(harness.continuousFeePerSecond(1_00_00), 317_097_919);
+    }
+
+    // The config ceiling is the annual form of Midnight's own per second cap, so the top of the
+    // range has to land on it exactly and the next value up has to overshoot it.
+    function test_continuousFeePerSecond_matchesUpstreamCeiling() external view {
+        assertEq(harness.continuousFeePerSecond(1_00_00), MidnightUtils.MAX_CONTINUOUS_FEE);
+        assertGt(harness.continuousFeePerSecond(1_00_01), MidnightUtils.MAX_CONTINUOUS_FEE);
+    }
+
+    // Flooring is the strict direction: what the market may charge never annualizes above the rate
+    // governance named, and falls short of it by less than one unit of the per second rate.
+    function testFuzz_continuousFeePerSecond_floorsToNamedRate(uint256 cbpsPerYear) external view {
+        cbpsPerYear = bound(cbpsPerYear, 0, type(uint16).max);
+
+        uint256 charged = harness.continuousFeePerSecond(cbpsPerYear) * MidnightUtils.YEAR;
+        uint256 named   = cbpsPerYear * MidnightUtils.FEE_CBP_RATE;
+
+        assertLe(charged, named);
+        assertLt(named - charged, MidnightUtils.YEAR);
     }
 
 }
