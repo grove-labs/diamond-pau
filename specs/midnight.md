@@ -15,7 +15,7 @@ taker: the ALMProxy buys credit units from makers' sell offers at a discount, se
 back into makers' buy offers before maturity when it needs to exit early, and redeems
 them at par out of repayments once they land. The purpose is fixed-rate, fixed-term yield
 on idle USDC and USDS against overcollateralized borrowers, with every leg bounded by
-governance price ticks and per-market rate limits. The facet never makes offers, never
+governance price ticks, governance implied-yield rails and per-market rate limits. The facet never makes offers, never
 supplies collateral, never borrows, never liquidates and never holds debt.
 
 ## External protocol
@@ -64,17 +64,24 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Rate limit:** none
 - **Refill:** none, config only
 - **Loss bounds:** `MarketConfig { uint16 maxBuyTick; uint16 minSellTick;
-  uint32 maxContinuousFee; uint128 maxLossFactor; }`. `maxBuyTick <= 6744`
+  uint16 minBuyYield; uint16 maxSellYield; uint32 maxContinuousFee;
+  uint128 maxLossFactor; }`. `maxBuyTick <= 6744`
   (`MidnightFacet/max-buy-tick-oob`), `1 <= minSellTick <= 6744`
-  (`MidnightFacet/min-sell-tick-oob`), `maxContinuousFee <= 0.01e18 / 365 days`
+  (`MidnightFacet/min-sell-tick-oob`), `maxSellYield != 0`
+  (`MidnightFacet/max-sell-yield-not-set`), `maxContinuousFee <= 0.01e18 / 365 days`
   (`MidnightFacet/max-continuous-fee-oob`). Ticks feed `tickToPrice`, which reverts above
   6744; the continuous fee ceiling is Midnight's own. `maxBuyTick == 0` disables entry;
-  `minSellTick != 0` marks the market onboarded and gates `sell` and `redeem`.
+  `minSellTick != 0` marks the market onboarded and gates `sell` and `redeem`. The two
+  yield fields are in basis points a year and bound each leg a second time, in rate rather
+  than in absolute price; the stricter of the two bounds binds. A zero `maxSellYield`
+  would only ever clear at par and brick the exit, so it is rejected; a zero `minBuyYield`
+  is the loosest entry bound that still refuses to pay more than a unit returns.
 - **External calls:** none
 - **Zero-amount semantics:** all-zero config is the default and means not onboarded.
-  A zero `minSellTick` is rejected outright, so an onboarded market cannot be
-  un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving
-  the exits configured.
+  A zero `minSellTick` or `maxSellYield` is rejected outright, so an onboarded market
+  cannot be un-onboarded through the facet; closing a market means zeroing `maxBuyTick`
+  and leaving the exits configured. A zero `minBuyYield` is accepted and is not a disabled
+  bound: it still refuses to pay above what a unit returns.
 
 ### `buy(bytes32 marketId, Offer[] calldata offers, bytes[] calldata ratifierData, uint256[] calldata units, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
 
@@ -86,8 +93,11 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Refill:** none; entry is refilled by the exits.
 - **Loss bounds:** `maxAssetsIn` (non-zero, also the exact approval granted to Midnight
   for the call); per-offer `tickToPrice(offer.tick) <= tickToPrice(maxBuyTick) -
-  settlementFee(marketId, timeToMaturity)`; market `continuousFee <= maxContinuousFee`
-  and `lossFactor <= maxLossFactor` at call time; exact credit delta
+  settlementFee(marketId, timeToMaturity)` and `tickToPrice(offer.tick) + settlementFee <=
+  maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`, the price at which the all-in
+  cash flow still earns `minBuyYield` at simple interest over ACT/365 on a payoff of par
+  less the continuous fee crystallized for the remaining term; market `continuousFee <=
+  maxContinuousFee` and `lossFactor <= maxLossFactor` at call time; exact credit delta
   (`credit_after == credit_before + sum(units)`) and zero debt after the batch.
 - **External calls:** `midnight.take(offer, ratifierData[i], units[i], proxy, address(0),
   address(0), "")` via `doCall`, once per offer, with `offer.buy == false`. Reads
@@ -107,13 +117,19 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsReceived)`.
 - **Loss bounds:** `minAssetsOut` (non-zero) over the batch; per-offer
   `tickToPrice(offer.tick) >= tickToPrice(minSellTick) + settlementFee(marketId,
-  timeToMaturity)`; per-offer units capped at the proxy's remaining live credit and the
-  batch stops when credit is exhausted, so a sell can never create debt; exact credit
-  delta (`credit_before == credit_after + sum(cappedUnits)`) and zero debt after the
-  batch.
+  timeToMaturity)` and `tickToPrice(offer.tick) >= minSellPrice(maxSellYield,
+  timeToMaturity, continuousFee) + settlementFee`, so the proceeds give up at most
+  `maxSellYield` on the same basis the buy leg uses; per-offer units capped at the proxy's
+  remaining live credit and the batch stops when credit is exhausted, so a sell can never
+  create debt; exact credit delta (`credit_before == credit_after + sum(cappedUnits)`) and
+  zero debt after the batch. The yield floor converges on par as maturity approaches, so a
+  post-maturity sell only clears at par and a discounted dump against an available par
+  redemption is refused; with a live settlement fee it does not clear at all, leaving
+  `redeem` as the exit.
 - **External calls:** `midnight.take(offer, ratifierData[i], cappedUnits, proxy, proxy,
-  address(0), "")` via `doCall`, once per offer, with `offer.buy == true`. Same venue and
-  id binding as `buy`.
+  address(0), "")` via `doCall`, once per offer, with `offer.buy == true`. Reads
+  `settlementFee`, `continuousFee`, `updatePositionView` and `debt` on the singleton. Same
+  venue and id binding as `buy`.
 - **Zero-amount semantics:** as `buy`; additionally a batch whose first offer caps to
   zero units (no credit) stops before any take and fails `minAssetsOut`.
 
@@ -173,6 +189,16 @@ Declared deviations from the usual facet shape, each with rationale:
   offer's provenance. Callback-backed offers are how makers source liquidity, so banning
   callbacks is not an option; the reentrancy guard held for the whole batch and the exact
   post-checks are the containment.
+- **Yield bounds derived in the facet, not read from the venue.** `maxBuyPrice` and
+  `minSellPrice` in `MidnightUtils.sol` have no upstream counterpart: Midnight prices
+  everything in absolute ticks, so a rate bound has to be converted into the price it
+  implies at the current time to maturity. Simple interest over ACT/365, one division per
+  leg, rounded against the caller (down for the buy ceiling, up for the sell floor). Both
+  Midnight fees are inside the comparison, so a fee change re-prices the bound instead of
+  leaving it stale; within hours of maturity the sell floor plus the settlement fee can
+  exceed par, which closes the sell leg until the fee falls or `maxSellYield` is widened.
+  The arithmetic cannot overflow or underflow: upstream caps maturity 100 years
+  out (`MaturityTooFar`) and the continuous fee at 1% a year, whose product stays below par.
 - **Vendored structs and tick math.** `Market`, `Offer`, `CollateralParams`, `toId`
   and `tickToPrice` are copied verbatim into `MidnightUtils.sol` from the pinned commit,
   because the market id is a hash over `abi.encode(market)` and the price bound has to be
@@ -197,7 +223,9 @@ exists.
 - **Mutable third-party reads feeding keys/checks:** none feed a key; the only key salt is
   the governance-supplied `marketId`. `continuousFee`, `lossFactor`, `settlementFee`,
   `updatePositionView`, `withdrawable`, `debt` and `toMarket` feed guards that fail
-  closed. Required attack tests: a hostile maker callback attempting `take`, `withdraw`,
+  closed; `continuousFee` and `settlementFee` also feed the yield bounds, where a higher
+  value can only tighten them. Required attack tests: a hostile maker callback
+  attempting `take`, `withdraw`,
   `setIsAuthorized` and `repay` against the proxy from inside a fill
   (`test_attack_hostileMakerCallback_buyMidnight`); a callback draining the rest of the
   batch (`test_attack_hostileMakerCallbackDrainsBatch_buyMidnight`, whole buy unwinds); a
@@ -222,8 +250,10 @@ exists.
    due-diligence red flag.
 3. `setMarketConfig(marketId, config)` with a reachable `minSellTick` (below par net of
    the settlement fee), the highest acceptable all-in `maxBuyTick` for the remaining
-   term, and `maxContinuousFee` / `maxLossFactor` at the tolerances the position can
-   absorb (both default to zero).
+   term, a `minBuyYield` and a non-zero `maxSellYield` in basis points a year, and
+   `maxContinuousFee` / `maxLossFactor` at the tolerances the position can absorb (both
+   default to zero). The yield bounds track the shortening term on their own; the tick
+   bounds do not and go stale as maturity approaches.
 4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM`
    keyed `marketId`, in the loan token's units. Exits are gated only by their own keys.
 5. Monitoring: `lossFactor` per market (any increase is a realized write-down), fee
