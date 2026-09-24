@@ -28,6 +28,22 @@ contract MidnightUtilsHarness {
         return MidnightUtils.divHalfDownUnchecked(x, d);
     }
 
+    function maxBuyPrice(uint256 minYield, uint256 timeToMaturity, uint256 continuousFee)
+        external
+        pure
+        returns (uint256)
+    {
+        return MidnightUtils.maxBuyPrice(minYield, timeToMaturity, continuousFee);
+    }
+
+    function minSellPrice(uint256 maxYield, uint256 timeToMaturity, uint256 continuousFee)
+        external
+        pure
+        returns (uint256)
+    {
+        return MidnightUtils.minSellPrice(maxYield, timeToMaturity, continuousFee);
+    }
+
 }
 
 contract MidnightUtilsTestBase is Test {
@@ -108,6 +124,164 @@ contract MidnightUtils_DivHalfDownUnchecked_Tests is MidnightUtilsTestBase {
         assertEq(harness.divHalfDownUnchecked(15, 10), 1);  // 1.5 -> 1
         assertEq(harness.divHalfDownUnchecked(16, 10), 2);  // 1.6 -> 2
         assertEq(harness.divHalfDownUnchecked(14, 10), 1);  // 1.4 -> 1
+    }
+
+}
+
+contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
+
+    uint256 internal constant MAX_TIME_TO_MATURITY = 100 * 365 days;  // Upstream's own ceiling.
+
+    // Simple interest on cost: the yield a price implies over the term, annualized ACT/365.
+    function _earnsAtLeast(uint256 price, uint256 ttm, uint256 fee, uint256 yieldBp)
+        internal
+        pure
+        returns (bool)
+    {
+        uint256 payoff = MidnightUtils.WAD - fee * ttm;
+
+        if (price > payoff) return false;
+
+        return (payoff - price) * MidnightUtils.YEAR * MidnightUtils.WAD
+            >= yieldBp * MidnightUtils.YIELD_BP_RATE * ttm * price;
+    }
+
+    function _givesUpAtMost(uint256 price, uint256 ttm, uint256 fee, uint256 yieldBp)
+        internal
+        pure
+        returns (bool)
+    {
+        uint256 payoff = MidnightUtils.WAD - fee * ttm;
+
+        if (price > payoff) return true;
+
+        return (payoff - price) * MidnightUtils.YEAR * MidnightUtils.WAD
+            <= yieldBp * MidnightUtils.YIELD_BP_RATE * ttm * price;
+    }
+
+    // Five percent a year over exactly a year is par discounted by 1.05: floored for the buy
+    // ceiling, ceilinged for the sell floor.
+    function test_yieldPrice_anchors() external view {
+        assertEq(harness.maxBuyPrice(500, 365 days, 0),  952380952380952380);
+        assertEq(harness.minSellPrice(500, 365 days, 0), 952380952380952381);
+    }
+
+    // Pinned against an independent model of the same formula.
+    function test_yieldPrice_modelAnchors() external view {
+        assertEq(harness.maxBuyPrice(100,   30 days, 0),  999178757185874623);
+        assertEq(harness.maxBuyPrice(400,  180 days, 0),  980655561526061257);
+        assertEq(harness.maxBuyPrice(1000, 360 days, 0),  910224438902743142);
+        assertEq(harness.minSellPrice(400, 180 days, 0),  980655561526061258);
+        assertEq(harness.minSellPrice(1000, 30 days, 0),  991847826086956522);
+
+        assertEq(
+            harness.maxBuyPrice(400, 180 days, MidnightUtils.MAX_CONTINUOUS_FEE),
+            975819451920351638
+        );
+    }
+
+    // The bound is the exact price at which the configured yield is met, not an approximation of
+    // it: it satisfies the rail and one wei the wrong way does not.
+    function testFuzz_yieldPrice_impliedYieldIsTight(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 continuousFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        continuousFee  = bound(continuousFee, 0, MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        uint256 buyCap    = harness.maxBuyPrice(yieldBp, timeToMaturity, continuousFee);
+        uint256 sellFloor = harness.minSellPrice(yieldBp, timeToMaturity, continuousFee);
+
+        assertTrue(_earnsAtLeast(buyCap,       timeToMaturity, continuousFee, yieldBp));
+        assertFalse(_earnsAtLeast(buyCap + 1,  timeToMaturity, continuousFee, yieldBp));
+
+        assertTrue(_givesUpAtMost(sellFloor,      timeToMaturity, continuousFee, yieldBp));
+        assertFalse(_givesUpAtMost(sellFloor - 1, timeToMaturity, continuousFee, yieldBp));
+    }
+
+    // With no term left there is no yield to earn or give up, so both bounds collapse onto par.
+    function test_yieldPrice_zeroTimeToMaturity() external view {
+        assertEq(harness.maxBuyPrice(5000, 0, MidnightUtils.MAX_CONTINUOUS_FEE),  1e18);
+        assertEq(harness.minSellPrice(5000, 0, MidnightUtils.MAX_CONTINUOUS_FEE), 1e18);
+    }
+
+    // A zero bound is not a disabled bound: it still refuses a price above what a unit pays back.
+    function test_yieldPrice_zeroYield() external view {
+        uint256 fee = MidnightUtils.MAX_CONTINUOUS_FEE;
+
+        assertEq(harness.maxBuyPrice(0, 180 days, 0),   1e18);
+        assertEq(harness.maxBuyPrice(0, 180 days, fee), 1e18 - fee * 180 days);
+    }
+
+    function test_yieldPrice_netsContinuousFee() external view {
+        uint256 fee = MidnightUtils.MAX_CONTINUOUS_FEE;
+
+        assertLt(harness.maxBuyPrice(400, 180 days, fee),  harness.maxBuyPrice(400, 180 days, 0));
+        assertLt(harness.minSellPrice(400, 180 days, fee), harness.minSellPrice(400, 180 days, 0));
+    }
+
+    // Upstream caps maturity a hundred years out and the continuous fee at one percent a year, so
+    // even at both ceilings the payoff stays above zero and the arithmetic does not overflow.
+    function test_yieldPrice_extremeInputs() external view {
+        uint256 fee   = MidnightUtils.MAX_CONTINUOUS_FEE;
+        uint256 yield_ = type(uint16).max;
+
+        assertGt(harness.maxBuyPrice(yield_, MAX_TIME_TO_MATURITY, fee),  0);
+        assertLe(harness.minSellPrice(yield_, MAX_TIME_TO_MATURITY, fee), 1e18);
+    }
+
+    // A tighter bound must never let a worse price through.
+    function testFuzz_yieldPrice_nonIncreasingInYield(uint256 yieldBp, uint256 timeToMaturity)
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 1, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+
+        assertLe(
+            harness.maxBuyPrice(yieldBp, timeToMaturity, 0),
+            harness.maxBuyPrice(yieldBp - 1, timeToMaturity, 0)
+        );
+        assertLe(
+            harness.minSellPrice(yieldBp, timeToMaturity, 0),
+            harness.minSellPrice(yieldBp - 1, timeToMaturity, 0)
+        );
+    }
+
+    // The same bound is worth a lower price the longer the term left on it.
+    function testFuzz_yieldPrice_nonIncreasingInTerm(uint256 timeToMaturity) external view {
+        timeToMaturity = bound(timeToMaturity, 1, MAX_TIME_TO_MATURITY);
+
+        assertLe(
+            harness.maxBuyPrice(400, timeToMaturity, 0),
+            harness.maxBuyPrice(400, timeToMaturity - 1, 0)
+        );
+    }
+
+    // Rounding separates the two directions by at most one wei, and never the wrong way round.
+    function testFuzz_yieldPrice_roundingBrackets(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 continuousFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        continuousFee  = bound(continuousFee, 0, MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        uint256 buyCap    = harness.maxBuyPrice(yieldBp, timeToMaturity, continuousFee);
+        uint256 sellFloor = harness.minSellPrice(yieldBp, timeToMaturity, continuousFee);
+
+        assertGe(sellFloor, buyCap);
+        assertLe(sellFloor - buyCap, 1);
+        assertLe(sellFloor, 1e18);
     }
 
 }
