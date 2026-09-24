@@ -247,6 +247,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
             "MidnightFacet/market-not-onboarded"
         );
+        require(minAssetsOut != 0, "MidnightFacet/min-assets-out-not-set");
 
         address proxy = _getSharedControllerStorage().proxy;
 
@@ -455,9 +456,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (TakeContext memory ctx)
     {
-        // Every call goes to the immutable singleton, so a market from calldata is only usable once
-        // it names that venue. The id check in the take loop then binds the rest of the config.
-        require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
+        // This market comes from calldata and its maturity feeds the caller's price bounds, so both
+        // the venue and the id are bound here, before anything is derived from it.
+        require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
+        require(MidnightUtils.toId(market) == marketId, "MidnightFacet/market-mismatch");
 
         ctx.proxy          = _getSharedControllerStorage().proxy;
         ctx.marketId       = marketId;

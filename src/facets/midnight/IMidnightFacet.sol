@@ -142,7 +142,9 @@ interface IMidnightFacet is IFacet {
      * @notice Redeems credit units at par out of the market's repayments.
      * @dev    Units are capped at both the proxy's live credit and the market's withdrawable
      *         amount, so passing `type(uint256).max` redeems everything currently available.
-     *         The market is resolved from the id on the configured Midnight venue.
+     *         The market is resolved from the id on the configured Midnight venue. The rate limit
+     *         is decreased by the loan token actually received, and the same amount is restored on
+     *         the buy limit when one is configured.
      * @param  marketId        Identifier of the Midnight market.
      * @param  units           Credit units to redeem before capping.
      * @param  minAssetsOut    Lower bound on loan token received.
