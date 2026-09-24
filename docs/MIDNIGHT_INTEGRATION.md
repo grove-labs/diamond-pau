@@ -47,9 +47,9 @@ Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
 1. Read the market config for `marketId`; revert `MidnightFacet/buy-not-enabled` if `maxBuyTick` is zero. Require `maxAssetsIn != 0` (`MidnightFacet/max-assets-in-not-set`) and a non-empty batch whose three arrays have equal length (`MidnightFacet/empty-batch`, `MidnightFacet/invalid-batch-length`).
 2. Require `offers[0].market.midnight == midnight` (`MidnightFacet/invalid-midnight`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
 3. Require the market's `continuousFee <= maxContinuousFee` (`MidnightFacet/continuous-fee-too-high`) and `lossFactor <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`). Entering crystallizes the continuous fee over the remaining term and buys into whatever loss has already been socialized, so both are entry-only gates.
-4. Resolve the price bound: `tickToPrice(maxBuyTick) - settlementFee(marketId, timeToMaturity)`. Require the tick price to cover the fee (`MidnightFacet/max-buy-tick-below-fee`). The bound is on the all-in price the proxy pays.
+4. Resolve two price bounds and apply both. The tick bound is `tickToPrice(maxBuyTick) - settlementFee(marketId, timeToMaturity)`, which requires the tick price to cover the fee (`MidnightFacet/max-buy-tick-below-fee`). The yield bound is `maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`: the highest all-in price that still earns `minBuyYield` basis points a year at simple interest over ACT/365, measured on what a unit returns (par less the continuous fee crystallized for the remaining term). Both are bounds on the all-in price the proxy pays, and the stricter one binds.
 5. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`.
-6. For each offer, in order: require `toId(offer.market) == marketId` (`MidnightFacet/market-mismatch`), `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units[i] != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) <= bound` (`MidnightFacet/buy-price-too-high`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)). Then `doCall` `midnight.take(offer, ratifierData[i], units[i], proxy, 0, 0, "")`.
+6. For each offer, in order: require `toId(offer.market) == marketId` (`MidnightFacet/market-mismatch`), `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units[i] != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) <= tickBound` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldBound` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)). Then `doCall` `midnight.take(offer, ratifierData[i], units[i], proxy, 0, 0, "")`.
 7. Reset the approval to zero in case Midnight did not pull the full amount.
 8. Measure `assetsSpent` as the ALMProxy balance delta rather than trusting the take return values, and require `assetsSpent <= maxAssetsIn` (`MidnightFacet/max-assets-in-exceeded`).
 9. Require the live credit to have grown by exactly the units taken (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`). Anything a maker callback did to market state during the batch surfaces here.
@@ -75,8 +75,8 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 1. Read the market config; revert `MidnightFacet/sell-not-enabled` if `minSellTick` is zero. Require `minAssetsOut != 0` (`MidnightFacet/min-assets-out-not-set`) and a well-formed batch as for `buy`.
 2. Require `offers[0].market.midnight == midnight` (`MidnightFacet/invalid-midnight`), snapshot credit and balance.
-3. Resolve the price bound: `tickToPrice(minSellTick) + settlementFee(marketId, timeToMaturity)`. Selling receives the tick price less the fee, so the fee is added onto the floor.
-4. For each offer, in order: the same id, direction (`offer.buy == true`) and non-zero-units checks as `buy`, then `tickToPrice(offer.tick) >= bound` (`MidnightFacet/sell-price-too-low`). The per-offer size is capped at the proxy's **remaining live credit**; once credit is exhausted the rest of the batch is skipped rather than filled with debt. Then `doCall` `midnight.take(offer, ratifierData[i], cappedUnits, proxy, proxy, 0, "")`.
+3. Resolve two price floors and apply both. The tick floor is `tickToPrice(minSellTick) + settlementFee(marketId, timeToMaturity)`; selling receives the tick price less the fee, so the fee is added onto the floor. The yield floor is `minSellPrice(maxSellYield, timeToMaturity, continuousFee) + settlementFee`: the lowest net price that gives up no more than `maxSellYield` basis points a year on the same ACT/365 basis as the buy leg. The stricter floor binds.
+4. For each offer, in order: the same id, direction (`offer.buy == true`) and non-zero-units checks as `buy`, then `tickToPrice(offer.tick) >= tickFloor` (`MidnightFacet/sell-price-too-low`) and `tickToPrice(offer.tick) >= yieldFloor` (`MidnightFacet/sell-yield-too-high`). The per-offer size is capped at the proxy's **remaining live credit**; once credit is exhausted the rest of the batch is skipped rather than filled with debt. Then `doCall` `midnight.take(offer, ratifierData[i], cappedUnits, proxy, proxy, 0, "")`.
 5. Measure `assetsReceived` as the ALMProxy balance delta and require `assetsReceived >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
 6. Require the live credit to have shrunk by exactly the units sold (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`).
 7. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assetsReceived`, and `_tryIncreaseRateLimit` the buy key by the same amount (see [Try-Increase](./RATE_LIMITS.md#try-increase-not-gate-check): the refill silently no-ops when the buy key is unconfigured, and the buy key is not a precondition for exit).
@@ -87,7 +87,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 **Credit drifts down:** the live credit read from `updatePositionView` already reflects accrued continuous fee and any socialized loss, so the cap in step 4 is what keeps a sell from ever creating debt. A batch sized against a stale credit reading fills what is left and stops.
 
-**Post-maturity:** selling stays open. The settlement fee schedule resolves at zero time to maturity.
+**Post-maturity:** selling stays open only at par. The settlement fee schedule resolves at zero time to maturity, and so does the yield floor: with no term left, any discount gives up unbounded yield against a redemption that pays par, so the floor collapses onto par and refuses every discounted offer (`MidnightFacet/sell-yield-too-high`). A par offer (tick `6744`) still clears when the settlement fee is zero. The consequence is deliberate: past maturity the exit is `redeem`, and dumping credit below par is the loss the rail exists to stop. A market whose repayments never land therefore has no discounted exit; reopening one means a spell.
 
 ### Redeem (exit at par from repayments)
 
@@ -118,14 +118,18 @@ Sets the governance limits for one market. The struct fits one storage slot:
 | ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `maxBuyTick`       | `uint16`  | Highest offer tick a buy may pay, fee-adjusted at call time. `0` disables entry. Must be `<= 6744` (`MidnightFacet/max-buy-tick-oob`).   |
 | `minSellTick`      | `uint16`  | Lowest offer tick a sell may accept, fee-adjusted at call time. Non-zero marks the market as onboarded and gates `sell` and `redeem`. Must be in `1..6744` (`MidnightFacet/min-sell-tick-oob`). |
+| `minBuyYield`      | `uint16`  | Lowest implied yield a buy may accept, in basis points a year (max `655.35%`). `0` is the loosest setting that still refuses to pay more than a unit returns. |
+| `maxSellYield`     | `uint16`  | Highest implied yield a sell may give up, in basis points a year. Must be non-zero (`MidnightFacet/max-sell-yield-not-set`); zero would only clear at par and brick the exit. |
 | `maxContinuousFee` | `uint32`  | Highest market continuous fee (per second, WAD) a buy tolerates. Must be `<= 0.01e18 / 365 days`, Midnight's own ceiling (`MidnightFacet/max-continuous-fee-oob`). |
 | `maxLossFactor`    | `uint128` | Highest market loss factor a buy tolerates, as a fraction of `type(uint128).max`. `0` means no socialized loss is tolerated.            |
 
 - All values default to zero, the strictest setting: nothing is onboarded, nothing can be entered.
 - `minSellTick` is an exit floor and has to stay reachable: below par net of the settlement fee, or every sell reverts on price. `setMarketConfig` rejects a zero `minSellTick` outright, so a market once onboarded cannot be un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving the exits configured.
-- The fee and loss guards apply to entry only. Exits are never blocked by market conditions the facet can observe; they are bounded by `minAssetsOut` and the rate limits.
+- Each leg carries a tick bound and a yield bound, and the stricter binds. Ticks are absolute prices and go stale as the term shortens: a tick that is a fair entry at 180 days is a giveaway at 5. The yield bounds are denominated in rate, so they track the term on their own and need no spell as maturity approaches. Both fees are inside the comparison, so a fee change does not need a reconfiguration either.
+- Yield granularity is one basis point a year, worth about `0.9` basis points of price at a 360 day term, `0.5` at 180 days and `0.02` at 7 days. Set `maxSellYield` well above the market rate: it is a gross-mispricing rail, not a spread control, and it tightens towards par on its own as maturity approaches.
+- The fee and loss guards apply to entry only. Exits are bounded by `minSellTick`, `maxSellYield`, `minAssetsOut` and the rate limits.
 
-**Event:** `MidnightMarketConfigSet(marketId, maxBuyTick, minSellTick, maxContinuousFee, maxLossFactor)`
+**Event:** `MidnightMarketConfigSet(marketId, maxBuyTick, minSellTick, minBuyYield, maxSellYield, maxContinuousFee, maxLossFactor)`
 
 Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-market whitelist: both must be configured by governance before the first trade.
 
@@ -217,6 +221,8 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/max-buy-tick-below-fee`   | facet       | `tickToPrice(maxBuyTick)` does not cover the current settlement fee                       |
 | `MidnightFacet/buy-price-too-high`       | facet       | an offer tick above the fee-adjusted `maxBuyTick`                                         |
 | `MidnightFacet/sell-price-too-low`       | facet       | an offer tick below the fee-adjusted `minSellTick`                                        |
+| `MidnightFacet/buy-yield-too-low`        | facet       | an all-in offer price whose implied yield is under `minBuyYield` for the remaining term    |
+| `MidnightFacet/sell-yield-too-high`      | facet       | an offer whose net proceeds give up more than `maxSellYield` for the remaining term        |
 | `MidnightFacet/invalid-offer-receiver`   | facet       | a sell offer paying its proceeds to the ALMProxy                                          |
 | `MidnightFacet/max-assets-in-exceeded`   | facet       | measured spend above `maxAssetsIn`                                                        |
 | `MidnightFacet/min-assets-out-not-met`   | facet       | measured proceeds below `minAssetsOut`                                                    |
@@ -225,6 +231,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/max-buy-tick-oob`         | facet       | `setMarketConfig` with `maxBuyTick > 6744`                                                |
 | `MidnightFacet/min-sell-tick-oob`        | facet       | `setMarketConfig` with `minSellTick` zero or `> 6744`                                     |
 | `MidnightFacet/max-continuous-fee-oob`   | facet       | `setMarketConfig` with `maxContinuousFee` above Midnight's ceiling                        |
+| `MidnightFacet/max-sell-yield-not-set`   | facet       | `setMarketConfig` with a zero `maxSellYield`                                               |
 | `MidnightFacet/tick-out-of-range`        | facet       | an offer tick above `6744`                                                                |
 | `MidnightFacet/zero-midnight`            | facet       | constructor with a zero singleton address                                                 |
 | `RateLimits/rate-limit-exceeded`         | rate limits | trade exceeding the configured limit                                                      |
@@ -248,7 +255,7 @@ Per market (`marketId`):
 
 1. Confirm the market exists on the singleton (`toMarket(marketId)` resolves, `settlementFee` does not revert). If not, anyone can `touchMarket(market)` once; the facet does not.
 2. Review the market config the id commits to: loan token, maturity, collateral tiers (LLTV, liquidation cursor, oracle), `rcfThreshold`, gates. A tier at LLTV `1e18` lets a borrower sell against the full collateral value, so any adverse oracle move leaves bad debt for lenders; treat it as a due-diligence red flag.
-3. `setMarketConfig(marketId, config)`: required. `minSellTick` non-zero and below par net of the settlement fee; `maxBuyTick` at the highest all-in price acceptable for the remaining term; `maxContinuousFee` and `maxLossFactor` at the tolerances the position can absorb, both defaulting to zero.
+3. `setMarketConfig(marketId, config)`: required. `minSellTick` non-zero and below par net of the settlement fee; `maxBuyTick` at the highest all-in price acceptable for the remaining term; `minBuyYield` at the lowest rate worth entering for and `maxSellYield` (non-zero) at the widest give-up an exit may pay, both in basis points a year; `maxContinuousFee` and `maxLossFactor` at the tolerances the position can absorb, both defaulting to zero.
 4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM` keyed `marketId`, in the loan token's units. The exits are gated only by their own keys; zeroing the buy key pauses entry without touching exits.
 
 No seeding is required: the integration holds no intermediate token and uses no auxiliary module. Offers are sourced off-chain from makers (or the Morpho API) and passed in calldata by the allocator together with each maker's ratifier data.
@@ -260,7 +267,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 ### Monitoring
 
 - **`lossFactor` per market**: any increase means a liquidation socialized bad debt against the position. Entry is gated by `maxLossFactor`; the write-down on the existing position is immediate and unrecoverable.
-- **Fee changes** (`continuousFee`, settlement fee schedule): raised fees widen the spread on every trade and can push `maxBuyTick` under the fee (`MidnightFacet/max-buy-tick-below-fee`) or `minSellTick` over par, wedging that side until governance reconfigures.
+- **Fee changes** (`continuousFee`, settlement fee schedule): raised fees widen the spread on every trade and can push `maxBuyTick` under the fee (`MidnightFacet/max-buy-tick-below-fee`) or `minSellTick` over par, wedging that side until governance reconfigures. Both fees sit inside the yield bounds, so a fee rise re-prices those rather than leaving them stale, with one exception: close to maturity the sell floor is already near par, and adding the fee on top can push it above par, so `sell` reverts (`MidnightFacet/sell-yield-too-high`) until the fee falls or governance widens `maxSellYield`. With the schedule at the protocol ceiling that window is roughly the last hour at a `maxSellYield` of 1000 and the last six at 200; past maturity the floor is exactly par, so any live settlement fee closes the sell path and `redeem` is the only exit. At the time of writing every fee on every live market is zero and no `feeSetter` has been appointed, so the whole schedule can go from zero to the protocol ceilings on one configurator action with no notice.
 - **Role and tier changes** by the singleton's `configurator` (`feeSetter`, `feeClaimer`, `tickSpacingSetter`, tiers, the configurator itself): the privileged levers on the venue. Fee claims reduce `withdrawable`, so they show up as slower redemption.
 - **`withdrawable` vs. credit** around maturity: redemption is first come first served out of repayments. Slow repayment after maturity means slow redemption, not loss, unless liquidations fall short.
 - **Oracle health** of every collateral tier in the market: a stale or manipulated oracle is what turns a borrower's default into a lender's loss.
