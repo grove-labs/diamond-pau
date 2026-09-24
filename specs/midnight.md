@@ -83,7 +83,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   and leaving the exits configured. A zero `minBuyYield` is accepted and is not a disabled
   bound: it still refuses to pay above what a unit returns.
 
-### `buy(bytes32 marketId, Offer[] calldata offers, bytes[] calldata ratifierData, uint256[] calldata units, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
+### `buy(bytes32 marketId, Fill[] calldata fills, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
 
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** outbound (loan token leaves custody, credit units accrue to the
@@ -99,16 +99,17 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   less the continuous fee crystallized for the remaining term; market `continuousFee <=
   maxContinuousFee` and `lossFactor <= maxLossFactor` at call time; exact credit delta
   (`credit_after == credit_before + sum(units)`) and zero debt after the batch.
-- **External calls:** `midnight.take(offer, ratifierData[i], units[i], proxy, address(0),
-  address(0), "")` via `doCall`, once per offer, with `offer.buy == false`. Reads
+- **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData,
+  fills[i].units, proxy, address(0), address(0), "")` via `doCall`, once per offer, with
+  `offer.buy == false`. Reads
   `continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `debt` on the
-  immutable singleton only. `offers[0].market.midnight` must equal the immutable
-  singleton and every `offers[i].market` must hash to `marketId`.
-- **Zero-amount semantics:** empty batch, mismatched array lengths, zero `maxAssetsIn`
-  and zero per-offer units all revert in the facet. Midnight itself would accept a zero
+  immutable singleton only. `fills[0].offer.market.midnight` must equal the immutable
+  singleton and every `fills[i].offer.market` must hash to `marketId`.
+- **Zero-amount semantics:** empty batch, zero `maxAssetsIn` and zero per-offer units
+  all revert in the facet. Midnight itself would accept a zero
   take; the facet forbids it because a zero fill still runs the maker's callback.
 
-### `sell(bytes32 marketId, Offer[] calldata offers, bytes[] calldata ratifierData, uint256[] calldata units, uint256 minAssetsOut) returns (uint256 assetsReceived)`
+### `sell(bytes32 marketId, Fill[] calldata fills, uint256 minAssetsOut) returns (uint256 assetsReceived)`
 
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** returning (loan token to proxy, credit units leave the position)
@@ -126,8 +127,9 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   post-maturity sell only clears at par and a discounted dump against an available par
   redemption is refused; with a live settlement fee it does not clear at all, leaving
   `redeem` as the exit.
-- **External calls:** `midnight.take(offer, ratifierData[i], cappedUnits, proxy, proxy,
-  address(0), "")` via `doCall`, once per offer, with `offer.buy == true`. Reads
+- **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits,
+  proxy, proxy, address(0), "")` via `doCall`, once per offer, with `offer.buy == true`.
+  Reads
   `settlementFee`, `continuousFee`, `updatePositionView` and `debt` on the singleton. Same
   venue and id binding as `buy`.
 - **Zero-amount semantics:** as `buy`; additionally a batch whose first offer caps to
@@ -183,7 +185,7 @@ batch. `sell` and `redeem` grant no approval.
 
 Declared deviations from the usual facet shape, each with rationale:
 
-- **Opaque calldata forwarded to third parties.** `offers[i]` and `ratifierData[i]` are
+- **Opaque calldata forwarded to third parties.** Each `Fill`'s offer and ratifier data are
   passed through to Midnight and, by Midnight, to the maker's ratifier and callback. The
   facet validates outcomes (venue, id, direction, price bound, deltas, debt), not the
   offer's provenance. Callback-backed offers are how makers source liquidity, so banning
