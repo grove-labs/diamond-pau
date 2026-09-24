@@ -92,9 +92,9 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   enforcing decrease of the measured loan-token balance delta.
 - **Refill:** none; entry is refilled by the exits.
 - **Loss bounds:** `maxAssetsIn` (non-zero, also the exact approval granted to Midnight
-  for the call); per-offer `tickToPrice(offer.tick) <= tickToPrice(maxBuyTick) -
-  settlementFee(marketId, timeToMaturity)` and `tickToPrice(offer.tick) + settlementFee <=
-  maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`, the price at which the all-in
+  for the call); per-offer `tickToPrice(offer.tick) + settlementFee(marketId,
+  timeToMaturity) <= tickToPrice(maxBuyTick)` and `tickToPrice(offer.tick) + settlementFee
+  <= maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`, the price at which the all-in
   cash flow still earns `minBuyYield` at simple interest over ACT/365 on a payoff of par
   less the continuous fee crystallized for the remaining term; market `continuousFee <=
   maxContinuousFee` and `lossFactor <= maxLossFactor` at call time; exact credit delta
