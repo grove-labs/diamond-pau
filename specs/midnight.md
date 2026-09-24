@@ -64,13 +64,15 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Rate limit:** none
 - **Refill:** none, config only
 - **Loss bounds:** `MarketConfig { uint16 maxBuyTick; uint16 minSellTick;
-  uint16 minBuyYield; uint16 maxSellYield; uint32 maxContinuousFee;
+  uint16 minBuyYield; uint16 maxSellYield; uint16 maxContinuousFee;
   uint128 maxLossFactor; }`. `maxBuyTick <= 6744`
   (`MidnightFacet/max-buy-tick-oob`), `1 <= minSellTick <= 6744`
   (`MidnightFacet/min-sell-tick-oob`), `maxSellYield != 0`
-  (`MidnightFacet/max-sell-yield-not-set`), `maxContinuousFee <= 0.01e18 / 365 days`
+  (`MidnightFacet/max-sell-yield-not-set`), `maxContinuousFee <= 1_00_00`
   (`MidnightFacet/max-continuous-fee-oob`). Ticks feed `tickToPrice`, which reverts above
-  6744; the continuous fee ceiling is Midnight's own. `maxBuyTick == 0` disables entry;
+  6744. `maxContinuousFee` is in centi-basis points a year, converted to the per-second
+  rate the market stores by flooring; its ceiling of one percent a year is Midnight's own.
+  `maxBuyTick == 0` disables entry;
   `minSellTick != 0` marks the market onboarded and gates `sell` and `redeem`. The two
   yield fields are in basis points a year and bound each leg a second time, in rate rather
   than in absolute price; the stricter of the two bounds binds. A zero `maxSellYield`
@@ -97,7 +99,8 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   <= maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`, the price at which the all-in
   cash flow still earns `minBuyYield` at simple interest over ACT/365 on a payoff of par
   less the continuous fee crystallized for the remaining term; market `continuousFee <=
-  maxContinuousFee` and `lossFactor <= maxLossFactor` at call time; exact credit delta
+  continuousFeePerSecond(maxContinuousFee)` and `lossFactor <= maxLossFactor` at call time;
+  exact credit delta
   (`credit_after == credit_before + sum(units)`) and zero debt after the batch.
 - **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData,
   fills[i].units, proxy, address(0), address(0), "")` via `doCall`, once per offer, with
@@ -253,9 +256,9 @@ exists.
 3. `setMarketConfig(marketId, config)` with a reachable `minSellTick` (below par net of
    the settlement fee), the highest acceptable all-in `maxBuyTick` for the remaining
    term, a `minBuyYield` and a non-zero `maxSellYield` in basis points a year, and
-   `maxContinuousFee` / `maxLossFactor` at the tolerances the position can absorb (both
-   default to zero). The yield bounds track the shortening term on their own; the tick
-   bounds do not and go stale as maturity approaches.
+   `maxContinuousFee` (centi-basis points a year) / `maxLossFactor` at the tolerances the
+   position can absorb (both default to zero). The yield bounds track the shortening term
+   on their own; the tick bounds do not and go stale as maturity approaches.
 4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM`
    keyed `marketId`, in the loan token's units. Exits are gated only by their own keys.
 5. Monitoring: `lossFactor` per market (any increase is a realized write-down), fee
