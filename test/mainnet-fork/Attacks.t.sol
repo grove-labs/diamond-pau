@@ -31,6 +31,8 @@ import { UniswapV3_TestBase }                from "./UniswapV3.t.sol";
 import { UniswapV4_USDC_USDT_TestBase }      from "./UniswapV4.t.sol";
 import { WEETH_TestBase }                    from "./WEETH.t.sol";
 
+import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
+
 import { Market, Offer } from "../../src/facets/midnight/MidnightUtils.sol";
 
 import { IUniswapV3Facet } from "../../src/facets/uniswap-v3/IUniswapV3Facet.sol";
@@ -782,28 +784,23 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     // entered: Midnight rejects the proxy's take of the drained offer and the whole buy unwinds.
     // The `ConsumedUnits()` revert is itself the proof that the hostile take landed first.
     function test_attack_hostileMakerCallbackDrainsBatch_buyMidnight() external {
-        Offer[] memory offers = new Offer[](2);
-        offers[0] = _offer(false, TICK_98, attackUnits);
-        offers[1] = _offer(false, TICK_98, attackUnits);
-
-        bytes[] memory ratifierData = new bytes[](2);
-        ratifierData[1] = _ratifierData(offers[1]);
+        Offer memory drained = _offer(false, TICK_98, attackUnits);
+        Offer memory first   = _offer(false, TICK_98, attackUnits);
 
         // The callback takes the batch's second offer for itself, exhausting that offer's budget.
-        offers[0].callback     = address(hostile);
-        offers[0].callbackData =
-            abi.encode(address(almProxy), offers[1], ratifierData[1], attackUnits);
-        _ratify(offers[0]);
+        first.callback     = address(hostile);
+        first.callbackData =
+            abi.encode(address(almProxy), drained, _ratifierData(drained), attackUnits);
+        _ratify(first);
 
-        ratifierData[0] = _ratifierData(offers[0]);
+        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
 
-        uint256[] memory units = new uint256[](2);
-        units[0] = attackUnits;
-        units[1] = attackUnits;
+        fills[0] = _fill(first,   attackUnits);
+        fills[1] = _fill(drained, attackUnits);
 
         vm.expectRevert(abi.encodeWithSignature("ConsumedUnits()"));
         vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, offers, ratifierData, units, type(uint256).max);
+        mainnetController.midnight_buy(marketId, fills, type(uint256).max);
     }
 
     // The exact credit delta check is what catches a write-down landing inside the batch.

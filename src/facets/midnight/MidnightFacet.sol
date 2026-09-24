@@ -172,11 +172,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     /// @inheritdoc IMidnightFacet
     function buy(
-        bytes32            marketId,
-        Offer[]   calldata offers,
-        bytes[]   calldata ratifierData,
-        uint256[] calldata units,
-        uint256            maxAssetsIn
+        bytes32         marketId,
+        Fill[] calldata fills,
+        uint256         maxAssetsIn
     )
         external
         override
@@ -188,10 +186,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(config.maxBuyTick != 0, "MidnightFacet/buy-not-enabled");
         require(maxAssetsIn != 0,       "MidnightFacet/max-assets-in-not-set");
+        require(fills.length != 0,      "MidnightFacet/empty-batch");
 
-        _validateBatch(offers.length, ratifierData.length, units.length);
-
-        TakeContext memory ctx = _takeContext(marketId, offers[0].market, false);
+        TakeContext memory ctx = _takeContext(marketId, fills[0].offer.market, false);
 
         // Entering crystallizes the continuous fee over the remaining term, so it is checked up
         // front. A non-zero loss factor means this market's lenders have already been slashed.
@@ -213,7 +210,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // The proxy is Midnight's payer for the whole batch.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, maxAssetsIn);
 
-        _takeBatch(ctx, offers, ratifierData, units);
+        _takeBatch(ctx, fills);
 
         // Clear the approval in case Midnight did not pull the full amount.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
@@ -287,11 +284,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     /// @inheritdoc IMidnightFacet
     function sell(
-        bytes32            marketId,
-        Offer[]   calldata offers,
-        bytes[]   calldata ratifierData,
-        uint256[] calldata units,
-        uint256            minAssetsOut
+        bytes32         marketId,
+        Fill[] calldata fills,
+        uint256         minAssetsOut
     )
         external
         override
@@ -303,10 +298,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(config.minSellTick != 0, "MidnightFacet/sell-not-enabled");
         require(minAssetsOut != 0,       "MidnightFacet/min-assets-out-not-set");
+        require(fills.length != 0,       "MidnightFacet/empty-batch");
 
-        _validateBatch(offers.length, ratifierData.length, units.length);
-
-        TakeContext memory ctx = _takeContext(marketId, offers[0].market, true);
+        TakeContext memory ctx = _takeContext(marketId, fills[0].offer.market, true);
 
         ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick);
 
@@ -317,7 +311,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         ctx.creditCap = ctx.creditBefore;
 
-        _takeBatch(ctx, offers, ratifierData, units);
+        _takeBatch(ctx, fills);
 
         // Measure the loan token actually received rather than trusting the take return values.
         assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy) - ctx.balanceBefore;
@@ -372,16 +366,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /*** Internal Functions                                                                     ***/
     /**********************************************************************************************/
 
-    function _takeBatch(
-        TakeContext memory ctx,
-        Offer[]   calldata offers,
-        bytes[]   calldata ratifierData,
-        uint256[] calldata units
-    )
-        internal
-    {
-        for (uint256 i = 0; i < offers.length; i++) {
-            Offer memory offer = offers[i];
+    function _takeBatch(TakeContext memory ctx, Fill[] calldata fills) internal {
+        for (uint256 i = 0; i < fills.length; i++) {
+            Offer memory offer = fills[i].offer;
 
             // The id commits to the whole market config, venue included.
             require(
@@ -390,10 +377,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
             );
 
             require(offer.buy == ctx.selling, "MidnightFacet/invalid-offer-direction");
-            require(units[i] != 0,            "MidnightFacet/zero-units");
+            require(fills[i].units != 0,      "MidnightFacet/zero-units");
 
             uint256 price     = MidnightUtils.tickToPrice(offer.tick);
-            uint256 takeUnits = units[i];
+            uint256 takeUnits = fills[i].units;
 
             if (ctx.selling) {
                 // The fee is taken out of the proceeds, so both floors bind on the gross price.
@@ -432,7 +419,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
             ctx.totalUnits += takeUnits;
 
-            _take(ctx, offer, ratifierData[i], takeUnits);
+            _take(ctx, offer, fills[i].ratifierData, takeUnits);
         }
     }
 
@@ -459,17 +446,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
                     new bytes(0)
                 )
             )
-        );
-    }
-
-    function _validateBatch(uint256 offersLength, uint256 ratifierDataLength, uint256 unitsLength)
-        internal
-        pure
-    {
-        require(offersLength != 0, "MidnightFacet/empty-batch");
-        require(
-            offersLength == ratifierDataLength && offersLength == unitsLength,
-            "MidnightFacet/invalid-batch-length"
         );
     }
 

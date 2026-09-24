@@ -20,6 +20,20 @@ interface IMidnightFacet is IFacet {
     /**********************************************************************************************/
 
     /**
+     * @notice One maker offer to take, carrying everything needed to take it.
+     * @dev    Offer, ratifier data and size travel together, so a batch cannot be assembled with
+     *         the three misaligned.
+     * @param  offer        Maker's offer to take.
+     * @param  ratifierData Opaque data forwarded to the maker's ratifier.
+     * @param  units        Credit units to take from this offer; must be non-zero.
+     */
+    struct Fill {
+        Offer   offer;
+        bytes   ratifierData;
+        uint256 units;
+    }
+
+    /**
      * @notice Governance limits for one Midnight market. Fits in one storage slot.
      * @dev    `maxBuyTick == 0` disables entry. `minSellTick != 0` marks the market as onboarded
      *         and gates sell and redeem; it is an exit price floor and has to stay reachable
@@ -107,20 +121,17 @@ interface IMidnightFacet is IFacet {
      *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
      *         exceeds the configured tolerances, or if the market has never been touched on
      *         Midnight. The rate limit is decreased by the loan token actually spent.
-     * @param  marketId     Identifier of the Midnight market.
-     * @param  offers       Makers' sell offers to take, in order.
-     * @param  ratifierData Per-offer opaque data forwarded to each maker's ratifier.
-     * @param  units        Per-offer credit units to buy; must be non-zero.
-     * @param  maxAssetsIn  Upper bound on loan token spent across the batch; also the allowance
-     *                      granted to Midnight for the duration of the call.
-     * @return assetsSpent  Loan token actually paid, fees included.
+     * @param  marketId    Identifier of the Midnight market.
+     * @param  fills       Makers' sell offers to take, in order, each with its ratifier data and
+     *                     size.
+     * @param  maxAssetsIn Upper bound on loan token spent across the batch; also the allowance
+     *                     granted to Midnight for the duration of the call.
+     * @return assetsSpent Loan token actually paid, fees included.
      */
     function buy(
-        bytes32            marketId,
-        Offer[]   calldata offers,
-        bytes[]   calldata ratifierData,
-        uint256[] calldata units,
-        uint256            maxAssetsIn
+        bytes32         marketId,
+        Fill[] calldata fills,
+        uint256         maxAssetsIn
     )
         external
         returns (uint256 assetsSpent);
@@ -148,18 +159,15 @@ interface IMidnightFacet is IFacet {
      *         stops once credit runs out. The rate limit is decreased by the loan token actually
      *         received, and the same amount is restored on the buy limit when one is configured.
      * @param  marketId       Identifier of the Midnight market.
-     * @param  offers         Makers' buy offers to take, in order.
-     * @param  ratifierData   Per-offer opaque data forwarded to each maker's ratifier.
-     * @param  units          Per-offer credit units to sell; must be non-zero.
+     * @param  fills          Makers' buy offers to take, in order, each with its ratifier data and
+     *                        size.
      * @param  minAssetsOut   Lower bound on loan token received across the batch.
      * @return assetsReceived Loan token actually received, net of fees.
      */
     function sell(
-        bytes32            marketId,
-        Offer[]   calldata offers,
-        bytes[]   calldata ratifierData,
-        uint256[] calldata units,
-        uint256            minAssetsOut
+        bytes32         marketId,
+        Fill[] calldata fills,
+        uint256         minAssetsOut
     )
         external
         returns (uint256 assetsReceived);

@@ -332,18 +332,25 @@ abstract contract Midnight_TestBase is ForkTestBase {
         return abi.encode(MidnightHashLib.hashOffer(offer), uint256(0), new bytes32[](0));
     }
 
+    function _fill(Offer memory offer, uint256 units)
+        internal
+        pure
+        returns (IMidnightFacet.Fill memory)
+    {
+        return IMidnightFacet.Fill({
+            offer        : offer,
+            ratifierData : _ratifierData(offer),
+            units        : units
+        });
+    }
+
     function _batch(Offer memory offer, uint256 units)
         internal
         pure
-        returns (Offer[] memory offers, bytes[] memory ratifierData, uint256[] memory unitsArray)
+        returns (IMidnightFacet.Fill[] memory fills)
     {
-        offers       = new Offer[](1);
-        ratifierData = new bytes[](1);
-        unitsArray   = new uint256[](1);
-
-        offers[0]       = offer;
-        ratifierData[0] = _ratifierData(offer);
-        unitsArray[0]   = units;
+        fills    = new IMidnightFacet.Fill[](1);
+        fills[0] = _fill(offer, units);
     }
 
     /**********************************************************************************************/
@@ -354,28 +361,16 @@ abstract contract Midnight_TestBase is ForkTestBase {
         internal
         returns (uint256)
     {
-        (
-            Offer[]   memory offers,
-            bytes[]   memory ratifierData,
-            uint256[] memory unitsArray
-        ) = _batch(offer, units);
-
         vm.prank(allocator);
-        return mainnetController.midnight_buy(marketId, offers, ratifierData, unitsArray, maxAssetsIn);
+        return mainnetController.midnight_buy(marketId, _batch(offer, units), maxAssetsIn);
     }
 
     function _sell(Offer memory offer, uint256 units, uint256 minAssetsOut)
         internal
         returns (uint256)
     {
-        (
-            Offer[]   memory offers,
-            bytes[]   memory ratifierData,
-            uint256[] memory unitsArray
-        ) = _batch(offer, units);
-
         vm.prank(allocator);
-        return mainnetController.midnight_sell(marketId, offers, ratifierData, unitsArray, minAssetsOut);
+        return mainnetController.midnight_sell(marketId, _batch(offer, units), minAssetsOut);
     }
 
     function _redeem(uint256 units, uint256 minAssetsOut) internal returns (uint256) {
@@ -536,7 +531,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
     function test_buyMidnight_reentrancy() external {
         _setControllerEntered();
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
-        mainnetController.midnight_buy(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
+        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_buyMidnight_notAllocator() external {
@@ -545,7 +540,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
             address(this),
             ALLOCATOR_ROLE
         ));
-        mainnetController.midnight_buy(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
+        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_buyMidnight_buyNotEnabled() external {
@@ -567,20 +562,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
     function test_buyMidnight_emptyBatch() external {
         vm.expectRevert("MidnightFacet/empty-batch");
         vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
-    }
-
-    function test_buyMidnight_invalidBatchLength() external {
-        Offer[] memory offers = new Offer[](1);
-        offers[0] = _offer(false, TICK_98, seedUnits);
-
-        vm.expectRevert("MidnightFacet/invalid-batch-length");
-        vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, offers, new bytes[](2), new uint256[](1), 1);
-
-        vm.expectRevert("MidnightFacet/invalid-batch-length");
-        vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, offers, new bytes[](1), new uint256[](2), 1);
+        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_buyMidnight_invalidMidnight() external {
@@ -851,32 +833,23 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         uint256 expected = _buyerAssets(units1, TICK_98) + _buyerAssets(units2, TICK_99);
 
-        Offer[]   memory offers       = new Offer[](2);
-        bytes[]   memory ratifierData = new bytes[](2);
-        uint256[] memory unitsArray   = new uint256[](2);
+        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
 
-        offers[0] = _offer(false, TICK_98, units1);
-        offers[1] = _offer(false, TICK_99, units2);
-
-        ratifierData[0] = _ratifierData(offers[0]);
-        ratifierData[1] = _ratifierData(offers[1]);
-
-        unitsArray[0] = units1;
-        unitsArray[1] = units2;
+        fills[0] = _fill(_offer(false, TICK_98, units1), units1);
+        fills[1] = _fill(_offer(false, TICK_99, units2), units2);
 
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightBuy(marketId, units1 + units2, expected);
 
         vm.prank(allocator);
-        uint256 assetsSpent
-            = mainnetController.midnight_buy(marketId, offers, ratifierData, unitsArray, expected);
+        uint256 assetsSpent = mainnetController.midnight_buy(marketId, fills, expected);
 
         assertEq(assetsSpent,                                      expected);
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - expected);
         assertEq(_credit(),                                        units1 + units2);
-        assertEq(midnight.consumed(maker, offers[0].group),        units1);
-        assertEq(midnight.consumed(maker, offers[1].group),        units2);
+        assertEq(midnight.consumed(maker, fills[0].offer.group),   units1);
+        assertEq(midnight.consumed(maker, fills[1].offer.group),   units2);
         assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - expected);
     }
 
@@ -905,7 +878,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_reentrancy() external {
         _setControllerEntered();
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
-        mainnetController.midnight_sell(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
+        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_sellMidnight_notAllocator() external {
@@ -914,7 +887,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
             address(this),
             ALLOCATOR_ROLE
         ));
-        mainnetController.midnight_sell(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
+        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     // A non-zero minSellTick is what marks a market as onboarded, so only an unconfigured id
@@ -938,20 +911,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_emptyBatch() external {
         vm.expectRevert("MidnightFacet/empty-batch");
         vm.prank(allocator);
-        mainnetController.midnight_sell(marketId, new Offer[](0), new bytes[](0), new uint256[](0), 1);
-    }
-
-    function test_sellMidnight_invalidBatchLength() external {
-        Offer[] memory offers = new Offer[](1);
-        offers[0] = _offer(true, TICK_99, seedUnits);
-
-        vm.expectRevert("MidnightFacet/invalid-batch-length");
-        vm.prank(allocator);
-        mainnetController.midnight_sell(marketId, offers, new bytes[](2), new uint256[](1), 1);
-
-        vm.expectRevert("MidnightFacet/invalid-batch-length");
-        vm.prank(allocator);
-        mainnetController.midnight_sell(marketId, offers, new bytes[](1), new uint256[](2), 1);
+        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_sellMidnight_invalidMidnight() external {
@@ -1100,31 +1060,22 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_usdc_batchStopsWhenCreditRunsOut() external {
         uint256 expected = _sellerAssets(seedUnits, TICK_99);
 
-        Offer[]   memory offers       = new Offer[](2);
-        bytes[]   memory ratifierData = new bytes[](2);
-        uint256[] memory unitsArray   = new uint256[](2);
+        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
 
-        offers[0] = _offer(true, TICK_99, seedUnits);
-        offers[1] = _offer(true, TICK_99, seedUnits);
-
-        ratifierData[0] = _ratifierData(offers[0]);
-        ratifierData[1] = _ratifierData(offers[1]);
-
-        unitsArray[0] = seedUnits;
-        unitsArray[1] = seedUnits;
+        fills[0] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
+        fills[1] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
 
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightSell(marketId, seedUnits, expected);
 
         vm.prank(allocator);
-        uint256 assetsReceived
-            = mainnetController.midnight_sell(marketId, offers, ratifierData, unitsArray, expected);
+        uint256 assetsReceived = mainnetController.midnight_sell(marketId, fills, expected);
 
-        assertEq(assetsReceived,                            expected);
-        assertEq(_credit(),                                 0);
-        assertEq(midnight.debt(marketId, address(almProxy)), 0);
-        assertEq(midnight.consumed(maker, offers[0].group), seedUnits);
-        assertEq(midnight.consumed(maker, offers[1].group), 0);
+        assertEq(assetsReceived,                                 expected);
+        assertEq(_credit(),                                      0);
+        assertEq(midnight.debt(marketId, address(almProxy)),     0);
+        assertEq(midnight.consumed(maker, fills[0].offer.group), seedUnits);
+        assertEq(midnight.consumed(maker, fills[1].offer.group), 0);
     }
 
     // Slashing writes the position down, so the credit delta is measured against the new balance.
