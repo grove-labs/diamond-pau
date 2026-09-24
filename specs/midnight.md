@@ -131,7 +131,10 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   zero debt after the batch. The yield floor converges on par as maturity approaches, so a
   post-maturity sell only clears at par and a discounted dump against an available par
   redemption is refused; with a live settlement fee it does not clear at all, leaving
-  `redeem` as the exit.
+  `redeem` as the exit. That costs nothing: a sell nets the tick price less the settlement
+  fee while `redeem` pays par with no fee, so no post-maturity sell can beat redemption. No
+  configuration reopens a discounted exit either, since the floor at zero time to maturity
+  is par for every `maxSellYield`.
 - **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits,
   proxy, proxy, address(0), "")` via `doCall`, once per offer, with `offer.buy == true`.
   Reads
@@ -205,8 +208,11 @@ Declared deviations from the usual facet shape, each with rationale:
   Midnight fees are inside the comparison, so a fee change re-prices the bound instead of
   leaving it stale; within hours of maturity the sell floor plus the settlement fee can
   exceed par, which closes the sell leg until the fee falls or `maxSellYield` is widened.
+  Past maturity widening does not help, because the floor is par for every value.
   The arithmetic cannot overflow or underflow: upstream caps maturity 100 years
   out (`MaturityTooFar`) and the continuous fee at 1% a year, whose product stays below par.
+  That bound applies because the market is checked against `marketId` before the floor is
+  computed; a fabricated maturity would otherwise underflow it.
 - **Vendored structs and tick math.** `Market`, `Offer`, `CollateralParams`, `toId`
   and `tickToPrice` are copied verbatim into `MidnightUtils.sol` from the pinned commit,
   because the market id is a hash over `abi.encode(market)` and the price bound has to be
