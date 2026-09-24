@@ -45,7 +45,7 @@ Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
 **Flow:**
 
 1. Read the market config for `marketId`; revert `MidnightFacet/buy-not-enabled` if `maxBuyTick` is zero. Require `maxAssetsIn != 0` (`MidnightFacet/max-assets-in-not-set`) and a non-empty batch (`MidnightFacet/empty-batch`). Each `Fill` carries an offer, its ratifier data and its size together, so the three cannot be misaligned.
-2. Require `fills[0].offer.market.midnight == midnight` (`MidnightFacet/invalid-midnight`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
+2. Require `fills[0].offer.market.midnight == midnight` (`MidnightFacet/invalid-midnight`) and `toId(fills[0].offer.market) == marketId` (`MidnightFacet/market-mismatch`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue, and binding it to the id here keeps a fabricated maturity out of the bound arithmetic in step 4. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
 3. Require the market's `continuousFee`, a per-second rate, to be within `maxContinuousFee` converted out of its annual form (`MidnightFacet/continuous-fee-too-high`) and `lossFactor <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`). Entering crystallizes the continuous fee over the remaining term and buys into whatever loss has already been socialized, so both are entry-only gates.
 4. Resolve two price ceilings and apply both. The tick ceiling is `tickToPrice(maxBuyTick)`. The yield ceiling is `maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`: the highest all-in price that still earns `minBuyYield` basis points a year at simple interest over ACT/365, measured on what a unit returns (par less the continuous fee crystallized for the remaining term). Both are ceilings on the all-in price the proxy pays, the settlement fee is added to each offer's price before either comparison, and the stricter ceiling binds.
 5. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`.
@@ -95,7 +95,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 **Flow:**
 
-1. Require the market to be onboarded, `minSellTick != 0` (`MidnightFacet/market-not-onboarded`). Redemption reads no other config value; the onboarded config is what authenticates the id.
+1. Require the market to be onboarded, `minSellTick != 0` (`MidnightFacet/market-not-onboarded`). Redemption reads no other config value; the onboarded config is what authenticates the id. Require `minAssetsOut != 0` (`MidnightFacet/min-assets-out-not-set`), as on `sell`.
 2. Resolve the `Market` struct from the id on the singleton (`toMarket(marketId)`), so redemption never trusts a market from calldata.
 3. Cap `units` at both the proxy's live credit and the market's `withdrawable` amount (repaid, not yet withdrawn), then require the result to be non-zero (`MidnightFacet/zero-units`). Passing `type(uint256).max` redeems everything currently available.
 4. Snapshot the balance, `doCall` `midnight.withdraw(market, units, proxy, proxy)`, and measure `assetsWithdrawn` as the balance delta. Require `assetsWithdrawn >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
@@ -211,10 +211,10 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/sell-not-enabled`         | facet       | `sell` on a market whose `minSellTick` is zero                                            |
 | `MidnightFacet/market-not-onboarded`     | facet       | `redeem` on a market whose `minSellTick` is zero                                          |
 | `MidnightFacet/max-assets-in-not-set`    | facet       | `buy` with zero `maxAssetsIn`                                                             |
-| `MidnightFacet/min-assets-out-not-set`   | facet       | `sell` with zero `minAssetsOut`                                                           |
+| `MidnightFacet/min-assets-out-not-set`   | facet       | `sell` or `redeem` with zero `minAssetsOut`                                               |
 | `MidnightFacet/empty-batch`              | facet       | `buy`/`sell` with no offers                                                               |
 | `MidnightFacet/invalid-midnight`         | facet       | `fills[0].offer.market.midnight` is not the configured singleton                          |
-| `MidnightFacet/market-mismatch`          | facet       | an offer's market does not hash to `marketId`                                             |
+| `MidnightFacet/market-mismatch`          | facet       | `fills[0]`'s or any offer's market does not hash to `marketId`                            |
 | `MidnightFacet/invalid-offer-direction`  | facet       | a buy offer passed to `buy`, or a sell offer passed to `sell`                             |
 | `MidnightFacet/zero-units`               | facet       | a zero per-offer size, or a `redeem` that caps to nothing                                 |
 | `MidnightFacet/continuous-fee-too-high`  | facet       | `buy` while the market's continuous fee exceeds `maxContinuousFee`                        |
