@@ -107,7 +107,9 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   `offer.buy == false`. Reads
   `continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `debt` on the
   immutable singleton only. `fills[0].offer.market.midnight` must equal the immutable
-  singleton and every `fills[i].offer.market` must hash to `marketId`.
+  singleton and every `fills[i].offer.market` must hash to `marketId`; `fills[0]` is
+  checked before the price bounds are computed, so a fabricated maturity cannot reach the
+  bound arithmetic.
 - **Zero-amount semantics:** empty batch, zero `maxAssetsIn` and zero per-offer units
   all revert in the facet. Midnight itself would accept a zero
   take; the facet forbids it because a zero fill still runs the maker's callback.
@@ -145,13 +147,14 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
 - **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsWithdrawn)`.
-- **Loss bounds:** `minAssetsOut`; `units` capped at both the proxy's live credit and the
-  market's `withdrawable`; zero debt after the call. Redemption is at par, so no price
-  bound applies.
+- **Loss bounds:** `minAssetsOut` (non-zero); `units` capped at both the proxy's live
+  credit and the market's `withdrawable`; zero debt after the call. Redemption is at par,
+  so no price bound applies.
 - **External calls:** `midnight.toMarket(marketId)` to resolve the market from the id on
   the singleton (no market from calldata), then `midnight.withdraw(market, units, proxy,
   proxy)` via `doCall`.
-- **Zero-amount semantics:** a request that caps to zero reverts
+- **Zero-amount semantics:** a zero `minAssetsOut` reverts
+  (`MidnightFacet/min-assets-out-not-set`), and a request that caps to zero reverts
   (`MidnightFacet/zero-units`). `type(uint256).max` redeems everything currently
   available.
 
