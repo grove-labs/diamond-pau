@@ -40,16 +40,16 @@ Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
 
 ### Buy (enter, take makers' sell offers)
 
-**Function:** `buy(marketId, offers, ratifierData, units, maxAssetsIn) returns (assetsSpent)` (`ALLOCATOR_ROLE`)
+**Function:** `buy(marketId, fills, maxAssetsIn) returns (assetsSpent)` (`ALLOCATOR_ROLE`)
 
 **Flow:**
 
-1. Read the market config for `marketId`; revert `MidnightFacet/buy-not-enabled` if `maxBuyTick` is zero. Require `maxAssetsIn != 0` (`MidnightFacet/max-assets-in-not-set`) and a non-empty batch whose three arrays have equal length (`MidnightFacet/empty-batch`, `MidnightFacet/invalid-batch-length`).
-2. Require `offers[0].market.midnight == midnight` (`MidnightFacet/invalid-midnight`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
+1. Read the market config for `marketId`; revert `MidnightFacet/buy-not-enabled` if `maxBuyTick` is zero. Require `maxAssetsIn != 0` (`MidnightFacet/max-assets-in-not-set`) and a non-empty batch (`MidnightFacet/empty-batch`). Each `Fill` carries an offer, its ratifier data and its size together, so the three cannot be misaligned.
+2. Require `fills[0].offer.market.midnight == midnight` (`MidnightFacet/invalid-midnight`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
 3. Require the market's `continuousFee <= maxContinuousFee` (`MidnightFacet/continuous-fee-too-high`) and `lossFactor <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`). Entering crystallizes the continuous fee over the remaining term and buys into whatever loss has already been socialized, so both are entry-only gates.
 4. Resolve two price ceilings and apply both. The tick ceiling is `tickToPrice(maxBuyTick)`. The yield ceiling is `maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`: the highest all-in price that still earns `minBuyYield` basis points a year at simple interest over ACT/365, measured on what a unit returns (par less the continuous fee crystallized for the remaining term). Both are ceilings on the all-in price the proxy pays, the settlement fee is added to each offer's price before either comparison, and the stricter ceiling binds.
 5. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`.
-6. For each offer, in order: require `toId(offer.market) == marketId` (`MidnightFacet/market-mismatch`), `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units[i] != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) + settlementFee <= tickCeiling` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldCeiling` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)). Then `doCall` `midnight.take(offer, ratifierData[i], units[i], proxy, 0, 0, "")`.
+6. For each offer, in order: require `toId(offer.market) == marketId` (`MidnightFacet/market-mismatch`), `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `fills[i].units != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) + settlementFee <= tickCeiling` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldCeiling` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)). Then `doCall` `midnight.take(fills[i].offer, fills[i].ratifierData, fills[i].units, proxy, 0, 0, "")`.
 7. Reset the approval to zero in case Midnight did not pull the full amount.
 8. Measure `assetsSpent` as the ALMProxy balance delta rather than trusting the take return values, and require `assetsSpent <= maxAssetsIn` (`MidnightFacet/max-assets-in-exceeded`).
 9. Require the live credit to have grown by exactly the units taken (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`). Anything a maker callback did to market state during the batch surfaces here.
@@ -69,14 +69,14 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 ### Sell (exit early, take makers' buy offers)
 
-**Function:** `sell(marketId, offers, ratifierData, units, minAssetsOut) returns (assetsReceived)` (`ALLOCATOR_ROLE`)
+**Function:** `sell(marketId, fills, minAssetsOut) returns (assetsReceived)` (`ALLOCATOR_ROLE`)
 
 **Flow:**
 
 1. Read the market config; revert `MidnightFacet/sell-not-enabled` if `minSellTick` is zero. Require `minAssetsOut != 0` (`MidnightFacet/min-assets-out-not-set`) and a well-formed batch as for `buy`.
-2. Require `offers[0].market.midnight == midnight` (`MidnightFacet/invalid-midnight`), snapshot credit and balance.
+2. Require `fills[0].offer.market.midnight == midnight` (`MidnightFacet/invalid-midnight`), snapshot credit and balance.
 3. Resolve two price floors and apply both. The tick floor is `tickToPrice(minSellTick)`. The yield floor is `minSellPrice(maxSellYield, timeToMaturity, continuousFee)`: the lowest net price that gives up no more than `maxSellYield` basis points a year on the same ACT/365 basis as the buy leg. Selling receives the tick price less the fee, so `settlementFee(marketId, timeToMaturity)` is added to each floor before comparison, and the stricter floor binds.
-4. For each offer, in order: the same id, direction (`offer.buy == true`) and non-zero-units checks as `buy`, then `tickToPrice(offer.tick) >= tickFloor + settlementFee` (`MidnightFacet/sell-price-too-low`) and `tickToPrice(offer.tick) >= yieldFloor + settlementFee` (`MidnightFacet/sell-yield-too-high`). The per-offer size is capped at the proxy's **remaining live credit**; once credit is exhausted the rest of the batch is skipped rather than filled with debt. Then `doCall` `midnight.take(offer, ratifierData[i], cappedUnits, proxy, proxy, 0, "")`.
+4. For each offer, in order: the same id, direction (`offer.buy == true`) and non-zero-units checks as `buy`, then `tickToPrice(offer.tick) >= tickFloor + settlementFee` (`MidnightFacet/sell-price-too-low`) and `tickToPrice(offer.tick) >= yieldFloor + settlementFee` (`MidnightFacet/sell-yield-too-high`). The per-offer size is capped at the proxy's **remaining live credit**; once credit is exhausted the rest of the batch is skipped rather than filled with debt. Then `doCall` `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits, proxy, proxy, 0, "")`.
 5. Measure `assetsReceived` as the ALMProxy balance delta and require `assetsReceived >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
 6. Require the live credit to have shrunk by exactly the units sold (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`).
 7. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assetsReceived`, and `_tryIncreaseRateLimit` the buy key by the same amount (see [Try-Increase](./RATE_LIMITS.md#try-increase-not-gate-check): the refill silently no-ops when the buy key is unconfigured, and the buy key is not a precondition for exit).
@@ -173,7 +173,7 @@ An offer may name a `callback` contract with opaque `callbackData`; Midnight cal
 
 ### Ratifier Data Is Opaque
 
-`ratifierData[i]` is forwarded as-is to the **maker's** ratifier, which decides whether the offer is live. The facet validates outcomes (price bound, direction, id, deltas), not the offer's provenance; an offer that fails ratification reverts the batch inside Midnight.
+`fills[i].ratifierData` is forwarded as-is to the **maker's** ratifier, which decides whether the offer is live. The facet validates outcomes (price bound, direction, id, deltas), not the offer's provenance; an offer that fails ratification reverts the batch inside Midnight.
 
 ### Self-Paying Offers
 
@@ -211,8 +211,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/max-assets-in-not-set`    | facet       | `buy` with zero `maxAssetsIn`                                                             |
 | `MidnightFacet/min-assets-out-not-set`   | facet       | `sell` with zero `minAssetsOut`                                                           |
 | `MidnightFacet/empty-batch`              | facet       | `buy`/`sell` with no offers                                                               |
-| `MidnightFacet/invalid-batch-length`     | facet       | `offers`, `ratifierData` and `units` lengths differ                                       |
-| `MidnightFacet/invalid-midnight`         | facet       | `offers[0].market.midnight` is not the configured singleton                               |
+| `MidnightFacet/invalid-midnight`         | facet       | `fills[0].offer.market.midnight` is not the configured singleton                          |
 | `MidnightFacet/market-mismatch`          | facet       | an offer's market does not hash to `marketId`                                             |
 | `MidnightFacet/invalid-offer-direction`  | facet       | a buy offer passed to `buy`, or a sell offer passed to `sell`                             |
 | `MidnightFacet/zero-units`               | facet       | a zero per-offer size, or a `redeem` that caps to nothing                                 |
