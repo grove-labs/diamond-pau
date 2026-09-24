@@ -45,8 +45,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     uint16 internal constant CONTINUOUS_FEE = 1_00_00;
 
     // Basis points a year: a 1% floor on entries and a 10% ceiling on what an exit gives up.
-    uint16 internal constant MIN_BUY_YIELD  = 100;
-    uint16 internal constant MAX_SELL_YIELD = 1000;
+    uint16 internal constant MIN_BUY_YIELD  = 1_00;
+    uint16 internal constant MAX_SELL_YIELD = 10_00;
 
     bytes32 internal constant MARKET_ID = keccak256("market");
 

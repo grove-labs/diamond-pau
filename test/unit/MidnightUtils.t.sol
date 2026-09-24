@@ -166,20 +166,20 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
     // Five percent a year over exactly a year is par discounted by 1.05: floored for the buy
     // ceiling, ceilinged for the sell floor.
     function test_yieldPrice_anchors() external view {
-        assertEq(harness.maxBuyPrice(500, 365 days, 0),  952380952380952380);
-        assertEq(harness.minSellPrice(500, 365 days, 0), 952380952380952381);
+        assertEq(harness.maxBuyPrice(5_00, 365 days, 0),  952380952380952380);
+        assertEq(harness.minSellPrice(5_00, 365 days, 0), 952380952380952381);
     }
 
     // Pinned against an independent model of the same formula.
     function test_yieldPrice_modelAnchors() external view {
-        assertEq(harness.maxBuyPrice(100,   30 days, 0),  999178757185874623);
-        assertEq(harness.maxBuyPrice(400,  180 days, 0),  980655561526061257);
-        assertEq(harness.maxBuyPrice(1000, 360 days, 0),  910224438902743142);
-        assertEq(harness.minSellPrice(400, 180 days, 0),  980655561526061258);
-        assertEq(harness.minSellPrice(1000, 30 days, 0),  991847826086956522);
+        assertEq(harness.maxBuyPrice(1_00,   30 days, 0),  999178757185874623);
+        assertEq(harness.maxBuyPrice(4_00,  180 days, 0),  980655561526061257);
+        assertEq(harness.maxBuyPrice(10_00, 360 days, 0),  910224438902743142);
+        assertEq(harness.minSellPrice(4_00, 180 days, 0),  980655561526061258);
+        assertEq(harness.minSellPrice(10_00, 30 days, 0),  991847826086956522);
 
         assertEq(
-            harness.maxBuyPrice(400, 180 days, MidnightUtils.MAX_CONTINUOUS_FEE),
+            harness.maxBuyPrice(4_00, 180 days, MidnightUtils.MAX_CONTINUOUS_FEE),
             975819451920351638
         );
     }
@@ -210,8 +210,8 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
 
     // With no term left there is no yield to earn or give up, so both bounds collapse onto par.
     function test_yieldPrice_zeroTimeToMaturity() external view {
-        assertEq(harness.maxBuyPrice(5000, 0, MidnightUtils.MAX_CONTINUOUS_FEE),  1e18);
-        assertEq(harness.minSellPrice(5000, 0, MidnightUtils.MAX_CONTINUOUS_FEE), 1e18);
+        assertEq(harness.maxBuyPrice(50_00, 0, MidnightUtils.MAX_CONTINUOUS_FEE),  1e18);
+        assertEq(harness.minSellPrice(50_00, 0, MidnightUtils.MAX_CONTINUOUS_FEE), 1e18);
     }
 
     // A zero bound is not a disabled bound: it still refuses a price above what a unit pays back.
@@ -225,8 +225,10 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
     function test_yieldPrice_netsContinuousFee() external view {
         uint256 fee = MidnightUtils.MAX_CONTINUOUS_FEE;
 
-        assertLt(harness.maxBuyPrice(400, 180 days, fee),  harness.maxBuyPrice(400, 180 days, 0));
-        assertLt(harness.minSellPrice(400, 180 days, fee), harness.minSellPrice(400, 180 days, 0));
+        uint256 term = 180 days;
+
+        assertLt(harness.maxBuyPrice(4_00, term, fee),  harness.maxBuyPrice(4_00, term, 0));
+        assertLt(harness.minSellPrice(4_00, term, fee), harness.minSellPrice(4_00, term, 0));
     }
 
     // Upstream caps maturity a hundred years out and the continuous fee at one percent a year, so
@@ -262,8 +264,8 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         timeToMaturity = bound(timeToMaturity, 1, MAX_TIME_TO_MATURITY);
 
         assertLe(
-            harness.maxBuyPrice(400, timeToMaturity, 0),
-            harness.maxBuyPrice(400, timeToMaturity - 1, 0)
+            harness.maxBuyPrice(4_00, timeToMaturity, 0),
+            harness.maxBuyPrice(4_00, timeToMaturity - 1, 0)
         );
     }
 
