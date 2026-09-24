@@ -48,7 +48,8 @@ interface IMidnightFacet is IFacet {
      * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
      * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
      * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
-     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (per second, WAD).
+     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
+     *                          a year).
      * @param  maxLossFactor    Highest market loss factor a buy tolerates (fraction of
      *                          `type(uint128).max`).
      */
@@ -57,7 +58,7 @@ interface IMidnightFacet is IFacet {
         uint16  minSellTick;
         uint16  minBuyYield;
         uint16  maxSellYield;
-        uint32  maxContinuousFee;
+        uint16  maxContinuousFee;
         uint128 maxLossFactor;
     }
 
@@ -80,7 +81,8 @@ interface IMidnightFacet is IFacet {
      * @param  minSellTick      Lowest offer tick a sell may accept.
      * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
      * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
-     * @param  maxContinuousFee Highest market continuous fee a buy tolerates.
+     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
+     *                          a year).
      * @param  maxLossFactor    Highest market loss factor a buy tolerates.
      */
     event MidnightMarketConfigSet(
@@ -89,7 +91,7 @@ interface IMidnightFacet is IFacet {
         uint16          minSellTick,
         uint16          minBuyYield,
         uint16          maxSellYield,
-        uint32          maxContinuousFee,
+        uint16          maxContinuousFee,
         uint128         maxLossFactor
     );
 

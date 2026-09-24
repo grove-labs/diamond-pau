@@ -61,6 +61,7 @@ library MidnightUtils {
     uint256 internal constant WAD           = 1e18;
     uint256 internal constant YEAR          = 365 days;
     uint256 internal constant YIELD_BP_RATE = 1e14;  // one basis point per year, WAD
+    uint256 internal constant FEE_CBP_RATE  = 1e12;  // one centi-basis point per year, WAD
 
     // upstream: src/libraries/IdLib.sol#L23
     // Creation code prefix that deploys the appended data as runtime bytecode.
@@ -107,6 +108,13 @@ library MidnightUtils {
         unchecked {
             return (x + (d - 1) / 2) / d;
         }
+    }
+
+    // Not vendored: governance names the continuous fee ceiling as an annual rate, while the
+    // market stores it per second and charges it over the remaining term. Floors, so the
+    // effective ceiling never exceeds the rate governance named.
+    function continuousFeePerSecond(uint256 cbpsPerYear) internal pure returns (uint256) {
+        return cbpsPerYear * FEE_CBP_RATE / YEAR;
     }
 
     // Not vendored, no upstream counterpart: Midnight bounds trades in price space, so a yield

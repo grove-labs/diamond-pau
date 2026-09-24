@@ -146,7 +146,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/min-sell-tick-oob"
         );
         require(
-            config.maxContinuousFee <= MidnightUtils.MAX_CONTINUOUS_FEE,
+            MidnightUtils.continuousFeePerSecond(config.maxContinuousFee)
+                <= MidnightUtils.MAX_CONTINUOUS_FEE,
             "MidnightFacet/max-continuous-fee-oob"
         );
         // A zero sell yield ceiling would only clear at par and brick the exit, so onboarding has
@@ -193,7 +194,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Entering crystallizes the continuous fee over the remaining term, so it is checked up
         // front. A non-zero loss factor means this market's lenders have already been slashed.
         require(
-            ctx.continuousFee <= config.maxContinuousFee,
+            ctx.continuousFee <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
             "MidnightFacet/continuous-fee-too-high"
         );
         require(

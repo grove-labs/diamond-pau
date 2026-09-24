@@ -184,7 +184,10 @@ abstract contract Midnight_TestBase is ForkTestBase {
     uint16 internal constant TICK_98 = 4152;  // ~0.98
     uint16 internal constant TICK_99 = 4384;  // ~0.99
 
-    uint32 internal constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
+    // Midnight stores the continuous fee per second and caps it at one percent a year, which the
+    // config names as an annual rate in centi-basis points.
+    uint32 internal constant MAX_CONTINUOUS_FEE      = uint32(uint256(0.01e18) / uint256(365 days));
+    uint16 internal constant MAX_CONTINUOUS_FEE_CBPS = 1_00_00;
 
     // Basis points a year. Both rails are live in every suite: at the 180 day term the entry floor
     // allows anything up to ~0.995 and the exit ceiling anything down to ~0.953, so the tick
@@ -284,7 +287,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
             minSellTick      : TICK_98,
             minBuyYield      : MIN_BUY_YIELD,
             maxSellYield     : MAX_SELL_YIELD,
-            maxContinuousFee : MAX_CONTINUOUS_FEE,
+            maxContinuousFee : MAX_CONTINUOUS_FEE_CBPS,
             maxLossFactor    : 0
         }));
 
@@ -381,7 +384,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
     function _setConfig(
         uint16  maxBuyTick,
         uint16  minSellTick,
-        uint32  maxContinuousFee,
+        uint16  maxContinuousFee,
         uint128 maxLossFactor
     )
         internal
@@ -396,7 +399,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
         uint16  minSellTick,
         uint16  minBuyYield,
         uint16  maxSellYield,
-        uint32  maxContinuousFee,
+        uint16  maxContinuousFee,
         uint128 maxLossFactor
     )
         internal
@@ -413,7 +416,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
     }
 
     function _setYields(uint16 minBuyYield, uint16 maxSellYield) internal {
-        _setConfig(TICK_99, TICK_98, minBuyYield, maxSellYield, MAX_CONTINUOUS_FEE, 0);
+        _setConfig(TICK_99, TICK_98, minBuyYield, maxSellYield, MAX_CONTINUOUS_FEE_CBPS, 0);
     }
 
     // Buys units into the proxy at TICK_98 with no fees, so the exit paths have a position.
@@ -544,7 +547,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
     }
 
     function test_buyMidnight_buyNotEnabled() external {
-        _setConfig(0, TICK_98, MAX_CONTINUOUS_FEE, 0);
+        _setConfig(0, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
@@ -619,7 +622,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         marketId = MidnightUtils.toId(offer.market);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE, 0);
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
         _buy(offer, seedUnits, type(uint256).max);
@@ -660,17 +663,21 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
     }
 
+    // The config names an annual rate while the market stores a per second one, so the guard binds
+    // on the converted value. Held off the ceiling so the market can be moved either side of it.
     function test_buyMidnight_usdc_continuousFeeBoundary() external {
-        _setContinuousFee(MAX_CONTINUOUS_FEE);
+        uint16  cap    = MAX_CONTINUOUS_FEE_CBPS / 2;
+        uint256 perSec = MidnightUtils.continuousFeePerSecond(cap);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE - 1, 0);
+        _setConfig(TICK_99, TICK_98, cap, 0);
+        _setContinuousFee(perSec + 1);
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
         vm.expectRevert("MidnightFacet/continuous-fee-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE, 0);
+        _setContinuousFee(perSec);
 
         _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
     }
@@ -689,12 +696,12 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/loss-factor-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE, lossFactor - 1);
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, lossFactor - 1);
 
         vm.expectRevert("MidnightFacet/loss-factor-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE, lossFactor);
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, lossFactor);
 
         _buy(offer, seedUnits, type(uint256).max);
     }
@@ -708,14 +715,14 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         uint16 tick = 0;
         while (MidnightUtils.tickToPrice(tick) < SETTLEMENT_FEE) tick++;
 
-        _setConfig(tick - 1, TICK_98, MAX_CONTINUOUS_FEE, 0);
+        _setConfig(tick - 1, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         Offer memory offer = _offer(false, 0, seedUnits);
 
         vm.expectRevert("MidnightFacet/buy-price-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _setConfig(tick, TICK_98, MAX_CONTINUOUS_FEE, 0);
+        _setConfig(tick, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         _buy(_offer(false, 0, seedUnits), seedUnits, type(uint256).max);
     }

@@ -41,7 +41,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     uint16 internal constant TICK_98 = 4152;
     uint16 internal constant TICK_99 = 4384;
 
-    uint32 internal constant CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
+    // Centi-basis points a year, grouped as percent_bp_cbp. This is Midnight's own ceiling.
+    uint16 internal constant CONTINUOUS_FEE = 1_00_00;
 
     // Basis points a year: a 1% floor on entries and a 10% ceiling on what an exit gives up.
     uint16 internal constant MIN_BUY_YIELD  = 100;
@@ -104,7 +105,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.updateIntegrations(integrationIds);
     }
 
-    function _config(uint16 maxBuyTick, uint16 minSellTick, uint32 maxContinuousFee)
+    function _config(uint16 maxBuyTick, uint16 minSellTick, uint16 maxContinuousFee)
         internal
         pure
         returns (IMidnightFacet.MarketConfig memory)
@@ -125,7 +126,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         uint16  minSellTick,
         uint16  minBuyYield,
         uint16  maxSellYield,
-        uint32  maxContinuousFee,
+        uint16  maxContinuousFee,
         uint128 maxLossFactor
     )
         internal
@@ -212,14 +213,12 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function test_setMarketConfig_maxContinuousFeeOutOfBoundsBoundary() external {
-        uint32 maxFee = uint32(MidnightUtils.MAX_CONTINUOUS_FEE);
-
         vm.expectRevert("MidnightFacet/max-continuous-fee-oob");
         vm.prank(admin);
-        controller.setMarketConfig(MARKET_ID, _config(TICK_99, TICK_98, maxFee + 1));
+        controller.setMarketConfig(MARKET_ID, _config(TICK_99, TICK_98, CONTINUOUS_FEE + 1));
 
         vm.prank(admin);
-        controller.setMarketConfig(MARKET_ID, _config(TICK_99, TICK_98, maxFee));
+        controller.setMarketConfig(MARKET_ID, _config(TICK_99, TICK_98, CONTINUOUS_FEE));
     }
 
     function test_setMarketConfig_maxSellYieldZero() external {
