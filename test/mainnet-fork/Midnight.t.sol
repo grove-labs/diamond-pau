@@ -717,8 +717,9 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(offer, seedUnits, type(uint256).max);
     }
 
-    // The all-in bound has to leave room for the fee. At the lowest tick that does, the only
-    // offers left under it price at zero, so the proxy pays the fee alone.
+    // The ceiling binds on the all-in cost, so a maxBuyTick priced under the fee leaves nothing
+    // fillable. At the lowest tick that clears it, only offers priced at zero fit and the proxy
+    // pays the fee alone.
     function test_buyMidnight_usdc_maxBuyTickBelowFeeBoundary() external {
         _setSettlementFee(SETTLEMENT_FEE);
 
@@ -729,7 +730,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, 0, seedUnits);
 
-        vm.expectRevert("MidnightFacet/max-buy-tick-below-fee");
+        vm.expectRevert("MidnightFacet/buy-price-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
         _setConfig(tick, TICK_98, MAX_CONTINUOUS_FEE, 0);

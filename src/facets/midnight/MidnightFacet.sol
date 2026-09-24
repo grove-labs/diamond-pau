@@ -91,8 +91,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
         uint256 timeToMaturity;
         uint256 settlementFee;
         uint256 continuousFee;
-        uint256 tickPriceBound;   // Fee-adjusted: a ceiling when buying, a floor when selling.
-        uint256 yieldPriceBound;  // Same shape, with the fee applied per offer instead.
+        uint256 tickPriceBound;   // Ceiling when buying, floor when selling; fee applied per offer.
+        uint256 yieldPriceBound;  // Same shape, derived from the yield rail.
         uint256 creditCap;        // Sellable position, ignored when buying.
         uint256 creditBefore;
         uint256 balanceBefore;
@@ -204,14 +204,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/loss-factor-too-high"
         );
 
-        // The bound is on the all-in price, so the settlement fee is reserved out of it up front.
-        {
-            uint256 maxPrice = MidnightUtils.tickToPrice(config.maxBuyTick);
-
-            require(maxPrice >= ctx.settlementFee, "MidnightFacet/max-buy-tick-below-fee");
-
-            ctx.tickPriceBound = maxPrice - ctx.settlementFee;
-        }
+        ctx.tickPriceBound = MidnightUtils.tickToPrice(config.maxBuyTick);
 
         // The yield floor prices both fees in, so it moves with the term left on the market.
         ctx.yieldPriceBound =
@@ -315,9 +308,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         TakeContext memory ctx = _takeContext(marketId, offers[0].market, true);
 
-        // Selling receives the tick price less the settlement fee, so the fee is added onto the
-        // bound.
-        ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick) + ctx.settlementFee;
+        ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick);
 
         // The yield ceiling converges on par as maturity approaches, so a late exit has to be
         // priced like the redemption it is competing with.
@@ -405,7 +396,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
             uint256 takeUnits = units[i];
 
             if (ctx.selling) {
-                require(price >= ctx.tickPriceBound, "MidnightFacet/sell-price-too-low");
+                // The fee is taken out of the proceeds, so both floors bind on the gross price.
+                require(
+                    price >= ctx.tickPriceBound + ctx.settlementFee,
+                    "MidnightFacet/sell-price-too-low"
+                );
                 require(
                     price >= ctx.yieldPriceBound + ctx.settlementFee,
                     "MidnightFacet/sell-yield-too-high"
@@ -417,7 +412,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
                 ctx.creditCap -= takeUnits;
             } else {
-                require(price <= ctx.tickPriceBound, "MidnightFacet/buy-price-too-high");
+                // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
+                require(
+                    price + ctx.settlementFee <= ctx.tickPriceBound,
+                    "MidnightFacet/buy-price-too-high"
+                );
                 require(
                     price + ctx.settlementFee <= ctx.yieldPriceBound,
                     "MidnightFacet/buy-yield-too-low"
