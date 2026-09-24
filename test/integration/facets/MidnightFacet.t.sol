@@ -43,6 +43,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
     uint32 internal constant CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
 
+    // Basis points a year: a 1% floor on entries and a 10% ceiling on what an exit gives up.
+    uint16 internal constant MIN_BUY_YIELD  = 100;
+    uint16 internal constant MAX_SELL_YIELD = 1000;
+
     bytes32 internal constant MARKET_ID = keccak256("market");
 
     address internal midnight = makeAddr("midnight");
@@ -108,6 +112,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         return IMidnightFacet.MarketConfig({
             maxBuyTick       : maxBuyTick,
             minSellTick      : minSellTick,
+            minBuyYield      : MIN_BUY_YIELD,
+            maxSellYield     : MAX_SELL_YIELD,
             maxContinuousFee : maxContinuousFee,
             maxLossFactor    : 0
         });
@@ -117,6 +123,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         bytes32 marketId,
         uint16  maxBuyTick,
         uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
         uint32  maxContinuousFee,
         uint128 maxLossFactor
     )
@@ -127,6 +135,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertEq(config.maxBuyTick,       maxBuyTick);
         assertEq(config.minSellTick,      minSellTick);
+        assertEq(config.minBuyYield,      minBuyYield);
+        assertEq(config.maxSellYield,     maxSellYield);
         assertEq(config.maxContinuousFee, maxContinuousFee);
         assertEq(config.maxLossFactor,    maxLossFactor);
     }
@@ -212,34 +222,65 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setMarketConfig(MARKET_ID, _config(TICK_99, TICK_98, maxFee));
     }
 
+    function test_setMarketConfig_maxSellYieldZero() external {
+        vm.expectRevert("MidnightFacet/max-sell-yield-not-set");
+        vm.prank(admin);
+        controller.setMarketConfig(MARKET_ID, IMidnightFacet.MarketConfig({
+            maxBuyTick       : TICK_99,
+            minSellTick      : TICK_98,
+            minBuyYield      : MIN_BUY_YIELD,
+            maxSellYield     : 0,
+            maxContinuousFee : CONTINUOUS_FEE,
+            maxLossFactor    : 0
+        }));
+    }
+
     function test_setMarketConfig() external {
-        _assertConfig(MARKET_ID, 0, 0, 0, 0);
+        _assertConfig(MARKET_ID, 0, 0, 0, 0, 0, 0);
 
         vm.record();
 
         vm.expectEmit(address(controller));
-        emit IMidnightFacet.MidnightMarketConfigSet(MARKET_ID, TICK_99, TICK_98, CONTINUOUS_FEE, 1);
+        emit IMidnightFacet.MidnightMarketConfigSet(
+            MARKET_ID,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            CONTINUOUS_FEE,
+            1
+        );
 
         vm.prank(admin);
         controller.setMarketConfig(MARKET_ID, IMidnightFacet.MarketConfig({
             maxBuyTick       : TICK_99,
             minSellTick      : TICK_98,
+            minBuyYield      : MIN_BUY_YIELD,
+            maxSellYield     : MAX_SELL_YIELD,
             maxContinuousFee : CONTINUOUS_FEE,
             maxLossFactor    : 1
         }));
 
         _assertReentrancyGuardWrittenToTwice(address(controller));
 
-        _assertConfig(MARKET_ID, TICK_99, TICK_98, CONTINUOUS_FEE, 1);
+        _assertConfig(MARKET_ID, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 1);
 
-        // A zero maxBuyTick closes entries while keeping the exits onboarded.
+        // A zero maxBuyTick closes entries while keeping the exits onboarded, and a zero buy yield
+        // floor is the loosest entry bound that still refuses to pay above par.
         vm.expectEmit(address(controller));
-        emit IMidnightFacet.MidnightMarketConfigSet(MARKET_ID, 0, TICK_98, 0, 0);
+        emit IMidnightFacet.MidnightMarketConfigSet(MARKET_ID, 0, TICK_98, 0, MAX_SELL_YIELD, 0, 0);
 
         vm.prank(admin);
-        controller.setMarketConfig(MARKET_ID, _config(0, TICK_98, 0));
+        controller.setMarketConfig(MARKET_ID, IMidnightFacet.MarketConfig({
+            maxBuyTick       : 0,
+            minSellTick      : TICK_98,
+            minBuyYield      : 0,
+            maxSellYield     : MAX_SELL_YIELD,
+            maxContinuousFee : 0,
+            maxLossFactor    : 0
+        }));
 
-        _assertConfig(MARKET_ID, 0, TICK_98, 0, 0);
+        _assertConfig(MARKET_ID, 0, TICK_98, 0, MAX_SELL_YIELD, 0, 0);
     }
 
     function test_setMarketConfig_perMarket() external {
@@ -251,8 +292,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.stopPrank();
 
         // Each market keeps its own config.
-        _assertConfig(MARKET_ID,     TICK_99, TICK_98, CONTINUOUS_FEE, 0);
-        _assertConfig(otherMarketId, TICK_98, TICK_98, 0,              0);
+        _assertConfig(
+            MARKET_ID, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
+        );
+        _assertConfig(otherMarketId, TICK_98, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, 0, 0);
     }
 
     /**********************************************************************************************/

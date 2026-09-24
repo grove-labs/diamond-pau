@@ -24,8 +24,16 @@ interface IMidnightFacet is IFacet {
      * @dev    `maxBuyTick == 0` disables entry. `minSellTick != 0` marks the market as onboarded
      *         and gates sell and redeem; it is an exit price floor and has to stay reachable
      *         (below par net of the settlement fee). The fee and loss guards only apply to entry.
+     * @dev    Each leg is bounded twice, by an absolute price tick and by an implied yield, and
+     *         the stricter of the two binds. The yield bounds are in basis points a year, simple
+     *         interest over ACT/365, measured on the all-in cash flow: both the settlement fee
+     *         and the continuous fee crystallized over the remaining term are inside the
+     *         comparison. They tighten towards par as maturity approaches, so at maturity a sell
+     *         only clears at par. `minBuyYield == 0` still bars paying above what a unit returns.
      * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
      * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
+     * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
+     * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
      * @param  maxContinuousFee Highest market continuous fee a buy tolerates (per second, WAD).
      * @param  maxLossFactor    Highest market loss factor a buy tolerates (fraction of
      *                          `type(uint128).max`).
@@ -33,6 +41,8 @@ interface IMidnightFacet is IFacet {
     struct MarketConfig {
         uint16  maxBuyTick;
         uint16  minSellTick;
+        uint16  minBuyYield;
+        uint16  maxSellYield;
         uint32  maxContinuousFee;
         uint128 maxLossFactor;
     }
@@ -54,6 +64,8 @@ interface IMidnightFacet is IFacet {
      * @param  marketId         Identifier of the Midnight market.
      * @param  maxBuyTick       Highest offer tick a buy may pay.
      * @param  minSellTick      Lowest offer tick a sell may accept.
+     * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
+     * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
      * @param  maxContinuousFee Highest market continuous fee a buy tolerates.
      * @param  maxLossFactor    Highest market loss factor a buy tolerates.
      */
@@ -61,6 +73,8 @@ interface IMidnightFacet is IFacet {
         bytes32 indexed marketId,
         uint16          maxBuyTick,
         uint16          minSellTick,
+        uint16          minBuyYield,
+        uint16          maxSellYield,
         uint32          maxContinuousFee,
         uint128         maxLossFactor
     );
@@ -88,10 +102,11 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Buys credit units by taking makers' sell offers on one Midnight market.
      * @dev    Every offer must name the configured Midnight venue, hash to `marketId`, be a sell
-     *         offer, and price at or below the configured `maxBuyTick` net of the current
-     *         settlement fee. Reverts if the market's continuous fee or loss factor exceeds the
-     *         configured tolerances, or if the market has never been touched on Midnight. The
-     *         rate limit is decreased by the loan token actually spent.
+     *         offer, price at or below the configured `maxBuyTick` net of the current settlement
+     *         fee, and clear `minBuyYield` once the settlement fee and the continuous fee for the
+     *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
+     *         exceeds the configured tolerances, or if the market has never been touched on
+     *         Midnight. The rate limit is decreased by the loan token actually spent.
      * @param  marketId     Identifier of the Midnight market.
      * @param  offers       Makers' sell offers to take, in order.
      * @param  ratifierData Per-offer opaque data forwarded to each maker's ratifier.
@@ -127,11 +142,11 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Sells credit units by taking makers' buy offers on one Midnight market.
      * @dev    Every offer must name the configured Midnight venue, hash to `marketId`, be a buy
-     *         offer, and price at or above the configured `minSellTick` plus the current
-     *         settlement fee. Per-offer units are
-     *         capped at the proxy's remaining live credit; the batch stops once credit runs out.
-     *         The rate limit is decreased by the loan token actually received, and the same
-     *         amount is restored on the buy limit when one is configured.
+     *         offer, price at or above the configured `minSellTick` plus the current settlement
+     *         fee, and give up no more than `maxSellYield` measured on the proceeds net of that
+     *         fee. Per-offer units are capped at the proxy's remaining live credit; the batch
+     *         stops once credit runs out. The rate limit is decreased by the loan token actually
+     *         received, and the same amount is restored on the buy limit when one is configured.
      * @param  marketId       Identifier of the Midnight market.
      * @param  offers         Makers' buy offers to take, in order.
      * @param  ratifierData   Per-offer opaque data forwarded to each maker's ratifier.
@@ -152,8 +167,9 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Sets the governance limits for a Midnight market.
      * @dev    Reverts unless `maxBuyTick` and `minSellTick` are within Midnight's tick range,
-     *         `minSellTick` is non-zero, and `maxContinuousFee` is within Midnight's ceiling.
-     *         Setting `maxBuyTick` to zero blocks new entries while leaving exits open.
+     *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
+     *         Midnight's ceiling. Setting `maxBuyTick` to zero blocks new entries while leaving
+     *         exits open.
      * @param  marketId Identifier of the Midnight market.
      * @param  config   New limits.
      */

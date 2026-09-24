@@ -57,6 +57,11 @@ library MidnightUtils {
     // upstream: src/libraries/ConstantsLib.sol#L18
     uint32 internal constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
 
+    // Not vendored: the units the facet's yield bounds are expressed in.
+    uint256 internal constant WAD           = 1e18;
+    uint256 internal constant YEAR          = 365 days;
+    uint256 internal constant YIELD_BP_RATE = 1e14;  // one basis point per year, WAD
+
     // upstream: src/libraries/IdLib.sol#L23
     // Creation code prefix that deploys the appended data as runtime bytecode.
     bytes internal constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
@@ -102,6 +107,48 @@ library MidnightUtils {
         unchecked {
             return (x + (d - 1) / 2) / d;
         }
+    }
+
+    // Not vendored, no upstream counterpart: Midnight bounds trades in price space, so a yield
+    // bound has to be turned into the price it implies at the current time to maturity. Simple
+    // interest, ACT/365, over what a unit actually returns: par less the continuous fee
+    // crystallized for the remaining term (upstream: src/Midnight.sol#L417).
+
+    // Highest all-in price a buy can pay and still earn `minYield` basis points a year.
+    function maxBuyPrice(uint256 minYield, uint256 timeToMaturity, uint256 continuousFee)
+        internal
+        pure
+        returns (uint256)
+    {
+        return _yieldPrice(minYield, timeToMaturity, continuousFee, false);
+    }
+
+    // Lowest net price a sell can accept and still give up at most `maxYield` basis points a year.
+    function minSellPrice(uint256 maxYield, uint256 timeToMaturity, uint256 continuousFee)
+        internal
+        pure
+        returns (uint256)
+    {
+        return _yieldPrice(maxYield, timeToMaturity, continuousFee, true);
+    }
+
+    // Rounds against the caller: down for the buy ceiling, up for the sell floor.
+    function _yieldPrice(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 continuousFee,
+        bool    roundUp
+    )
+        private
+        pure
+        returns (uint256)
+    {
+        // Upstream caps maturity 100 years out and the continuous fee at one percent a year, so
+        // the crystallized fee stays below par.
+        uint256 numerator   = (WAD - continuousFee * timeToMaturity) * YEAR * WAD;
+        uint256 denominator = YEAR * WAD + yieldBp * YIELD_BP_RATE * timeToMaturity;
+
+        return roundUp ? (numerator + denominator - 1) / denominator : numerator / denominator;
     }
 
     // upstream: src/libraries/TickLib.sol#L24-L48

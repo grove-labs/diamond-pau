@@ -88,8 +88,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
         bytes32 marketId;
         Market  market;
         bool    selling;
-        uint256 tickPriceBound;  // Fee-adjusted: a ceiling when buying, a floor when selling.
-        uint256 creditCap;       // Sellable position, ignored when buying.
+        uint256 timeToMaturity;
+        uint256 settlementFee;
+        uint256 continuousFee;
+        uint256 tickPriceBound;   // Fee-adjusted: a ceiling when buying, a floor when selling.
+        uint256 yieldPriceBound;  // Same shape, with the fee applied per offer instead.
+        uint256 creditCap;        // Sellable position, ignored when buying.
         uint256 creditBefore;
         uint256 balanceBefore;
         uint256 totalUnits;
@@ -145,6 +149,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
             config.maxContinuousFee <= MidnightUtils.MAX_CONTINUOUS_FEE,
             "MidnightFacet/max-continuous-fee-oob"
         );
+        // A zero sell yield ceiling would only clear at par and brick the exit, so onboarding has
+        // to name one; a zero buy yield floor still bars paying more than a unit returns.
+        require(config.maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
 
         _getFacetStorage().marketConfigs[marketId] = config;
 
@@ -152,6 +159,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
             marketId,
             config.maxBuyTick,
             config.minSellTick,
+            config.minBuyYield,
+            config.maxSellYield,
             config.maxContinuousFee,
             config.maxLossFactor
         );
@@ -187,7 +196,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Entering crystallizes the continuous fee over the remaining term, so it is checked up
         // front. A non-zero loss factor means this market's lenders have already been slashed.
         require(
-            IMidnightLike(midnight).continuousFee(marketId) <= config.maxContinuousFee,
+            ctx.continuousFee <= config.maxContinuousFee,
             "MidnightFacet/continuous-fee-too-high"
         );
         require(
@@ -198,12 +207,15 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // The bound is on the all-in price, so the settlement fee is reserved out of it up front.
         {
             uint256 maxPrice = MidnightUtils.tickToPrice(config.maxBuyTick);
-            uint256 fee      = _settlementFee(marketId, ctx.market.maturity);
 
-            require(maxPrice >= fee, "MidnightFacet/max-buy-tick-below-fee");
+            require(maxPrice >= ctx.settlementFee, "MidnightFacet/max-buy-tick-below-fee");
 
-            ctx.tickPriceBound = maxPrice - fee;
+            ctx.tickPriceBound = maxPrice - ctx.settlementFee;
         }
+
+        // The yield floor prices both fees in, so it moves with the term left on the market.
+        ctx.yieldPriceBound =
+            MidnightUtils.maxBuyPrice(config.minBuyYield, ctx.timeToMaturity, ctx.continuousFee);
 
         // The proxy is Midnight's payer for the whole batch.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, maxAssetsIn);
@@ -305,9 +317,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // Selling receives the tick price less the settlement fee, so the fee is added onto the
         // bound.
-        ctx.tickPriceBound =
-            MidnightUtils.tickToPrice(config.minSellTick)
-            + _settlementFee(marketId, ctx.market.maturity);
+        ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick) + ctx.settlementFee;
+
+        // The yield ceiling converges on par as maturity approaches, so a late exit has to be
+        // priced like the redemption it is competing with.
+        ctx.yieldPriceBound =
+            MidnightUtils.minSellPrice(config.maxSellYield, ctx.timeToMaturity, ctx.continuousFee);
 
         ctx.creditCap = ctx.creditBefore;
 
@@ -391,6 +406,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
             if (ctx.selling) {
                 require(price >= ctx.tickPriceBound, "MidnightFacet/sell-price-too-low");
+                require(
+                    price >= ctx.yieldPriceBound + ctx.settlementFee,
+                    "MidnightFacet/sell-yield-too-high"
+                );
 
                 // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
                 if (takeUnits > ctx.creditCap) takeUnits = ctx.creditCap;
@@ -399,6 +418,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
                 ctx.creditCap -= takeUnits;
             } else {
                 require(price <= ctx.tickPriceBound, "MidnightFacet/buy-price-too-high");
+                require(
+                    price + ctx.settlementFee <= ctx.yieldPriceBound,
+                    "MidnightFacet/buy-yield-too-low"
+                );
 
                 // Paying ourselves would net the transfer to zero and hide the spend from the rate
                 // limit.
@@ -460,19 +483,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // it names that venue. The id check in the take loop then binds the rest of the config.
         require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
 
-        ctx.proxy         = _getSharedControllerStorage().proxy;
-        ctx.marketId      = marketId;
-        ctx.market        = market;
-        ctx.selling       = selling;
-        ctx.creditBefore  = _credit(ctx.market, marketId, ctx.proxy);
-        ctx.balanceBefore = IERC20Like(market.loanToken).balanceOf(ctx.proxy);
-    }
-
-    // Reverts on a market that has never been touched (`touchMarket`, permissionless, once).
-    function _settlementFee(bytes32 marketId, uint256 maturity) internal view returns (uint256) {
-        uint256 timeToMaturity = maturity > block.timestamp ? maturity - block.timestamp : 0;
-
-        return IMidnightLike(midnight).settlementFee(marketId, timeToMaturity);
+        ctx.proxy          = _getSharedControllerStorage().proxy;
+        ctx.marketId       = marketId;
+        ctx.market         = market;
+        ctx.selling        = selling;
+        ctx.timeToMaturity = market.maturity > block.timestamp
+            ? market.maturity - block.timestamp
+            : 0;
+        // Reverts on a market that has never been touched (`touchMarket`, permissionless, once).
+        ctx.settlementFee  = IMidnightLike(midnight).settlementFee(marketId, ctx.timeToMaturity);
+        ctx.continuousFee  = IMidnightLike(midnight).continuousFee(marketId);
+        ctx.creditBefore   = _credit(ctx.market, marketId, ctx.proxy);
+        ctx.balanceBefore  = IERC20Like(market.loanToken).balanceOf(ctx.proxy);
     }
 
     function _credit(Market memory market, bytes32 marketId, address user)

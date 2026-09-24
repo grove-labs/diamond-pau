@@ -186,6 +186,12 @@ abstract contract Midnight_TestBase is ForkTestBase {
 
     uint32 internal constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
 
+    // Basis points a year. Both rails are live in every suite: at the 180 day term the entry floor
+    // allows anything up to ~0.995 and the exit ceiling anything down to ~0.953, so the tick
+    // bounds are what bind on the happy paths.
+    uint16 internal constant MIN_BUY_YIELD  = 100;
+    uint16 internal constant MAX_SELL_YIELD = 1000;
+
     // Multiple of Midnight's fee granularity (1e12) and under the cap of every breakpoint it is
     // written to; set flat across the 90 to 360 day breakpoints so a warp cannot move it.
     uint256 internal constant SETTLEMENT_FEE = 0.001e18;
@@ -276,6 +282,8 @@ abstract contract Midnight_TestBase is ForkTestBase {
         mainnetController.midnight_setMarketConfig(marketId, IMidnightFacet.MarketConfig({
             maxBuyTick       : TICK_99,
             minSellTick      : TICK_98,
+            minBuyYield      : MIN_BUY_YIELD,
+            maxSellYield     : MAX_SELL_YIELD,
             maxContinuousFee : MAX_CONTINUOUS_FEE,
             maxLossFactor    : 0
         }));
@@ -383,13 +391,34 @@ abstract contract Midnight_TestBase is ForkTestBase {
     )
         internal
     {
+        _setConfig(
+            maxBuyTick, minSellTick, MIN_BUY_YIELD, MAX_SELL_YIELD, maxContinuousFee, maxLossFactor
+        );
+    }
+
+    function _setConfig(
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
+        uint32  maxContinuousFee,
+        uint128 maxLossFactor
+    )
+        internal
+    {
         vm.prank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setMarketConfig(marketId, IMidnightFacet.MarketConfig({
             maxBuyTick       : maxBuyTick,
             minSellTick      : minSellTick,
+            minBuyYield      : minBuyYield,
+            maxSellYield     : maxSellYield,
             maxContinuousFee : maxContinuousFee,
             maxLossFactor    : maxLossFactor
         }));
+    }
+
+    function _setYields(uint16 minBuyYield, uint16 maxSellYield) internal {
+        _setConfig(TICK_99, TICK_98, minBuyYield, maxSellYield, MAX_CONTINUOUS_FEE, 0);
     }
 
     // Buys units into the proxy at TICK_98 with no fees, so the exit paths have a position.
@@ -441,11 +470,12 @@ abstract contract Midnight_TestBase is ForkTestBase {
         ( credit, , ) = midnight.updatePositionView(market, marketId, address(almProxy));
     }
 
-    function _settlementFee() internal view returns (uint256) {
-        uint256 timeToMaturity =
-            market.maturity > block.timestamp ? market.maturity - block.timestamp : 0;
+    function _timeToMaturity() internal view returns (uint256) {
+        return market.maturity > block.timestamp ? market.maturity - block.timestamp : 0;
+    }
 
-        return midnight.settlementFee(marketId, timeToMaturity);
+    function _settlementFee() internal view returns (uint256) {
+        return midnight.settlementFee(marketId, _timeToMaturity());
     }
 
     // Midnight's settlement arithmetic. Taking a sell offer: the taker pays the tick price plus
@@ -725,6 +755,41 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(_offer(false, tick, seedUnits), seedUnits, type(uint256).max);
     }
 
+    // The yield floor is on the all-in price too, so a live fee pushes the highest fillable offer
+    // below the price the floor on its own would allow.
+    function test_buyMidnight_usdc_buyYieldTooLowBoundary() external {
+        _setSettlementFee(SETTLEMENT_FEE);
+        _setYields(400, MAX_SELL_YIELD);
+
+        uint256 bound =
+            MidnightUtils.maxBuyPrice(400, _timeToMaturity(), 0) - SETTLEMENT_FEE;
+
+        uint256 tick = TICK_99;
+        while (MidnightUtils.tickToPrice(tick) > bound) tick -= 4;
+
+        Offer memory offer = _offer(false, tick + 4, seedUnits);
+
+        vm.expectRevert("MidnightFacet/buy-yield-too-low");
+        _buy(offer, seedUnits, type(uint256).max);
+
+        _buy(_offer(false, tick, seedUnits), seedUnits, type(uint256).max);
+    }
+
+    // The floor is measured on what a unit returns, so the continuous fee it will pay over the
+    // remaining term comes out of the price the same floor allows.
+    function test_buyMidnight_usdc_buyYieldNetsContinuousFee() external {
+        _setYields(400, MAX_SELL_YIELD);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        _setContinuousFee(MAX_CONTINUOUS_FEE);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+
+        vm.expectRevert("MidnightFacet/buy-yield-too-low");
+        _buy(offer, seedUnits, type(uint256).max);
+    }
+
     // The bound doubles as the allowance, so Midnight's pull fails before the facet's own check.
     function test_buyMidnight_usdc_maxAssetsInBoundary() external {
         uint256 expected = _buyerAssets(seedUnits, TICK_98);
@@ -963,6 +1028,26 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _sell(_offer(true, tick, seedUnits), seedUnits, 1);
     }
 
+    // The yield ceiling is on the proceeds, so a live fee pushes the lowest fillable offer above
+    // the price the ceiling on its own would allow.
+    function test_sellMidnight_usdc_sellYieldTooHighBoundary() external {
+        _setSettlementFee(SETTLEMENT_FEE);
+        _setYields(MIN_BUY_YIELD, 200);
+
+        uint256 bound =
+            MidnightUtils.minSellPrice(200, _timeToMaturity(), 0) + SETTLEMENT_FEE;
+
+        uint256 tick = TICK_98;
+        while (MidnightUtils.tickToPrice(tick) < bound) tick += 4;
+
+        Offer memory offer = _offer(true, tick - 4, seedUnits);
+
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(offer, seedUnits, 1);
+
+        _sell(_offer(true, tick, seedUnits), seedUnits, 1);
+    }
+
     function test_sellMidnight_usdc_minAssetsOutBoundary() external {
         uint256 expected = _sellerAssets(seedUnits, TICK_99);
 
@@ -974,13 +1059,22 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _sell(offer, seedUnits, expected);
     }
 
-    // Exiting still works after maturity: the maker is the buyer and only reduces its own debt.
+    // Exiting still works after maturity, but only at par: with no term left, any discount hands
+    // over unbounded yield against a redemption that pays par, so the yield ceiling refuses it.
     function test_sellMidnight_usdc_postMaturity() external {
         vm.warp(market.maturity + 1);
 
-        uint256 expected = _sellerAssets(seedUnits, TICK_99);
+        Offer memory discounted = _offer(true, TICK_99, seedUnits);
 
-        assertEq(_sell(_offer(true, TICK_99, seedUnits), seedUnits, expected), expected);
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(discounted, seedUnits, 1);
+
+        uint256 expected = _sellerAssets(seedUnits, MidnightUtils.MAX_TICK);
+
+        assertEq(
+            _sell(_offer(true, MidnightUtils.MAX_TICK, seedUnits), seedUnits, expected),
+            expected
+        );
 
         assertEq(_credit(),                              0);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
