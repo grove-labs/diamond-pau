@@ -385,6 +385,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
             uint256 takeUnits = fills[i].units;
 
             if (ctx.selling) {
+                // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
+                // Bounded before the rails so an offer left unreachable cannot gate the batch.
+                if (takeUnits > ctx.creditCap) takeUnits = ctx.creditCap;
+                if (takeUnits == 0)            break;
+
+                ctx.creditCap -= takeUnits;
+
                 // The fee is taken out of the proceeds, so both floors bind on the gross price.
                 require(
                     price >= ctx.tickPriceBound + ctx.settlementFee,
@@ -394,12 +401,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
                     price >= ctx.yieldPriceBound + ctx.settlementFee,
                     "MidnightFacet/sell-yield-too-high"
                 );
-
-                // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
-                if (takeUnits > ctx.creditCap) takeUnits = ctx.creditCap;
-                if (takeUnits == 0)            break;
-
-                ctx.creditCap -= takeUnits;
             } else {
                 // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
                 require(
