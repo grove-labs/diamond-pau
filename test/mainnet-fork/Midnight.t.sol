@@ -199,6 +199,9 @@ abstract contract Midnight_TestBase is ForkTestBase {
     // written to; set flat across the 90 to 360 day breakpoints so a warp cannot move it.
     uint256 internal constant SETTLEMENT_FEE = 0.001e18;
 
+    // Upstream's ceiling for the shortest breakpoint, which is the one a matured market resolves to.
+    uint256 internal constant SETTLEMENT_FEE_0_DAYS_CAP = 0.000014e18;
+
     uint256 internal constant MATURITY_PERIOD = 180 days;
 
     uint256 internal constant COLLATERAL_SUPPLY = 10_000_000e18;  // WETH, valued 1:1 with the loan
@@ -1037,6 +1040,26 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _sell(offer, seedUnits, expected + 1);
 
         _sell(offer, seedUnits, expected);
+    }
+
+    // With a live settlement fee the exit closes completely past maturity: the floor is par and the
+    // fee is added on top, so not even a par offer clears. Redemption still pays par, which is why
+    // no discounted escape hatch is needed.
+    function test_sellMidnight_usdc_postMaturitySettlementFee() external {
+        _becomeFeeSetter();
+        midnight.setMarketSettlementFee(marketId, 0, SETTLEMENT_FEE_0_DAYS_CAP);
+
+        vm.warp(market.maturity + 1);
+
+        Offer memory atPar = _offer(true, MidnightUtils.MAX_TICK, seedUnits);
+
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(atPar, seedUnits, 1);
+
+        _repay(seedUnits);
+
+        assertEq(_redeem(seedUnits, seedUnits), seedUnits);
+        assertEq(_credit(),                     0);
     }
 
     // Exiting still works after maturity, but only at par: with no term left, any discount hands
