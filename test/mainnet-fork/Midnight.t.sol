@@ -1163,6 +1163,44 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertEq(midnight.consumed(maker, fills[1].offer.group), 0);
     }
 
+    // An offer left unreachable once credit is exhausted must not gate the batch, even when its
+    // price sits outside the rails: the rails guard taking, and this one is never taken.
+    function test_sellMidnight_usdc_unreachableOfferOutsideRailsIsSkipped() external {
+        uint256 expected = _sellerAssets(seedUnits, TICK_99);
+
+        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
+
+        fills[0] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
+        fills[1] = _fill(_offer(true, 3000,    seedUnits), seedUnits);
+
+        vm.prank(allocator);
+        uint256 assetsReceived = mainnetController.midnight_sell(marketId, fills, expected);
+
+        assertEq(assetsReceived,                                 expected);
+        assertEq(_credit(),                                      0);
+        assertEq(midnight.consumed(maker, fills[0].offer.group), seedUnits);
+        assertEq(midnight.consumed(maker, fills[1].offer.group), 0);
+    }
+
+    // Offers may cap on assets instead of units. The clamp bounds our credit, not the maker's asset
+    // budget, so an ask that overruns it is rejected by Midnight rather than trimmed to fit.
+    function test_sellMidnight_usdc_assetsBasedOfferNotTrimmed() external {
+        uint256 fullAssets = _sellerAssets(seedUnits, TICK_99);
+
+        Offer memory offer = _offer(true, TICK_99, seedUnits);
+
+        offer.maxUnits  = 0;
+        offer.maxAssets = uint128(fullAssets / 2);
+
+        _ratify(offer);
+
+        vm.expectRevert(abi.encodeWithSignature("ConsumedAssets()"));
+        _sell(offer, seedUnits, 1);
+
+        // Sized to the budget it clears, so the cap is the maker's, not a facet limitation.
+        assertEq(_sell(offer, seedUnits / 2, 1), fullAssets / 2);
+    }
+
     // Slashing writes the position down, so the credit delta is measured against the new balance.
     function test_sellMidnight_usdc_afterSlashing() external {
         _slash();
