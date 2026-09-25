@@ -643,7 +643,8 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(offer, seedUnits, type(uint256).max);
     }
 
-    // Midnight refuses to let a seller take on new debt after maturity, so entering is simply over.
+    // Midnight refuses to let a seller take on new debt after maturity, so a maker who would have
+    // to borrow to fill cannot be taken from.
     function test_buyMidnight_postMaturity() external {
         vm.warp(market.maturity + 1);
 
@@ -651,6 +652,25 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         vm.expectRevert(abi.encodeWithSignature("CannotIncreaseDebtPostMaturity()"));
         _buy(offer, seedUnits, type(uint256).max);
+    }
+
+    // The block is on the seller's debt increasing, not on maturity itself, so a maker who already
+    // holds credit can still sell it after maturity. Twin of the test above, differing only in
+    // whether the maker has credit of their own.
+    function test_buyMidnight_postMaturityMakerHoldsCredit() external {
+        _seedCredit();
+        _repay(seedUnits);
+
+        // Hand the maker credit, so selling it back nets against credit rather than creating debt.
+        _sell(_offer(true, TICK_99, seedUnits), seedUnits, 1);
+
+        vm.warp(market.maturity + 1);
+
+        uint256 creditBefore = _credit();
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        assertEq(_credit(), creditBefore + seedUnits);
     }
 
     function test_buyMidnight_zeroMaxAmount() external {
