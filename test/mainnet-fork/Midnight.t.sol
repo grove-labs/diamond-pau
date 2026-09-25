@@ -1104,6 +1104,29 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     }
 
     // An oversized ask is clamped to the live position instead of turning into naked debt.
+    // Credit decays every block once a continuous fee is live, so a batch sized from a stale read
+    // has to be trimmed to the live balance rather than turned into debt.
+    function test_sellMidnight_usdc_creditDecaysWithContinuousFee() external {
+        _setContinuousFee(MAX_CONTINUOUS_FEE);
+
+        // Bought with the fee live, so this tranche carries a pendingFee the seeded one does not.
+        _seedCredit();
+
+        uint256 held = 2 * seedUnits;
+
+        assertEq(_credit(), held);
+
+        vm.warp(block.timestamp + _timeToMaturity() / 2);
+
+        assertLt(_credit(), held);
+
+        // Ask with the pre-decay figure; only what is left may be filled.
+        _sell(_offer(true, MidnightUtils.MAX_TICK, held), held, 1);
+
+        assertEq(_credit(),                                  0);
+        assertEq(midnight.debt(marketId, address(almProxy)), 0);
+    }
+
     function test_sellMidnight_usdc_unitsCappedAtCredit() external {
         uint256 expected = _sellerAssets(seedUnits, TICK_99);
 
