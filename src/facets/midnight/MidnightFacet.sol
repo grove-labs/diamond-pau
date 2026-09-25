@@ -369,7 +369,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
 
     function _takeBatch(TakeContext memory ctx, Fill[] calldata fills) internal {
-        for (uint256 i = 0; i < fills.length; i++) {
+        for (uint256 i = 0; i < fills.length; ++i) {
             Offer memory offer = fills[i].offer;
 
             // The id commits to the whole market config, venue included.
