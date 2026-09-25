@@ -57,7 +57,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 
 ## Functions
 
-### `setMarketConfig(bytes32 marketId, MarketConfig calldata config)`
+### `setMarketConfig(bytes32 marketId, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor)`
 
 - **Role:** DEFAULT_ADMIN_ROLE
 - **Value direction:** config
@@ -262,7 +262,7 @@ exists.
 2. Review what the id commits to: loan token, maturity, collateral tiers (LLTV,
    liquidation cursor, oracle), `rcfThreshold`, gates. An LLTV `1e18` tier is a
    due-diligence red flag.
-3. `setMarketConfig(marketId, config)` with a reachable `minSellTick` (below par net of
+3. `setMarketConfig(marketId, ...)` with a reachable `minSellTick` (below par net of
    the settlement fee), the highest acceptable all-in `maxBuyTick` for the remaining
    term, a `minBuyYield` and a non-zero `maxSellYield` in basis points a year, and
    `maxContinuousFee` (centi-basis points a year) / `maxLossFactor` at the tolerances the

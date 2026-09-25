@@ -110,9 +110,11 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 ### Set Market Config (admin)
 
-**Function:** `setMarketConfig(marketId, config)` (`DEFAULT_ADMIN_ROLE`)
+**Function:** `setMarketConfig(marketId, maxBuyTick, minSellTick, minBuyYield, maxSellYield,
+maxContinuousFee, maxLossFactor)` (`DEFAULT_ADMIN_ROLE`)
 
-Sets the governance limits for one market. The struct fits one storage slot:
+Sets the governance limits for one market. Every limit is set in the one call, and they are stored
+together in a single slot:
 
 | Field              | Type      | Meaning                                                                                                                                 |
 | ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -255,7 +257,7 @@ Per market (`marketId`):
 
 1. Confirm the market exists on the singleton (`toMarket(marketId)` resolves, `settlementFee` does not revert). If not, anyone can `touchMarket(market)` once; the facet does not.
 2. Review the market config the id commits to: loan token, maturity, collateral tiers (LLTV, liquidation cursor, oracle), `rcfThreshold`, gates. A tier at LLTV `1e18` lets a borrower sell against the full collateral value, so any adverse oracle move leaves bad debt for lenders; treat it as a due-diligence red flag.
-3. `setMarketConfig(marketId, config)`: required. `minSellTick` non-zero and below par net of the settlement fee; `maxBuyTick` at the highest all-in price acceptable for the remaining term; `minBuyYield` at the lowest rate worth entering for and `maxSellYield` (non-zero) at the widest give-up an exit may pay, both in basis points a year; `maxContinuousFee` (centi-basis points a year) and `maxLossFactor` at the tolerances the position can absorb, both defaulting to zero.
+3. `setMarketConfig(marketId, ...)`: required, and every limit is passed in the one call. `minSellTick` non-zero and below par net of the settlement fee; `maxBuyTick` at the highest all-in price acceptable for the remaining term; `minBuyYield` at the lowest rate worth entering for and `maxSellYield` (non-zero) at the widest give-up an exit may pay, both in basis points a year; `maxContinuousFee` (centi-basis points a year) and `maxLossFactor` at the tolerances the position can absorb, both defaulting to zero.
 4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM` keyed `marketId`, in the loan token's units. The exits are gated only by their own keys; zeroing the buy key pauses entry without touching exits.
 
 No seeding is required: the integration holds no intermediate token and uses no auxiliary module. Offers are sourced off-chain from makers (or the Morpho API) and passed in calldata by the allocator together with each maker's ratifier data.

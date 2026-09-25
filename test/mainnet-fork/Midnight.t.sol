@@ -285,14 +285,15 @@ abstract contract Midnight_TestBase is ForkTestBase {
         rateLimits.setRateLimitData(sellKey,   rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
 
-        mainnetController.midnight_setMarketConfig(marketId, IMidnightFacet.MarketConfig({
-            maxBuyTick       : TICK_99,
-            minSellTick      : TICK_98,
-            minBuyYield      : MIN_BUY_YIELD,
-            maxSellYield     : MAX_SELL_YIELD,
-            maxContinuousFee : MAX_CONTINUOUS_FEE_CBPS,
-            maxLossFactor    : 0
-        }));
+        mainnetController.midnight_setMarketConfig(
+            marketId,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0
+        );
 
         vm.stopPrank();
     }
@@ -408,14 +409,15 @@ abstract contract Midnight_TestBase is ForkTestBase {
         internal
     {
         vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setMarketConfig(marketId, IMidnightFacet.MarketConfig({
-            maxBuyTick       : maxBuyTick,
-            minSellTick      : minSellTick,
-            minBuyYield      : minBuyYield,
-            maxSellYield     : maxSellYield,
-            maxContinuousFee : maxContinuousFee,
-            maxLossFactor    : maxLossFactor
-        }));
+        mainnetController.midnight_setMarketConfig(
+            marketId,
+            maxBuyTick,
+            minSellTick,
+            minBuyYield,
+            maxSellYield,
+            maxContinuousFee,
+            maxLossFactor
+        );
     }
 
     function _setYields(uint16 minBuyYield, uint16 maxSellYield) internal {
