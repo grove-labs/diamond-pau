@@ -7,8 +7,15 @@ interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
 
-    function midnight_setMarketConfig(bytes32 marketId, IMidnightFacet.MarketConfig calldata config)
-        external;
+    function midnight_setMarketConfig(
+        bytes32 marketId,
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
+        uint16  maxContinuousFee,
+        uint128 maxLossFactor
+    ) external;
 
     function midnight_buy(
         bytes32                        marketId,

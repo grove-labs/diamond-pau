@@ -44,14 +44,6 @@ interface IMidnightFacet is IFacet {
      *         and the continuous fee crystallized over the remaining term are inside the
      *         comparison. They tighten towards par as maturity approaches, so at maturity a sell
      *         only clears at par. `minBuyYield == 0` still bars paying above what a unit returns.
-     * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
-     * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
-     * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
-     * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
-     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
-     *                          a year).
-     * @param  maxLossFactor    Highest market loss factor a buy tolerates (fraction of
-     *                          `type(uint128).max`).
      */
     struct MarketConfig {
         uint16  maxBuyTick;
@@ -182,10 +174,25 @@ interface IMidnightFacet is IFacet {
      *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
      *         Midnight's ceiling. Setting `maxBuyTick` to zero blocks new entries while leaving
      *         exits open.
-     * @param  marketId Identifier of the Midnight market.
-     * @param  config   New limits.
+     * @param  marketId         Identifier of the Midnight market.
+     * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
+     * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
+     * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
+     * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
+     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
+     *                          a year).
+     * @param  maxLossFactor    Highest market loss factor a buy tolerates (fraction of
+     *                          `type(uint128).max`).
      */
-    function setMarketConfig(bytes32 marketId, MarketConfig calldata config) external;
+    function setMarketConfig(
+        bytes32 marketId,
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
+        uint16  maxContinuousFee,
+        uint128 maxLossFactor
+    ) external;
 
     /**********************************************************************************************/
     /*** Variables                                                                              ***/

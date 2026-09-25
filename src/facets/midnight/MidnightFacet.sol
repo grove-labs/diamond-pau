@@ -132,7 +132,15 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
 
     /// @inheritdoc IMidnightFacet
-    function setMarketConfig(bytes32 marketId, MarketConfig calldata config)
+    function setMarketConfig(
+        bytes32 marketId,
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
+        uint16  maxContinuousFee,
+        uint128 maxLossFactor
+    )
         external
         override
         nonReentrant
@@ -140,30 +148,37 @@ contract MidnightFacet is IMidnightFacet, Facet {
     {
         // Both ticks feed tickToPrice, which reverts above MAX_TICK; a zero maxBuyTick is the kill
         // switch for entries, while a zero minSellTick means not onboarded and blocks every exit.
-        require(config.maxBuyTick <= MidnightUtils.MAX_TICK, "MidnightFacet/max-buy-tick-oob");
+        require(maxBuyTick <= MidnightUtils.MAX_TICK, "MidnightFacet/max-buy-tick-oob");
         require(
-            config.minSellTick != 0 && config.minSellTick <= MidnightUtils.MAX_TICK,
+            minSellTick != 0 && minSellTick <= MidnightUtils.MAX_TICK,
             "MidnightFacet/min-sell-tick-oob"
         );
         require(
-            MidnightUtils.continuousFeePerSecond(config.maxContinuousFee)
+            MidnightUtils.continuousFeePerSecond(maxContinuousFee)
                 <= MidnightUtils.MAX_CONTINUOUS_FEE,
             "MidnightFacet/max-continuous-fee-oob"
         );
         // A zero sell yield ceiling would only clear at par and brick the exit, so onboarding has
         // to name one; a zero buy yield floor still bars paying more than a unit returns.
-        require(config.maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
+        require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
 
-        _getFacetStorage().marketConfigs[marketId] = config;
+        _getFacetStorage().marketConfigs[marketId] = MarketConfig({
+            maxBuyTick       : maxBuyTick,
+            minSellTick      : minSellTick,
+            minBuyYield      : minBuyYield,
+            maxSellYield     : maxSellYield,
+            maxContinuousFee : maxContinuousFee,
+            maxLossFactor    : maxLossFactor
+        });
 
         emit MidnightMarketConfigSet(
             marketId,
-            config.maxBuyTick,
-            config.minSellTick,
-            config.minBuyYield,
-            config.maxSellYield,
-            config.maxContinuousFee,
-            config.maxLossFactor
+            maxBuyTick,
+            minSellTick,
+            minBuyYield,
+            maxSellYield,
+            maxContinuousFee,
+            maxLossFactor
         );
     }
 
