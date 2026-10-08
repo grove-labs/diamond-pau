@@ -219,7 +219,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         ctx.tickPriceBound = MidnightUtils.tickToPrice(config.maxBuyTick);
 
-        // The yield floor prices both fees in, so it moves with the term left on the market.
         ctx.yieldPriceBound =
             MidnightUtils.maxBuyPrice(config.minBuyYield, ctx.timeToMaturity, ctx.continuousFee);
 
@@ -321,8 +320,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick);
 
-        // The yield ceiling converges on par as maturity approaches, so a late exit has to be
-        // priced like the redemption it is competing with.
         ctx.yieldPriceBound =
             MidnightUtils.minSellPrice(config.maxSellYield, ctx.timeToMaturity, ctx.continuousFee);
 
