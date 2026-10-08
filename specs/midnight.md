@@ -128,13 +128,13 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   `maxSellYield` on the same basis the buy leg uses; per-offer units capped at the proxy's
   remaining live credit and the batch stops when credit is exhausted, so a sell can never
   create debt; exact credit delta (`credit_before == credit_after + sum(cappedUnits)`) and
-  zero debt after the batch. The yield floor converges on par as maturity approaches, so a
-  post-maturity sell only clears at par and a discounted dump against an available par
-  redemption is refused; with a live settlement fee it does not clear at all, leaving
-  `redeem` as the exit. That costs nothing: a sell nets the tick price less the settlement
-  fee while `redeem` pays par with no fee, so no post-maturity sell can beat redemption. No
-  configuration reopens a discounted exit either, since the floor at zero time to maturity
-  is par for every `maxSellYield`.
+  zero debt after the batch. The yield-implied price floor converges on par as maturity
+  approaches, so a post-maturity sell only clears at par and a discounted dump against an
+  available par redemption is refused; with a live settlement fee it does not clear at all,
+  leaving `redeem` as the exit. That costs nothing: a sell nets the tick price less the
+  settlement fee while `redeem` pays par with no fee, so no post-maturity sell can beat
+  redemption. No configuration reopens a discounted exit either, since the floor at zero
+  time to maturity is par for every `maxSellYield`.
 - **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits,
   proxy, proxy, address(0), "")` via `doCall`, once per offer, with `offer.buy == true`.
   Reads
