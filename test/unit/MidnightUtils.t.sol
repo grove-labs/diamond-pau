@@ -36,12 +36,17 @@ contract MidnightUtilsHarness {
         return MidnightUtils.maxBuyPrice(minYield, timeToMaturity, continuousFee);
     }
 
-    function minSellPrice(uint256 maxYield, uint256 timeToMaturity, uint256 continuousFee)
+    function minSellPrice(
+        uint256 maxYield,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
         external
         pure
         returns (uint256)
     {
-        return MidnightUtils.minSellPrice(maxYield, timeToMaturity, continuousFee);
+        return MidnightUtils.minSellPrice(maxYield, timeToMaturity, credit, pendingFee);
     }
 
     function continuousFeePerSecond(uint256 cbpsPerYear) external pure returns (uint256) {
@@ -67,6 +72,54 @@ contract MidnightUtils_TickToPrice_Tests is MidnightUtilsTestBase {
         assertEq(harness.tickToPrice(0),                      0);
         assertEq(harness.tickToPrice(MidnightUtils.MAX_TICK / 2), 0.5e18);
         assertEq(harness.tickToPrice(MidnightUtils.MAX_TICK),     1e18);
+    }
+
+    // Pinned against an independent model of upstream's algorithm: every 250th tick, the midpoint,
+    // the two ticks the live markets are configured at, and both ends.
+    function test_tickToPrice_modelTable() external view {
+        uint256[31] memory ticks = [
+            uint256(0),  250,  500,  750, 1000, 1250, 1500, 1750, 2000, 2250, 2500,
+            2750, 3000, 3250, 3372, 3500, 3750, 4000, 4152, 4250, 4384, 4500,
+            4750, 5000, 5250, 5500, 5750, 6000, 6250, 6500, 6744
+        ];
+
+        uint256[31] memory prices = [
+            uint256(0),
+            200_000_000_000,
+            600_000_000_000,
+            2_100_000_000_000,
+            7_300_000_000_000,
+            25_300_000_000_000,
+            88_200_000_000_000,
+            306_600_000_000_000,
+            1_065_900_000_000_000,
+            3_698_900_000_000_000,
+            12_753_800_000_000_000,
+            43_030_100_000_000_000,
+            135_258_900_000_000_000,
+            352_406_500_000_000_000,
+            500_000_000_000_000_000,
+            654_392_800_000_000_000,
+            868_209_700_000_000_000,
+            958_179_700_000_000_000,
+            979_964_600_000_000_000,
+            987_617_100_000_000_000,
+            993_614_600_000_000_000,
+            996_409_800_000_000_000,
+            998_965_500_000_000_000,
+            999_702_500_000_000_000,
+            999_914_400_000_000_000,
+            999_975_400_000_000_000,
+            999_992_900_000_000_000,
+            999_998_000_000_000_000,
+            999_999_400_000_000_000,
+            999_999_800_000_000_000,
+            1_000_000_000_000_000_000
+        ];
+
+        for (uint256 i; i < ticks.length; ++i) {
+            assertEq(harness.tickToPrice(ticks[i]), prices[i]);
+        }
     }
 
     function test_tickToPrice_outOfRange() external {
@@ -136,6 +189,16 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
 
     uint256 internal constant MAX_TIME_TO_MATURITY = 100 * 365 days;  // Upstream's own ceiling.
 
+    // The library takes the lien a position actually carries; these cases state it as a rate held
+    // over the whole term, which on one unit of credit is exactly that rate times the term.
+    function _sellFloor(uint256 yieldBp, uint256 ttm, uint256 feeRate)
+        internal
+        view
+        returns (uint256)
+    {
+        return harness.minSellPrice(yieldBp, ttm, 1e18, feeRate * ttm);
+    }
+
     // Simple interest on cost: the yield a price implies over the term, annualized ACT/365.
     function _earnsAtLeast(uint256 price, uint256 ttm, uint256 fee, uint256 yieldBp)
         internal
@@ -167,7 +230,7 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
     // ceiling, ceilinged for the sell floor.
     function test_yieldPrice_anchors() external view {
         assertEq(harness.maxBuyPrice(5_00, 365 days, 0),  952380952380952380);
-        assertEq(harness.minSellPrice(5_00, 365 days, 0), 952380952380952381);
+        assertEq(_sellFloor(5_00, 365 days, 0), 952380952380952381);
     }
 
     // Pinned against an independent model of the same formula.
@@ -175,8 +238,8 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         assertEq(harness.maxBuyPrice(1_00,   30 days, 0),  999178757185874623);
         assertEq(harness.maxBuyPrice(4_00,  180 days, 0),  980655561526061257);
         assertEq(harness.maxBuyPrice(10_00, 360 days, 0),  910224438902743142);
-        assertEq(harness.minSellPrice(4_00, 180 days, 0),  980655561526061258);
-        assertEq(harness.minSellPrice(10_00, 30 days, 0),  991847826086956522);
+        assertEq(_sellFloor(4_00, 180 days, 0),  980655561526061258);
+        assertEq(_sellFloor(10_00, 30 days, 0),  991847826086956522);
 
         assertEq(
             harness.maxBuyPrice(4_00, 180 days, MidnightUtils.MAX_CONTINUOUS_FEE),
@@ -199,7 +262,7 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         continuousFee  = bound(continuousFee, 0, MidnightUtils.MAX_CONTINUOUS_FEE);
 
         uint256 buyCap    = harness.maxBuyPrice(yieldBp, timeToMaturity, continuousFee);
-        uint256 sellFloor = harness.minSellPrice(yieldBp, timeToMaturity, continuousFee);
+        uint256 sellFloor = _sellFloor(yieldBp, timeToMaturity, continuousFee);
 
         assertTrue(_earnsAtLeast(buyCap,       timeToMaturity, continuousFee, yieldBp));
         assertFalse(_earnsAtLeast(buyCap + 1,  timeToMaturity, continuousFee, yieldBp));
@@ -211,7 +274,7 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
     // With no term left there is no yield to earn or give up, so both bounds collapse onto par.
     function test_yieldPrice_zeroTimeToMaturity() external view {
         assertEq(harness.maxBuyPrice(50_00, 0, MidnightUtils.MAX_CONTINUOUS_FEE),  1e18);
-        assertEq(harness.minSellPrice(50_00, 0, MidnightUtils.MAX_CONTINUOUS_FEE), 1e18);
+        assertEq(_sellFloor(50_00, 0, MidnightUtils.MAX_CONTINUOUS_FEE), 1e18);
     }
 
     // A zero bound is not a disabled bound: it still refuses a price above what a unit pays back.
@@ -227,8 +290,52 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
 
         uint256 term = 180 days;
 
-        assertLt(harness.maxBuyPrice(4_00, term, fee),  harness.maxBuyPrice(4_00, term, 0));
-        assertLt(harness.minSellPrice(4_00, term, fee), harness.minSellPrice(4_00, term, 0));
+        assertLt(harness.maxBuyPrice(4_00, term, fee), harness.maxBuyPrice(4_00, term, 0));
+        assertLt(_sellFloor(4_00, term, fee),          _sellFloor(4_00, term, 0));
+    }
+
+    // The floor prices the lien per unit of credit, so the same lien on any position size prices
+    // the same.
+    function test_minSellPrice_pricesTheLienPerUnit() external view {
+        assertEq(harness.minSellPrice(4_00, 180 days, 1e18, 5e15), 975752283718430952);
+        assertEq(harness.minSellPrice(4_00, 180 days, 1e20, 5e17), 975752283718430952);
+        assertEq(harness.minSellPrice(4_00, 180 days, 1e18, 0),    980655561526061258);
+    }
+
+    // Nothing held is nothing to price, and a position whose lien has eaten its credit is worth
+    // nothing. Both are boundaries the per-unit division has to survive.
+    function test_minSellPrice_creditBoundaries() external view {
+        assertEq(harness.minSellPrice(4_00, 180 days, 0,    0),    1e18);
+        assertEq(harness.minSellPrice(4_00, 180 days, 1e18, 1e18), 0);
+    }
+
+    // A heavier lien is worth less, never more.
+    function testFuzz_minSellPrice_nonIncreasingInLien(uint256 pendingFee) external view {
+        pendingFee = bound(pendingFee, 1, 1e18);
+
+        assertLe(
+            harness.minSellPrice(4_00, 180 days, 1e18, pendingFee),
+            harness.minSellPrice(4_00, 180 days, 1e18, pendingFee - 1)
+        );
+    }
+
+    // A lender's pending fee never exceeds their credit, so the payoff term cannot underflow and
+    // the floor cannot exceed par.
+    function testFuzz_minSellPrice_withinPar(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        credit         = bound(credit, 1, type(uint128).max);
+        pendingFee     = bound(pendingFee, 0, credit);
+
+        assertLe(harness.minSellPrice(yieldBp, timeToMaturity, credit, pendingFee), 1e18);
     }
 
     // Upstream caps maturity a hundred years out and the continuous fee at one percent a year, so
@@ -238,7 +345,7 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         uint256 yield_ = type(uint16).max;
 
         assertGt(harness.maxBuyPrice(yield_, MAX_TIME_TO_MATURITY, fee),  0);
-        assertLe(harness.minSellPrice(yield_, MAX_TIME_TO_MATURITY, fee), 1e18);
+        assertLe(_sellFloor(yield_, MAX_TIME_TO_MATURITY, fee), 1e18);
     }
 
     // A tighter bound must never let a worse price through.
@@ -254,8 +361,8 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
             harness.maxBuyPrice(yieldBp - 1, timeToMaturity, 0)
         );
         assertLe(
-            harness.minSellPrice(yieldBp, timeToMaturity, 0),
-            harness.minSellPrice(yieldBp - 1, timeToMaturity, 0)
+            _sellFloor(yieldBp, timeToMaturity, 0),
+            _sellFloor(yieldBp - 1, timeToMaturity, 0)
         );
     }
 
@@ -283,7 +390,7 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         continuousFee  = bound(continuousFee, 0, MidnightUtils.MAX_CONTINUOUS_FEE);
 
         uint256 buyCap    = harness.maxBuyPrice(yieldBp, timeToMaturity, continuousFee);
-        uint256 sellFloor = harness.minSellPrice(yieldBp, timeToMaturity, continuousFee);
+        uint256 sellFloor = _sellFloor(yieldBp, timeToMaturity, continuousFee);
 
         assertGe(sellFloor, buyCap);
         assertLe(sellFloor - buyCap, 1);

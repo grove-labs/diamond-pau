@@ -473,6 +473,39 @@ abstract contract Midnight_TestBase is ForkTestBase {
         ( credit, , ) = midnight.updatePositionView(market, marketId, address(almProxy));
     }
 
+    function _pendingFee() internal view returns (uint256 pendingFee) {
+        ( , pendingFee, ) = midnight.updatePositionView(market, marketId, address(almProxy));
+    }
+
+    // The lien the position carries per unit of credit, which is what the sell floor prices.
+    function _lienPerUnit() internal view returns (uint256) {
+        return _pendingFee() * 1e18 / _credit();
+    }
+
+    // The lien one unit would carry if the whole position had been bought at the fee ceiling.
+    function _capLienPerUnit() internal view returns (uint256) {
+        return MidnightUtils.MAX_CONTINUOUS_FEE * _timeToMaturity();
+    }
+
+    // Two equal tranches, one at the fee ceiling and one at zero, blend to half the ceiling's
+    // lien. Upstream floors each tranche's lien, which on a six-decimal loan token leaves the
+    // blend a little under the exact mean, never over.
+    function _assertLienIsHalfOfCap() internal {
+        assertLe(_lienPerUnit(), _capLienPerUnit() / 2);
+
+        assertApproxEqAbs(_lienPerUnit(), _capLienPerUnit() / 2, 1e18 / seedUnits);
+    }
+
+    // The floor the facet applies, derived from the position the proxy actually holds.
+    function _sellFloor(uint256 maxSellYield) internal view returns (uint256) {
+        return MidnightUtils.minSellPrice(
+            maxSellYield,
+            _timeToMaturity(),
+            _credit(),
+            _pendingFee()
+        );
+    }
+
     function _timeToMaturity() internal view returns (uint256) {
         return market.maturity > block.timestamp ? market.maturity - block.timestamp : 0;
     }
@@ -599,6 +632,24 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/market-mismatch");
         _buy(offer, seedUnits, type(uint256).max);
+    }
+
+    // Only the first fill's market is bound when the context is built, so every later fill rests
+    // on the per-fill check inside the batch loop.
+    function test_buyMidnight_marketMismatchInBatch() external {
+        uint256 units = seedUnits / 2;
+
+        Offer memory mismatched = _offer(false, TICK_99, units);
+        mismatched.market.maturity += 1 days;
+
+        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
+
+        fills[0] = _fill(_offer(false, TICK_98, units), units);
+        fills[1] = _fill(mismatched, units);
+
+        vm.expectRevert("MidnightFacet/market-mismatch");
+        vm.prank(allocator);
+        mainnetController.midnight_buy(marketId, fills, type(uint256).max);
     }
 
     function test_buyMidnight_invalidOfferDirection() external {
@@ -1039,8 +1090,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _setSettlementFee(SETTLEMENT_FEE);
         _setYields(MIN_BUY_YIELD, 2_00);
 
-        uint256 bound =
-            MidnightUtils.minSellPrice(2_00, _timeToMaturity(), 0) + SETTLEMENT_FEE;
+        uint256 bound = _sellFloor(2_00) + SETTLEMENT_FEE;
 
         uint256 tick = TICK_98;
         while (MidnightUtils.tickToPrice(tick) < bound) tick += 4;
@@ -1051,6 +1101,159 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _sell(offer, seedUnits, 1);
 
         _sell(_offer(true, tick, seedUnits), seedUnits, 1);
+    }
+
+    // Units keep the fee they were bought at, so raising the market's fee afterwards must not
+    // lower the floor this position is held to.
+    function test_sellMidnight_usdc_sellFloorIgnoresLaterFeeIncrease() external {
+        _setYields(MIN_BUY_YIELD, 2_00);
+
+        uint256 positionFloor = _sellFloor(2_00);
+
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        assertEq(_sellFloor(2_00), positionFloor);
+
+        // What the floor would be if it tracked the market's new rate instead of the position.
+        uint256 marketRateFloor = MidnightUtils.minSellPrice(
+            2_00,
+            _timeToMaturity(),
+            1e18,
+            MidnightUtils.MAX_CONTINUOUS_FEE * _timeToMaturity()
+        );
+
+        assertLt(marketRateFloor, positionFloor);
+
+        uint256 tick = TICK_98;
+        while (MidnightUtils.tickToPrice(tick) < marketRateFloor) tick += 4;
+
+        // Clears the market-rate floor but not the position's own, so only the latter rejects it.
+        assertLt(MidnightUtils.tickToPrice(tick), positionFloor);
+
+        Offer memory offer = _offer(true, tick, seedUnits);
+
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(offer, seedUnits, 1);
+    }
+
+    // A position bought wholly at the fee ceiling carries the full lien, and cutting the market's
+    // fee afterwards does not relieve it.
+    function test_sellMidnight_usdc_sellFloorKeepsFullLienAfterFeeCut() external {
+        _setYields(MIN_BUY_YIELD, 2_00);
+
+        // Clear the zero-fee seed so the whole position is bought under the live fee.
+        _repay(seedUnits);
+        _redeem(seedUnits, 1);
+
+        assertEq(_credit(), 0);
+
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        assertApproxEqAbs(_lienPerUnit(), _capLienPerUnit(), 1e18 / seedUnits);
+
+        uint256 positionFloor = _sellFloor(2_00);
+
+        _setContinuousFee(0);
+
+        assertEq(_sellFloor(2_00), positionFloor);
+
+        uint256 unencumberedFloor = MidnightUtils.minSellPrice(2_00, _timeToMaturity(), 1e18, 0);
+
+        assertLt(positionFloor, unencumberedFloor);
+
+        uint256 tick = TICK_98;
+        while (MidnightUtils.tickToPrice(tick) < positionFloor) tick += 4;
+
+        // A floor tracking the market's new rate of zero would have refused this price.
+        assertLt(MidnightUtils.tickToPrice(tick), unencumberedFloor);
+
+        uint256 units = _credit();
+
+        _sell(_offer(true, tick, units), units, 1);
+    }
+
+    // Nor does cutting the fee re-price units bought under the old rate: they still carry their
+    // lien, so a sale that lien justifies stays fillable.
+    function test_sellMidnight_usdc_sellFloorIgnoresLaterFeeDecrease() external {
+        _setYields(MIN_BUY_YIELD, 2_00);
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        // A second tranche bought under the live fee, so the position carries a real lien.
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        _assertLienIsHalfOfCap();
+
+        uint256 positionFloor = _sellFloor(2_00);
+
+        _setContinuousFee(0);
+
+        assertEq(_sellFloor(2_00), positionFloor);
+
+        uint256 unencumberedFloor = MidnightUtils.minSellPrice(2_00, _timeToMaturity(), 1e18, 0);
+
+        assertLt(positionFloor, unencumberedFloor);
+
+        uint256 tick = TICK_98;
+        while (MidnightUtils.tickToPrice(tick) < positionFloor) tick += 4;
+
+        // A floor tracking the market's new rate of zero would have refused this price.
+        assertLt(MidnightUtils.tickToPrice(tick), unencumberedFloor);
+
+        uint256 units = _credit();
+
+        _sell(_offer(true, tick, units), units, 1);
+
+        assertEq(_credit(), 0);
+    }
+
+    // Tranches bought at different rates blend into one lien per unit of credit, so a position
+    // half bought at the ceiling is held to a floor strictly between the two single-rate floors.
+    function test_sellMidnight_usdc_sellFloorBlendsTranches() external {
+        _setYields(MIN_BUY_YIELD, 2_00);
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        _assertLienIsHalfOfCap();
+
+        uint256 blendedFloor = _sellFloor(2_00);
+
+        uint256 ttm = _timeToMaturity();
+
+        uint256 marketRateFloor  = MidnightUtils.minSellPrice(2_00, ttm, 1e18, _capLienPerUnit());
+        uint256 unencumberedFloor = MidnightUtils.minSellPrice(2_00, ttm, 1e18, 0);
+
+        assertLt(marketRateFloor, blendedFloor);
+        assertLt(blendedFloor,    unencumberedFloor);
+
+        uint256 tick = TICK_98;
+        while (MidnightUtils.tickToPrice(tick) < marketRateFloor) tick += 4;
+
+        // Clears the floor the market's live rate would set, but not the blended one.
+        assertLt(MidnightUtils.tickToPrice(tick), blendedFloor);
+
+        Offer memory offer = _offer(true, tick, seedUnits);
+
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(offer, seedUnits, 1);
+    }
+
+    // Restoring entry capacity after an exit must not lift the buy limit above its ceiling.
+    function test_sellMidnight_usdc_buyLimitRestoreCappedAtMaxAmount() external {
+        uint256 cap = seedUnits / 10;
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey, cap, cap / 1 days);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), cap);
+
+        uint256 received = _sell(_offer(true, TICK_99, seedUnits), seedUnits, 1);
+
+        assertGt(received, cap);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), cap);
     }
 
     function test_sellMidnight_usdc_minAssetsOutBoundary() external {
@@ -1082,6 +1285,28 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         assertEq(_redeem(seedUnits, seedUnits), seedUnits);
         assertEq(_credit(),                     0);
+    }
+
+    // A lien is fully accrued by maturity, so even a position bought under a live fee faces a
+    // floor of exactly par and the post-maturity exit stays closed to discounts.
+    function test_sellMidnight_usdc_postMaturityLienIsFullyAccrued() external {
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        assertGt(_pendingFee(), 0);
+
+        vm.warp(market.maturity + 1);
+
+        assertEq(_pendingFee(),              0);
+        assertEq(_sellFloor(MAX_SELL_YIELD), 1e18);
+
+        uint256 units = _credit();
+
+        Offer memory discounted = _offer(true, TICK_99, units);
+
+        vm.expectRevert("MidnightFacet/sell-yield-too-high");
+        _sell(discounted, units, 1);
     }
 
     // Exiting still works after maturity, but only at par: with no term left, any discount hands
@@ -1321,6 +1546,16 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/market-not-onboarded");
         vm.prank(allocator);
         mainnetController.midnight_redeem(keccak256("not-onboarded"), seedUnits, 1);
+    }
+
+    // An onboarded config authenticates the id, but the singleton still has to know the market.
+    function test_redeemMidnight_marketNotCreated() external {
+        marketId = keccak256("onboarded-but-never-created");
+
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        _redeem(seedUnits, 1);
     }
 
     function test_redeemMidnight_zeroMinAssetsOut() external {
