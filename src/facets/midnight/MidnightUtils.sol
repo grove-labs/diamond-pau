@@ -119,41 +119,53 @@ library MidnightUtils {
 
     // Not vendored, no upstream counterpart: Midnight bounds trades in price space, so a yield
     // bound has to be turned into the price it implies at the current time to maturity. Simple
-    // interest, ACT/365, over what a unit actually returns: par less the continuous fee
-    // crystallized for the remaining term (upstream: src/Midnight.sol#L417).
+    // interest, ACT/365, over what a unit actually returns: par less the continuous fee still
+    // owed on it (upstream: src/Midnight.sol#L417).
 
-    // Highest all-in price a buy can pay and still earn `minYield` basis points a year.
+    // Highest all-in price a buy can pay and still earn `minYield` basis points a year. Entering
+    // fixes the market's current rate onto the new units, so that rate is what the buyer owes.
     function maxBuyPrice(uint256 minYield, uint256 timeToMaturity, uint256 continuousFee)
         internal
         pure
         returns (uint256)
     {
-        return _yieldPrice(minYield, timeToMaturity, continuousFee, false);
+        return _yieldPrice(minYield, timeToMaturity, continuousFee * timeToMaturity, false);
     }
 
     // Lowest net price a sell can accept and still give up at most `maxYield` basis points a year.
-    function minSellPrice(uint256 maxYield, uint256 timeToMaturity, uint256 continuousFee)
+    // A position keeps the fee it was bought at, so the floor prices the lien the position still
+    // carries (upstream: src/Midnight.sol#L51-L53) rather than the market's current rate.
+    function minSellPrice(
+        uint256 maxYield,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
         internal
         pure
         returns (uint256)
     {
-        return _yieldPrice(maxYield, timeToMaturity, continuousFee, true);
+        // Nothing held is nothing to price, and par is the strictest floor.
+        if (credit == 0) return WAD;
+
+        return _yieldPrice(maxYield, timeToMaturity, pendingFee * WAD / credit, true);
     }
 
+    // `feePerUnit` is the fee still owed over the remaining term, as a WAD fraction of one unit.
     // Rounds against the caller: down for the buy ceiling, up for the sell floor.
     function _yieldPrice(
         uint256 yieldBp,
         uint256 timeToMaturity,
-        uint256 continuousFee,
+        uint256 feePerUnit,
         bool    roundUp
     )
         private
         pure
         returns (uint256)
     {
-        // Upstream caps maturity 100 years out and the continuous fee at one percent a year, so
-        // the crystallized fee stays below par.
-        uint256 numerator   = (WAD - continuousFee * timeToMaturity) * YEAR * WAD;
+        // Upstream caps maturity 100 years out and the continuous fee at one percent a year, and a
+        // position's pending fee never exceeds its credit, so the fee stays below par either way.
+        uint256 numerator   = (WAD - feePerUnit) * YEAR * WAD;
         uint256 denominator = YEAR * WAD + yieldBp * YIELD_BP_RATE * timeToMaturity;
 
         return roundUp ? (numerator + denominator - 1) / denominator : numerator / denominator;
