@@ -124,22 +124,26 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Loss bounds:** `minAssetsOut` (non-zero) over the batch; per-offer
   `tickToPrice(offer.tick) >= tickToPrice(minSellTick) + settlementFee(marketId,
   timeToMaturity)` and `tickToPrice(offer.tick) >= minSellPrice(maxSellYield,
-  timeToMaturity, continuousFee) + settlementFee`, so the proceeds give up at most
-  `maxSellYield` on the same basis the buy leg uses; per-offer units capped at the proxy's
-  remaining live credit and the batch stops when credit is exhausted, so a sell can never
-  create debt; exact credit delta (`credit_before == credit_after + sum(cappedUnits)`) and
-  zero debt after the batch. The yield-implied price floor converges on par as maturity
-  approaches, so a post-maturity sell only clears at par and a discounted dump against an
-  available par redemption is refused; with a live settlement fee it does not clear at all,
-  leaving `redeem` as the exit. That costs nothing: a sell nets the tick price less the
-  settlement fee while `redeem` pays par with no fee, so no post-maturity sell can beat
-  redemption. No configuration reopens a discounted exit either, since the floor at zero
-  time to maturity is par for every `maxSellYield`.
+  timeToMaturity, credit, pendingFee) + settlementFee`, so the proceeds give up at most
+  `maxSellYield` on the same basis the buy leg uses. A position keeps the continuous fee it
+  was bought at, so the floor is measured against the lien that position still carries
+  (`pendingFee / credit` from `updatePositionView`) rather than the market's current rate,
+  which a later fee change would otherwise move in either direction; per-offer units
+  capped at the proxy's remaining live credit and the batch stops when credit is exhausted,
+  so a sell can never create debt; exact credit delta (`credit_before == credit_after +
+  sum(cappedUnits)`) and zero debt after the batch. A lien is fully accrued by maturity, so
+  the yield-implied price floor converges on par, and a post-maturity sell only clears at
+  par; a discounted dump against an available par redemption is refused, and with a live
+  settlement fee it does not clear at all, leaving `redeem` as the exit. That costs
+  nothing: a sell nets the tick price less the settlement fee while `redeem` pays par with
+  no fee, so no post-maturity sell can beat redemption. No configuration reopens a
+  discounted exit either, since the floor at zero time to maturity is par for every
+  `maxSellYield`.
 - **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits,
   proxy, proxy, address(0), "")` via `doCall`, once per offer, with `offer.buy == true`.
-  Reads
-  `settlementFee`, `continuousFee`, `updatePositionView` and `debt` on the singleton. Same
-  venue and id binding as `buy`.
+  Reads `settlementFee`, `updatePositionView` and `debt` on the singleton; the market's
+  `continuousFee` is not read, since the floor comes from the position. Same venue and id
+  binding as `buy`.
 - **Zero-amount semantics:** as `buy`; additionally a batch whose first offer caps to
   zero units (no credit) stops before any take and fails `minAssetsOut`.
 
