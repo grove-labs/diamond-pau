@@ -34,6 +34,8 @@ import { IMapleController }         from "../facets/maple/IMapleController.sol";
 import { IMapleFacet }              from "../facets/maple/IMapleFacet.sol";
 import { IMerklController }         from "../facets/merkl/IMerklController.sol";
 import { IMerklFacet }              from "../facets/merkl/IMerklFacet.sol";
+import { IMidnightController }      from "../facets/midnight/IMidnightController.sol";
+import { IMidnightFacet }           from "../facets/midnight/IMidnightFacet.sol";
 import { INFATHaloController }      from "../facets/nfat-halo/INFATHaloController.sol";
 import { INFATHaloFacet }           from "../facets/nfat-halo/INFATHaloFacet.sol";
 import { INFATPrimeController }     from "../facets/nfat-prime/INFATPrimeController.sol";
@@ -116,6 +118,9 @@ library BeaconConfig {
 
     /// @notice Integration identifier for the Merkl facet.
     bytes32 internal constant MERKL_INTEGRATION = "MERKL_FACET";
+
+    /// @notice Integration identifier for the Midnight facet.
+    bytes32 internal constant MIDNIGHT_INTEGRATION = "MIDNIGHT_FACET";
 
     /// @notice Integration identifier for the NFAT Halo facet.
     bytes32 internal constant NFAT_HALO_INTEGRATION = "NFAT_HALO_FACET";
@@ -1045,6 +1050,76 @@ library BeaconConfig {
         });
 
         IBeacon(beacon).setIntegration(MERKL_INTEGRATION, config);
+    }
+
+    /**********************************************************************************************/
+    /*** Midnight Integration                                                                   ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Configures the Midnight facet integration on the beacon.
+     * @param  beacon Address of the Sky Diamond PAU Beacon.
+     * @param  facet  Address of the deployed MidnightFacet contract.
+     */
+    function setMidnightIntegration(address beacon, address facet) internal {
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](10);
+
+        wires[0] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_setMarketConfig.selector,
+            IMidnightFacet.setMarketConfig.selector
+        );
+
+        wires[1] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getMarketConfig.selector,
+            IMidnightFacet.getMarketConfig.selector
+        );
+
+        wires[2] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_buy.selector,
+            IMidnightFacet.buy.selector
+        );
+
+        wires[3] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_sell.selector,
+            IMidnightFacet.sell.selector
+        );
+
+        wires[4] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_redeem.selector,
+            IMidnightFacet.redeem.selector
+        );
+
+        wires[5] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getBuyRateLimitKey.selector,
+            IMidnightFacet.getBuyRateLimitKey.selector
+        );
+
+        wires[6] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getSellRateLimitKey.selector,
+            IMidnightFacet.getSellRateLimitKey.selector
+        );
+
+        wires[7] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getRedeemRateLimitKey.selector,
+            IMidnightFacet.getRedeemRateLimitKey.selector
+        );
+
+        wires[8] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_midnight.selector,
+            IMidnightFacet.midnight.selector
+        );
+
+        wires[9] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_VERSION.selector,
+            IFacet.VERSION.selector
+        );
+
+        IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config({
+            facet : facet,
+            wires : wires
+        });
+
+        IBeacon(beacon).setIntegration(MIDNIGHT_INTEGRATION, config);
     }
 
     /**********************************************************************************************/
