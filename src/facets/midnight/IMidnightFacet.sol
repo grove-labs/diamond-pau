@@ -3,21 +3,37 @@ pragma solidity ^0.8.34;
 
 import { IFacet } from "../IFacet.sol";
 
-import { Offer } from "./MidnightUtils.sol";
+import { Market, Offer } from "./MidnightUtils.sol";
 
 /**
  * @title  IMidnightFacet
- * @notice PAU facet for lending through Morpho Midnight fixed-term markets as a taker.
+ * @notice PAU facet for lending through Morpho Midnight fixed-term markets as taker and maker.
  * @dev    The proxy only ever holds credit (lender units redeemable at par at maturity): it buys
  *         units from makers' sell offers, sells them back into makers' buy offers before maturity,
  *         and redeems them at par once repayments land. Every market is identified by its id, a
  *         hash committing to the full market config including the Midnight venue address.
+ * @dev    As a maker the proxy rests its own signed offers. A fill reaches `fundFill` through the
+ *         funding strategy named as the offer's callback, which is authorized by the existence of
+ *         its pair rate limit rather than by a role, so no standing token approval is needed.
  */
 interface IMidnightFacet is IFacet {
 
     /**********************************************************************************************/
     /*** Structs                                                                                ***/
     /**********************************************************************************************/
+
+    /**
+     * @notice Offer groups the proxy's resting offers must sit in, one per direction.
+     * @dev    Separate groups let the entry and exit books be cancelled independently, since
+     *         cancelling consumes a whole group. Zero means no group is designated, which bars
+     *         that direction.
+     * @param  buyGroup  Group every resting buy (entry) offer must name.
+     * @param  sellGroup Group every resting sell (exit) offer must name.
+     */
+    struct DesignatedGroups {
+        bytes32 buyGroup;
+        bytes32 sellGroup;
+    }
 
     /**
      * @notice One maker offer to take, carrying everything needed to take it.
@@ -31,6 +47,22 @@ interface IMidnightFacet is IFacet {
         Offer   offer;
         bytes   ratifierData;
         uint256 units;
+    }
+
+    /**
+     * @notice Make-side limits for one Midnight market. Fits in two storage slots.
+     * @dev    `maxOfferSize == 0` disables making, independently of take onboarding. Maturity and
+     *         loan token are copied from the `Market` that produced the id, and `toId` commits to
+     *         every field, so neither can disagree with the market they describe. They are stored
+     *         rather than read per fill because `toMarket` resolves the config from contract code.
+     * @param  maxOfferSize Largest size a single resting offer may carry.
+     * @param  maturity     Market maturity, used to price the remaining term on a fill.
+     * @param  loanToken    Market loan token, the asset a fill is funded in.
+     */
+    struct MakeConfig {
+        uint256 maxOfferSize;
+        uint64  maturity;
+        address loanToken;
     }
 
     /**
@@ -67,6 +99,46 @@ interface IMidnightFacet is IFacet {
     event MidnightBuy(bytes32 indexed marketId, uint256 units, uint256 assetsSpent);
 
     /**
+     * @notice Emitted when the designated offer groups for a Midnight market are updated.
+     * @param  marketId  Identifier of the Midnight market.
+     * @param  buyGroup  Group every resting buy offer must name.
+     * @param  sellGroup Group every resting sell offer must name.
+     */
+    event MidnightDesignatedGroupsSet(
+        bytes32 indexed marketId,
+        bytes32         buyGroup,
+        bytes32         sellGroup
+    );
+
+    /**
+     * @notice Emitted when a fill of one of the proxy's resting offers is funded.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  strategy Funding strategy the loan token was sent to.
+     * @param  assets   Loan token sent to the strategy.
+     * @param  units    Credit units the fill creates for the proxy.
+     */
+    event MidnightFillFunded(
+        bytes32 indexed marketId,
+        address indexed strategy,
+        uint256         assets,
+        uint256         units
+    );
+
+    /**
+     * @notice Emitted when the make-side limits for a Midnight market are updated.
+     * @param  marketId     Identifier of the Midnight market.
+     * @param  maxOfferSize Largest size a single resting offer may carry.
+     * @param  maturity     Market maturity, as committed to by the market id.
+     * @param  loanToken    Market loan token, as committed to by the market id.
+     */
+    event MidnightMakeConfigSet(
+        bytes32 indexed marketId,
+        uint256         maxOfferSize,
+        uint64          maturity,
+        address         loanToken
+    );
+
+    /**
      * @notice Emitted when the governance limits for a Midnight market are updated.
      * @param  marketId         Identifier of the Midnight market.
      * @param  maxBuyTick       Highest offer tick a buy may pay.
@@ -86,6 +158,21 @@ interface IMidnightFacet is IFacet {
         uint16          maxContinuousFee,
         uint128         maxLossFactor
     );
+
+    /**
+     * @notice Emitted when the proxy cancels one of its offer groups on Midnight.
+     * @param  group Offer group consumed to its maximum.
+     */
+    event MidnightOfferGroupCancelled(bytes32 indexed group);
+
+    /**
+     * @notice Emitted when the proxy's ratifier authorization on Midnight is changed.
+     * @dev    An authorized ratifier can act for the proxy across Midnight, so this is the loudest
+     *         event the facet emits.
+     * @param  ratifier   Address whose authorization changed.
+     * @param  authorized Whether the address may now ratify the proxy's offers.
+     */
+    event MidnightRatifierAuthorizationSet(address indexed ratifier, bool authorized);
 
     /**
      * @notice Emitted when the proxy redeems credit units at par from repayments.
@@ -131,6 +218,31 @@ interface IMidnightFacet is IFacet {
         returns (uint256 assetsSpent);
 
     /**
+     * @notice Cancels every resting offer in one of the proxy's offer groups.
+     * @dev    Consumes the group to its maximum on Midnight, which is irreversible for that group:
+     *         consumption only ever increases. Risk-reducing, so it is allocator-callable, and it
+     *         is the only way to retire offers already published to the mempool. Groups are
+     *         per-direction, so the entry and exit books can be cancelled separately.
+     * @param  group Offer group to consume.
+     */
+    function cancelOfferGroup(bytes32 group) external;
+
+    /**
+     * @notice Funds a fill of one of the proxy's resting buy offers.
+     * @dev    Called by the funding strategy named as the offer's callback, from inside Midnight's
+     *         settlement. Carries no role on purpose: the caller is authorized by the existence of
+     *         its pair rate limit for `(caller, marketId)`, so authorizing a strategy and metering
+     *         it are the same act and zeroing the limit withdraws the authorization.
+     * @dev    Reverts unless the market still clears the configured loss factor and the fill's
+     *         implied price is at or below the stricter of the configured entry tick and entry
+     *         yield, both measured with the configured fee ceiling rather than the live fee.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  assets   Loan token the settlement needs, as reported by the strategy.
+     * @param  units    Credit units the fill creates for the proxy, as reported by the strategy.
+     */
+    function fundFill(bytes32 marketId, uint256 assets, uint256 units) external;
+
+    /**
      * @notice Redeems credit units at par out of the market's repayments.
      * @dev    Units are capped at both the proxy's live credit and the market's withdrawable
      *         amount, so passing `type(uint256).max` redeems everything currently available.
@@ -169,6 +281,27 @@ interface IMidnightFacet is IFacet {
         returns (uint256 assetsReceived);
 
     /**
+     * @notice Sets the offer groups the proxy's resting offers must sit in on one market.
+     * @dev    One group per direction, so cancelling the entry book leaves the exit book alive.
+     * @param  marketId  Identifier of the Midnight market.
+     * @param  buyGroup  Group every resting buy offer must name.
+     * @param  sellGroup Group every resting sell offer must name.
+     */
+    function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup) external;
+
+    /**
+     * @notice Sets the make-side limits for a Midnight market.
+     * @dev    Takes the whole `Market` rather than an id so that maturity and loan token are
+     *         committed to by the id they are stored under and can never be passed loose. Reverts
+     *         unless the market names the configured venue, is already take-onboarded, and exists
+     *         on Midnight, so a mistyped or uncreated market fails in the spell instead of
+     *         silently resting an unfillable book. Setting `maxOfferSize` to zero disables making.
+     * @param  market       Full market config; its id is derived here.
+     * @param  maxOfferSize Largest size a single resting offer may carry.
+     */
+    function setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
+
+    /**
      * @notice Sets the governance limits for a Midnight market.
      * @dev    Reverts unless `maxBuyTick` and `minSellTick` are within Midnight's tick range,
      *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
@@ -194,6 +327,19 @@ interface IMidnightFacet is IFacet {
         uint128 maxLossFactor
     ) external;
 
+    /**
+     * @notice Authorizes or de-authorizes a ratifier to ratify the proxy's resting offers.
+     * @dev    Midnight requires the maker to have authorized the ratifier its offers name, so
+     *         making cannot work without this. Midnight's authorization is not scoped to
+     *         ratification: an authorized address can act for the proxy across the venue,
+     *         including authorizing further addresses, so only an immutable contract that never
+     *         calls Midnight outside a view may be named here. De-authorizing is the one switch
+     *         that kills every resting offer at once, including offers already published.
+     * @param  ratifier   Address to authorize or de-authorize.
+     * @param  authorized Whether the address may ratify the proxy's offers.
+     */
+    function setRatifierAuthorization(address ratifier, bool authorized) external;
+
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
     /**********************************************************************************************/
@@ -211,6 +357,23 @@ interface IMidnightFacet is IFacet {
      * @return key      Derived rate limit key.
      */
     function getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    /**
+     * @notice Returns the designated offer groups for a Midnight market.
+     * @param  marketId Identifier of the Midnight market.
+     * @return groups   Designated groups. A zero group bars that direction.
+     */
+    function getDesignatedGroups(bytes32 marketId)
+        external
+        view
+        returns (DesignatedGroups memory groups);
+
+    /**
+     * @notice Returns the make-side limits configured for a Midnight market.
+     * @param  marketId Identifier of the Midnight market.
+     * @return config   Configured limits. A zero `maxOfferSize` means making is disabled.
+     */
+    function getMakeConfig(bytes32 marketId) external view returns (MakeConfig memory config);
 
     /**
      * @notice Returns the governance limits configured for a Midnight market.
@@ -232,5 +395,18 @@ interface IMidnightFacet is IFacet {
      * @return key      Derived rate limit key.
      */
     function getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    /**
+     * @notice Returns the derived pair rate limit key for a funding strategy on a market.
+     * @dev    The existence of this limit is what authorizes the strategy to call `fundFill`, so
+     *         the key is public to make the authorized set auditable off-chain.
+     * @param  strategy Funding strategy address.
+     * @param  marketId Identifier of the Midnight market.
+     * @return key      Derived rate limit key.
+     */
+    function getStrategyRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
 
 }

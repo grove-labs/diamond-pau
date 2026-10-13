@@ -3,9 +3,16 @@ pragma solidity ^0.8.34;
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
 
+import { Market } from "./MidnightUtils.sol";
+
 interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
+
+    function midnight_setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
+        external;
+
+    function midnight_setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
 
     function midnight_setMarketConfig(
         bytes32 marketId,
@@ -16,6 +23,12 @@ interface IMidnightController {
         uint16  maxContinuousFee,
         uint128 maxLossFactor
     ) external;
+
+    function midnight_setRatifierAuthorization(address ratifier, bool authorized) external;
+
+    function midnight_cancelOfferGroup(bytes32 group) external;
+
+    function midnight_fundFill(bytes32 marketId, uint256 assets, uint256 units) external;
 
     function midnight_buy(
         bytes32                        marketId,
@@ -39,6 +52,16 @@ interface IMidnightController {
 
     function midnight_getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
+    function midnight_getDesignatedGroups(bytes32 marketId)
+        external
+        view
+        returns (IMidnightFacet.DesignatedGroups memory groups);
+
+    function midnight_getMakeConfig(bytes32 marketId)
+        external
+        view
+        returns (IMidnightFacet.MakeConfig memory config);
+
     function midnight_getMarketConfig(bytes32 marketId)
         external
         view
@@ -47,6 +70,11 @@ interface IMidnightController {
     function midnight_getRedeemRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     function midnight_getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    function midnight_getStrategyRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
 
     function midnight_midnight() external view returns (address);
 
