@@ -160,8 +160,10 @@ The last three are not diagnostics: the ratifier reads `getMakeConfig`, `getDesi
 
 In maker mode the proxy stops waiting for someone else's offer and publishes its own. An off-chain **quoter** key signs an `Offer` naming the proxy as maker; a third party finds it, calls `midnight.take` directly, and the settlement happens with no transaction of ours in the call stack. Two immutable periphery contracts stand in for the facet inside that stack:
 
-- **`MidnightRatifier`** (`src/periphery/MidnightRatifier.sol`) is the contract Midnight asks whether an offer is live. It is a pure `view`: it recovers the quoter's signature over the offer, then re-reads the facet's own `MakeConfig`, `DesignatedGroups` and `MarketConfig` and applies the same bounds the facet would. It never calls the singleton.
-- **`ProxyFundingStrategy`** (`src/periphery/ProxyFundingStrategy.sol`) is named as the `callback` on buy offers and is therefore the payer Midnight pulls from. It calls `fundFill` to draw the exact amount from the proxy, approves the singleton for it, and is drained inside the same `take`.
+- a **ratifier**, the contract Midnight asks whether an offer is live. It must be a pure `view` that recovers the quoter's signature over the offer, re-reads this facet's `MakeConfig`, `DesignatedGroups` and `MarketConfig`, and applies the same bounds the facet would. It must never call the singleton.
+- a **funding strategy**, named as the `callback` on buy offers and therefore the payer Midnight pulls from. It calls `fundFill` to draw the exact amount from the proxy, approves the singleton for it, and is drained inside the same `take`.
+
+**Neither contract ships from this repository.** Both are deployed, audited and tested in the periphery repository, against this facet and the ALM controller's matching surface. The dummy ratifier and dummy strategy this repo tests with carry none of the policy, so a maker test here proves the facet's own gates and nothing about an acceptable ratifier. What an acceptable one must enforce is listed below, and that list is the acceptance spec the periphery repository is built against.
 
 The proxy is still lender-only in this mode: buy offers acquire credit, sell offers are required to be `reduceOnly` so a fill can only shed credit the proxy already holds, and nothing opens debt or supplies collateral.
 
@@ -178,6 +180,26 @@ Maker sell:  taker calls midnight.take(proxy's sell offer)
              → loanToken (taker) → ALMProxy, net of settlement fee
              credit -= units        (no facet call, no rate limit; see below)
 ```
+
+### What an Acceptable Ratifier Must Enforce
+
+The facet cannot see a resting offer, so each requirement below is enforced by the ratifier or not at all. A ratifier passed to `setRatifierAuthorization` must refuse an offer unless:
+
+1. it carries a current signature from the quoter over the offer digest, so rotating the quoter voids every outstanding offer;
+2. `maker` is the proxy, `ratifier` is the ratifier itself, and `market.midnight` is the configured singleton;
+3. `receiverIfMakerIsSeller` is the proxy on a sell and zero on a buy, so proceeds cannot be redirected;
+4. `maxOfferSize` is non-zero for the market and the offer's own `maxUnits`/`maxAssets` is within it;
+5. the offer has not expired, its window is not inverted, and the window is no longer than a configured maximum;
+6. a sell offer is `reduceOnly`, so a fill can only shed credit the proxy already holds;
+7. the offer's group is the designated group for its direction, and that direction has one designated;
+8. a sell offer names no callback, which Midnight would route to `onSell`, and a buy offer's callback holds a pair rate limit for that market;
+9. the tick is within `maxBuyTick` on a buy and `minSellTick` on a sell;
+10. the price is within the yield rail for its direction, computed with the continuous fee at the configured cap on a buy and with the strictest basis on a sell, because the live lien moves between signing and filling;
+11. `continuousFeeCap` is at or below `continuousFeePerSecond(maxContinuousFee)`, because upstream voids a fill whose live fee exceeds the offer's own cap.
+
+A funding strategy must refuse to pay unless `onBuy`'s caller is the singleton and its `buyer` is the proxy, and must return success *without* calling `fundFill` when `buyerAssets` is zero, because a consumed offer stays pokeable and reverting would fail an unrelated taker's transaction.
+
+Three of these the facet re-checks on the buy leg, because `fundFill` reads the same config: make-enabled, the strategy's pair limit, and the buy price bound. The rest of the list, and the whole sell leg, have no second line of defence here.
 
 ### Fund Fill (strategy, no role)
 
@@ -303,7 +325,9 @@ The funding strategy does approve the singleton, but it holds no proxy funds bet
 
 Midnight gates maker fills on `isAuthorized[maker][ratifier]`, and that is one flat mapping: the same entry also authorizes `withdraw`, `repay`, `supplyCollateral`, `withdrawCollateral`, `setConsumed` and `setIsAuthorized` on the proxy's behalf. (`borrow` and `liquidate` are not on that list.) Authorizing a ratifier therefore hands it the proxy's whole position on the venue, not just the right to answer ratification questions. There is no narrower grant to ask for.
 
-The containment is that the authorized contract is incapable of using the grant: `MidnightRatifier` is non-upgradeable, has no constructor or admin path that can reach the singleton, and its only external interactive function is `setQuoter`. The integration test suite asserts this structurally by scanning the facet's own call surface for the forbidden selectors with `take` as a positive control, and the fork suite asserts that `isAuthorized[proxy][x]` holds for the ratifier and no other address. Nothing but a reviewed, immutable contract should ever be passed to `setRatifierAuthorization`.
+The containment is that the authorized contract must be *incapable* of using the grant: non-upgradeable, with no constructor or admin path that can reach the singleton, and with every function `view` or `pure` so that its deployed runtime contains no `CALL`, `CALLCODE`, `DELEGATECALL`, `CREATE`, `CREATE2` or `SELFDESTRUCT` opcode at all.
+
+**That containment is not verified in this repository, and cannot be.** The ratifier ships from the periphery repository, which is where the opcode scan over its deployed runtime belongs, and the dummy this repo tests with would make the same scan vacuous. Two things here are unaffected: the facet's own call surface is still scanned for the forbidden selectors with `take` as a positive control, and the fork suite still asserts that `isAuthorized[proxy][x]` holds for exactly one address. The scan over the real ratifier's bytecode is therefore a **deployment precondition** on the authorizing spell, not an assertion this suite can make. Nothing but a reviewed, immutable, scanned contract should ever be passed to `setRatifierAuthorization`.
 
 ### Maker Exits Carry No Meter
 
@@ -373,31 +397,15 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 
 Every revert below refuses a fill against one of the proxy's own resting offers. The taker sees it bubble out of `midnight.take`.
 
+Reverts raised by the ratifier and the funding strategy are theirs to document, since neither ships from here. The policy they have to refuse on is the numbered list under [What an Acceptable Ratifier Must Enforce](#what-an-acceptable-ratifier-must-enforce).
+
 | Revert                                        | Origin   | Cause                                                                              |
 | --------------------------------------------- | -------- | ---------------------------------------------------------------------------------- |
-| `MidnightRatifier/invalid-signature`          | ratifier | the offer was not signed by the current quoter, so a rotation voids every old offer |
-| `MidnightRatifier/maker-not-proxy`            | ratifier | an offer naming someone else as maker                                              |
-| `MidnightRatifier/not-our-ratifier`           | ratifier | an offer naming a different ratifier                                               |
-| `MidnightRatifier/invalid-midnight`           | ratifier | an offer on a different singleton                                                  |
-| `MidnightRatifier/invalid-receiver`           | ratifier | a sell offer not paying the proxy, or a buy offer naming a receiver at all         |
-| `MidnightRatifier/make-not-enabled`           | ratifier | `maxOfferSize` is zero for that market                                             |
-| `MidnightRatifier/offer-too-large`            | ratifier | the offer's `maxUnits`/`maxAssets` exceeds `maxOfferSize`                           |
-| `MidnightRatifier/offer-expired`              | ratifier | the offer's expiry has passed                                                      |
-| `MidnightRatifier/offer-window-inverted`      | ratifier | an offer whose expiry precedes its start                                           |
-| `MidnightRatifier/offer-window-too-long`      | ratifier | a validity window longer than the ratifier's `maxOfferWindow`                      |
-| `MidnightRatifier/sell-not-reduce-only`       | ratifier | a sell offer that could open debt                                                  |
-| `MidnightRatifier/group-not-designated`       | ratifier | that direction has no designated group                                             |
-| `MidnightRatifier/wrong-group`                | ratifier | the offer's group is not the designated one                                        |
-| `MidnightRatifier/sell-has-callback`           | ratifier | a sell offer naming a callback, which Midnight would route to `onSell`             |
-| `MidnightRatifier/strategy-not-authorized`    | ratifier | a buy offer whose callback holds no pair limit for that market                     |
-| `MidnightRatifier/tick-above-max-buy`         | ratifier | a buy offer above `maxBuyTick`                                                     |
-| `MidnightRatifier/tick-below-min-sell`        | ratifier | a sell offer below `minSellTick`                                                   |
-| `MidnightRatifier/buy-yield-too-low`          | ratifier | a buy offer above the capped-fee yield ceiling                                     |
-| `MidnightRatifier/sell-yield-too-high`        | ratifier | a sell offer below the yield-implied price floor                                   |
-| `MidnightRatifier/fee-cap-too-high`           | ratifier | an offer tolerating a continuous fee above `maxContinuousFee`                      |
-| `ProxyFundingStrategy/not-midnight`           | strategy | `onBuy` called by anything but the singleton                                       |
-| `ProxyFundingStrategy/buyer-not-proxy`        | strategy | `onBuy` for a fill the proxy is not buying, i.e. a stranger's offer naming it      |
-| `ProxyFundingStrategy/nothing-to-skim`        | strategy | `skim` on a token the strategy holds none of                                       |
+| `MidnightFacet/strategy-not-authorized`       | facet    | `fundFill` from an address holding no pair limit for that market                   |
+| `MidnightFacet/make-not-enabled`              | facet    | `fundFill` on a market whose `maxOfferSize` is zero                                |
+| `MidnightFacet/fill-price-too-high`           | facet    | `fundFill` above the configured entry bound, fee priced at the cap                 |
+| `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` on a market whose lenders have already been slashed                     |
+| `NotRatified()`                               | Midnight | the ratifier refused the offer, or never ratified that exact one                   |
 | `ConsumedUnits()`                             | Midnight | the designated group is exhausted, including by `cancelOfferGroup`                 |
 | `MakerCreditOrDebtIncreased()`                | Midnight | a `reduceOnly` sell fill that would have increased the position                    |
 | `UnusedReceiverMustBeZero()`                  | Midnight | a buy offer naming a receiver, refused before ratification runs                    |
@@ -422,7 +430,7 @@ No seeding is required: the integration holds no intermediate token and uses no 
 
 Steps 1 to 3 above are prerequisites. Maker mode is off until all of the following are done, and each one on its own is a kill switch.
 
-5. Deploy `MidnightRatifier` (admin, singleton, proxy, controller, rate limits, quoter, `maxOfferWindow`) and `ProxyFundingStrategy` (singleton, proxy, controller). Both are immutable; rotating either means a new deployment and a spell. Review the deployed bytecode against the reviewed source before authorizing anything.
+5. Deploy the ratifier and the funding strategy from the periphery repository. Both are immutable; rotating either means a new deployment and a spell. Before authorizing anything: review the deployed bytecode against the audited source, confirm the ratifier enforces the full numbered list above, and run the opcode scan over its runtime, which this repository cannot do for you.
 6. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market, passing the full `Market` struct.
 7. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups. Leave a side zero to make the market one-directional. These are the only groups `cancelOfferGroup` can retire, so publish offers into nothing else.
 8. Configure `LIMIT_MIDNIGHT_STRATEGY` keyed `(strategy, marketId)`. Its existence is the strategy's authorization; its size caps that strategy inside the market's shared `LIMIT_MIDNIGHT_BUY` budget.

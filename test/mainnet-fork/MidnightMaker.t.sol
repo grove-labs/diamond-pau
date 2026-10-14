@@ -5,8 +5,7 @@ import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
 import { Market, MidnightUtils, Offer } from "../../src/facets/midnight/MidnightUtils.sol";
 
-import { MidnightRatifier }     from "../../src/periphery/MidnightRatifier.sol";
-import { ProxyFundingStrategy } from "../../src/periphery/ProxyFundingStrategy.sol";
+import { MockFundingStrategy } from "../mocks/MockFundingStrategy.sol";
 
 import { Midnight_TestBase } from "./Midnight.t.sol";
 
@@ -50,12 +49,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
     uint16 internal constant MAKER_BUY_TICK  = TICK_98;
     uint16 internal constant MAKER_SELL_TICK = TICK_99;
 
-    uint256 internal quoterKey = 0xB0B;
-
-    address internal quoter;
-
-    MidnightRatifier     internal ourRatifier;
-    ProxyFundingStrategy internal strategy;
+    MockFundingStrategy internal strategy;
 
     bytes32 internal strategyKey;
 
@@ -64,23 +58,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
     function setUp() public virtual override {
         super.setUp();
 
-        quoter = vm.addr(quoterKey);
-
-        ourRatifier = new MidnightRatifier(
-            Ethereum.SPARK_PROXY,
-            MIDNIGHT,
-            address(almProxy),
-            address(mainnetController),
-            address(rateLimits),
-            quoter,
-            MAX_OFFER_WINDOW
-        );
-
-        strategy = new ProxyFundingStrategy(
-            MIDNIGHT,
-            address(almProxy),
-            address(mainnetController)
-        );
+        strategy = new MockFundingStrategy(address(mainnetController));
 
         maxOfferSize = 2 * seedUnits;
         strategyKey  = mainnetController.midnight_getStrategyRateLimitKey(
@@ -89,14 +67,13 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         );
 
         vm.startPrank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setRatifierAuthorization(address(ourRatifier), true);
+        mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
         mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
         rateLimits.setRateLimitData(strategyKey, rateLimit, rateLimit / 1 days);
         vm.stopPrank();
 
-        vm.label(address(ourRatifier), "MidnightRatifier");
-        vm.label(address(strategy),    "ProxyFundingStrategy");
+        vm.label(address(strategy), "MockFundingStrategy");
     }
 
     /**********************************************************************************************/
@@ -105,7 +82,6 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
     function _makerOffer(bool buy, uint256 tick, uint256 maxUnits)
         internal
-        view
         returns (Offer memory offer)
     {
         offer = Offer({
@@ -119,18 +95,14 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
             callback                : buy ? address(strategy) : address(0),
             callbackData            : new bytes(0),
             receiverIfMakerIsSeller : buy ? address(0) : address(almProxy),
-            ratifier                : address(ourRatifier),
+            ratifier                : SETTER_RATIFIER,
             reduceOnly              : !buy,
             maxUnits                : uint128(maxUnits),
             maxAssets               : 0,
             continuousFeeCap        : MidnightUtils.continuousFeePerSecond(MAX_CONTINUOUS_FEE_CBPS)
         });
-    }
 
-    function _sign(Offer memory offer) internal view returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(quoterKey, ourRatifier.digest(offer));
-
-        return abi.encodePacked(r, s, v);
+        _ratify(offer);
     }
 
     // The collateralized maker EOA the base fixture funds, so it can both buy and sell units.
@@ -138,12 +110,10 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         internal
         returns (uint256 buyerAssets, uint256 sellerAssets)
     {
-        bytes memory ratifierData = _sign(offer);
-
         vm.prank(maker);
         return ITakeLike(MIDNIGHT).take(
             offer,
-            ratifierData,
+            _ratifierData(offer),
             units,
             maker,
             offer.buy ? maker : address(0),
@@ -153,13 +123,11 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
     }
 
     function _takeExpectRevert(Offer memory offer, uint256 units, bytes memory reason) internal {
-        bytes memory ratifierData = _sign(offer);
-
         vm.prank(maker);
         vm.expectRevert(reason);
         ITakeLike(MIDNIGHT).take(
             offer,
-            ratifierData,
+            _ratifierData(offer),
             units,
             maker,
             offer.buy ? maker : address(0),
@@ -307,7 +275,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         _setConfig(MAKER_BUY_TICK - 4, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/tick-above-max-buy");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-price-too-high");
     }
 
     function test_tighteningEntryYieldKillsRestingOffer() external {
@@ -317,19 +285,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         _setYields(5_00, MAX_SELL_YIELD);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/buy-yield-too-low");
-    }
-
-    function test_tighteningExitFloorKillsRestingOffer() external {
-        _seedCredit();
-
-        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 2);
-
-        _take(sell, seedUnits / 4);
-
-        _setYields(MIN_BUY_YIELD, 1);
-
-        _takeExpectRevert(sell, seedUnits / 4, "MidnightRatifier/sell-yield-too-high");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-price-too-high");
     }
 
     function test_disablingMakeKillsRestingOffer() external {
@@ -340,10 +296,9 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         vm.prank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setMakeConfig(market, 0);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/make-not-enabled");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
     }
 
-    // The ratifier refuses first, so a revoked strategy never reaches fundFill.
     function test_zeroingPairLimitRevokesStrategy() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
@@ -352,18 +307,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         vm.prank(Ethereum.SPARK_PROXY);
         rateLimits.setRateLimitData(strategyKey, 0, 0);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/strategy-not-authorized");
-    }
-
-    function test_rotatingQuoterKillsRestingOffer() external {
-        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
-
-        _take(buy, seedUnits / 4);
-
-        vm.prank(Ethereum.SPARK_PROXY);
-        ourRatifier.setQuoter(makeAddr("newQuoter"));
-
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/invalid-signature");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/strategy-not-authorized");
     }
 
     function test_offerDiesAtExpiry() external {
@@ -410,12 +354,12 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         _take(buy,  seedUnits / 8);
         _take(sell, seedUnits / 8);
 
-        assertTrue(midnight.isAuthorized(address(almProxy), address(ourRatifier)));
+        assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
 
         vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setRatifierAuthorization(address(ourRatifier), false);
+        mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, false);
 
-        assertFalse(midnight.isAuthorized(address(almProxy), address(ourRatifier)));
+        assertFalse(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
 
         bytes memory unauthorized = abi.encodeWithSignature("RatifierUnauthorized()");
 
@@ -425,13 +369,11 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
 
     // The authorization is total, so the set of addresses holding it is the whole blast radius.
     function test_onlyTheRatifierIsAuthorized() external view {
-        address[8] memory others = [
+        address[6] memory others = [
             address(strategy),
             address(mainnetController),
             address(almProxy),
             address(rateLimits),
-            SETTER_RATIFIER,
-            quoter,
             maker,
             Ethereum.SPARK_PROXY
         ];
@@ -440,22 +382,12 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
             assertFalse(midnight.isAuthorized(address(almProxy), others[i]));
         }
 
-        assertTrue(midnight.isAuthorized(address(almProxy), address(ourRatifier)));
+        assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
     }
 
     function test_unauthorizedRatifierCannotBeSubstituted() external {
-        MidnightRatifier rogue = new MidnightRatifier(
-            Ethereum.SPARK_PROXY,
-            MIDNIGHT,
-            address(almProxy),
-            address(mainnetController),
-            address(rateLimits),
-            quoter,
-            MAX_OFFER_WINDOW
-        );
-
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
-        buy.ratifier = address(rogue);
+        buy.ratifier = makeAddr("rogueRatifier");
 
         _takeExpectRevert(
             buy,
@@ -470,7 +402,7 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         vm.prank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setMakeConfig(market, 0);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/make-not-enabled");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
 
         uint256 creditBefore = _credit();
 

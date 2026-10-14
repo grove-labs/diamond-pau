@@ -119,10 +119,10 @@ already signed and published, and therefore unrecallable.
   only groups the ratifier will ratify an offer into, and therefore the only groups
   `cancelOfferGroup` needs to be able to retire.
 - **External calls:** none
-- **Zero-amount semantics:** both zero is the default and designates nothing. The ratifier
-  refuses an undesignated direction outright (`MidnightRatifier/group-not-designated`), so a
-  zero group is not a wildcard that matches an offer carrying group zero. Designating only
-  one side makes the market one-directional.
+- **Zero-amount semantics:** both zero is the default and designates nothing. An acceptable
+  ratifier refuses an undesignated direction outright, so a zero group must not act as a
+  wildcard matching an offer that carries group zero. Designating only one side makes the
+  market one-directional.
 
 ### `setMakeConfig(Market calldata market, uint256 maxOfferSize)`
 
@@ -390,14 +390,15 @@ Declared deviations from the usual facet shape, each with rationale:
   limit's existence is the authorization: onboarding a strategy is one `setRateLimitData`,
   revoking it is one zeroing, and there is no separate role grant that could be left behind
   after revocation. Every other gate on the function is unconditional.
-- **Two periphery contracts that are not facets**, under `src/periphery/`. `MidnightRatifier`
-  must be a standalone contract because the singleton calls `isRatified` on the address named
-  in the offer and that address holds the blanket authorization; `ProxyFundingStrategy` must
-  be standalone because the singleton calls `onBuy` on the address named in the offer's
-  callback field and that address temporarily receives proxy funds. Both are immutable with
-  no upgrade path, hold no proxy funds between settlements, and are verified by opcode scan
-  to contain no code-borrowing or self-destruction surface. Neither is in the diamond, so
-  neither can be reached through the controller.
+- **Two periphery contracts that are not facets, and do not ship from this repository.** A
+  ratifier must be standalone because the singleton calls `isRatified` on the address named in
+  the offer and that address holds the blanket authorization; a funding strategy must be
+  standalone because the singleton calls `onBuy` on the address named in the offer's callback
+  field and that address temporarily receives proxy funds. Both are immutable with no upgrade
+  path and hold no proxy funds between settlements. Neither is in the diamond, so neither can
+  be reached through the controller, and neither is audited or opcode-scanned here: both come
+  from the periphery repository, which also carries the integration tests that exercise real
+  policy against this facet. The dummies under `test/mocks` carry none of it.
 - **Policy read back through the controller.** The ratifier reads `getMarketConfig`,
   `getMakeConfig` and `getDesignatedGroups` through `IMidnightController` rather than holding
   its own copy. One source of truth, and it is what makes every bound retroactive over
@@ -500,10 +501,11 @@ exists.
 Maker mode is off until all five of these are done, and each one on its own is a kill switch.
 Steps 1 to 3 are prerequisites for taking as well.
 
-7. Deploy `MidnightRatifier` (admin, singleton, proxy, controller, rate limits, quoter,
-   `maxOfferWindow`) and `ProxyFundingStrategy` (singleton, proxy, controller). Both are
-   immutable; rotating either means a new deployment and a spell. Review the deployed
-   bytecode against the reviewed source before authorizing anything.
+7. Deploy the ratifier and the funding strategy from the periphery repository. Both are
+   immutable; rotating either means a new deployment and a spell. Before authorizing
+   anything: review the deployed bytecode against the audited source, confirm the ratifier
+   enforces the policy list in `docs/MIDNIGHT_INTEGRATION.md`, and run the opcode scan over
+   its runtime. None of those three is verifiable from this repository.
 8. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market. `maxOfferSize` is
    the cap on a single resting offer.
 9. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups.

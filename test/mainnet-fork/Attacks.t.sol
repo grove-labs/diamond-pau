@@ -969,8 +969,6 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
     address internal attacker = makeAddr("attacker");
 
-    uint256 internal attackerKey = uint256(keccak256("attacker-quoter"));
-
     MidnightGreedyStrategy internal greedy;
 
     function setUp() public override {
@@ -990,67 +988,22 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         vm.stopPrank();
     }
 
-    function _attackerOffer(bool buy, uint256 tick, uint256 units)
-        internal
-        returns (Offer memory offer)
-    {
-        offer = _offer(buy, tick, units);
-
-        offer.maker                   = attacker;
-        offer.receiverIfMakerIsSeller = buy ? address(0) : attacker;
-
-        _ratify(offer);
-    }
-
-    // Naming our strategy as the callback on someone else's offer would make it the payer for
-    // a fill the proxy is not party to.
-    function test_attack_strategyCallbackForeignBuyer_makeMidnight() external {
-        Offer memory offer = _attackerOffer(true, MAKER_BUY_TICK, seedUnits);
-        offer.callback     = address(strategy);
-
-        _ratify(offer);
-
-        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
-        uint256 limitBefore   = rateLimits.getCurrentRateLimit(strategyKey);
-
-        vm.prank(maker);
-        vm.expectRevert("ProxyFundingStrategy/buyer-not-proxy");
-        ITakeLike(MIDNIGHT).take(
-            offer, _ratifierData(offer), seedUnits, maker, maker, address(0), new bytes(0)
-        );
-
-        assertEq(loanToken.balanceOf(address(almProxy)),      balanceBefore);
-        assertEq(rateLimits.getCurrentRateLimit(strategyKey), limitBefore);
-    }
-
-    function test_attack_directOnBuyCall_makeMidnight() external {
-        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
-
-        vm.prank(attacker);
-        vm.expectRevert("ProxyFundingStrategy/not-midnight");
-        IOnBuyLike(address(strategy)).onBuy(
-            marketId, market, seedUnits, seedUnits, 0, address(almProxy), new bytes(0)
-        );
-
-        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
-    }
-
-    // Both of the singleton's own gates pass here, so the quoter signature is the only thing
-    // left between a forged offer and a fill.
-    function test_attack_forgedProxyMakerOffer_makeMidnight() external {
+    // Both of the singleton's own gates pass here, so ratification of that exact offer is the
+    // only thing left between a fabricated one and a fill.
+    function test_attack_unratifiedProxyMakerOffer_makeMidnight() external {
         Offer memory offer = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
-        assertTrue(midnight.isAuthorized(address(almProxy), address(ourRatifier)));
+        assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
 
-        ( uint8 v, bytes32 r, bytes32 s ) = vm.sign(attackerKey, ourRatifier.digest(offer));
+        offer.tick = MAKER_BUY_TICK + 4;
 
         uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
 
         vm.prank(attacker);
-        vm.expectRevert("MidnightRatifier/invalid-signature");
+        vm.expectRevert(abi.encodeWithSignature("NotRatified()"));
         ITakeLike(MIDNIGHT).take(
             offer,
-            abi.encodePacked(r, s, v),
+            _ratifierData(offer),
             seedUnits,
             attacker,
             attacker,
@@ -1071,7 +1024,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         fills[0] = IMidnightFacet.Fill({
             offer        : sell,
-            ratifierData : _sign(sell),
+            ratifierData : _ratifierData(sell),
             units        : seedUnits
         });
 
@@ -1084,7 +1037,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         fills[0] = IMidnightFacet.Fill({
             offer        : buy,
-            ratifierData : _sign(buy),
+            ratifierData : _ratifierData(buy),
             units        : seedUnits
         });
 
@@ -1143,7 +1096,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         _takeExpectRevert(buy, 1, abi.encodeWithSignature("ConsumedUnits()"));
 
-        bytes memory ratifierData = _sign(buy);
+        bytes memory ratifierData = _ratifierData(buy);
 
         vm.prank(attacker);
         ( uint256 buyerAssets, uint256 sellerAssets ) = ITakeLike(MIDNIGHT).take(
@@ -1178,7 +1131,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         Offer memory outer = _offer(false, TICK_98, seedUnits);
         outer.callback     = address(nested);
-        outer.callbackData = abi.encode(ours, _sign(ours), seedUnits);
+        outer.callbackData = abi.encode(ours, _ratifierData(ours), seedUnits);
 
         _ratify(outer);
 
