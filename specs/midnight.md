@@ -134,10 +134,11 @@ already signed and published, and therefore unrecallable.
   `market.midnight` must equal the immutable singleton; the market must already be onboarded
   for taking (`marketConfigs[marketId].minSellTick != 0`,
   `MidnightFacet/market-not-onboarded`), so making can never run on a market whose price
-  bounds were never set; `market.maturity <= type(uint64).max`; and
-  `toMarket(marketId).maturity == market.maturity`, which reverts unless the market exists on
-  the singleton. `maxOfferSize` bounds each single resting offer, in units or assets
-  whichever the offer sets, not the size of the book.
+  bounds were never set; `market.maturity <= type(uint64).max`;
+  `maxOfferSize <= type(uint128).max`, since an offer's own size fields are `uint128` and a
+  larger cap could never bind; and `toMarket(marketId).maturity == market.maturity`, which
+  reverts unless the market exists on the singleton. `maxOfferSize` bounds each single
+  resting offer, in units or assets whichever the offer sets, not the size of the book.
 - **External calls:** `midnight.toMarket(marketId)` (view only).
 - **Zero-amount semantics:** `maxOfferSize == 0` is the default and means making is disabled.
   It is also the per-market kill switch: the ratifier reads it on every fill, so zeroing it

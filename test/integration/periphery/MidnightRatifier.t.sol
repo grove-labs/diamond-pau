@@ -670,6 +670,30 @@ contract Periphery_MidnightRatifier_Tests is Integration_TestBase {
         _assertRejected(offer, "MidnightRatifier/offer-window-too-long");
     }
 
+    function test_isRatified_windowStraddlingMaturity() external {
+        _onboard();
+
+        vm.warp(marketMaturity - MAX_OFFER_WINDOW / 2);
+
+        Offer memory offer = _buyOffer();
+
+        assertGt(offer.expiry, marketMaturity);
+
+        _assertRatified(offer);
+
+        vm.warp(marketMaturity + 1);
+
+        _assertRatified(offer);
+
+        Offer memory sell = _sellOffer();
+
+        sell.start  = offer.start;
+        sell.expiry = offer.expiry;
+
+        // Past maturity the floor is par, so price turns the exit away rather than the clock.
+        _assertRejected(sell, "MidnightRatifier/sell-yield-too-high");
+    }
+
     function test_isRatified_sellNotReduceOnly() external {
         _onboard();
 

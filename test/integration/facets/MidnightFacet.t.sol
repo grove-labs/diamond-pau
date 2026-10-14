@@ -587,6 +587,21 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _assertConfig(otherMarketId, TICK_98, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, 0, 0);
     }
 
+    function test_setMarketConfig_preservesMakeConfig() external {
+        _onboardAndEnableMake(0);
+
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _marketId(), TICK_98, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, 0, 0
+        );
+
+        IMidnightFacet.MakeConfig memory config = controller.getMakeConfig(_marketId());
+
+        assertEq(config.maxOfferSize, MAX_OFFER_SIZE);
+        assertEq(config.maturity,     uint64(marketMaturity));
+        assertEq(config.loanToken,    loanToken);
+    }
+
     /**********************************************************************************************/
     /*** Rate Limit Key Tests                                                                   ***/
     /**********************************************************************************************/
@@ -703,6 +718,27 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.expectRevert("MidnightFacet/maturity-oob");
         vm.prank(admin);
         controller.setMakeConfig(_market(), MAX_OFFER_SIZE);
+    }
+
+    function test_setMakeConfig_maxOfferSizeOob() external {
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _marketId(), TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
+        );
+
+        vm.expectRevert("MidnightFacet/max-offer-size-oob");
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), uint256(type(uint128).max) + 1);
+
+        _mockMarketExists();
+
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), uint256(type(uint128).max));
+
+        assertEq(
+            controller.getMakeConfig(_marketId()).maxOfferSize,
+            uint256(type(uint128).max)
+        );
     }
 
     function test_setMakeConfig_marketNotCreated() external {
@@ -1007,6 +1043,24 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(strategy);
         controller.fundFill(_marketId(), honest, FILL_UNITS);
+    }
+
+    function testFuzz_fundFill_honestFillIsFundable(uint256 units) external {
+        // One unit prices to nothing, which trips the zero-assets guard instead of the bound.
+        units = bound(units, 2, MAX_OFFER_SIZE);
+
+        _onboardAndEnableMake(0);
+        _authorizeStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        uint256 honest = _honestAssets(units);
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), honest + 1, units);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), honest, units);
     }
 
     // The 1 wei fill the open market accepts is the control leg.

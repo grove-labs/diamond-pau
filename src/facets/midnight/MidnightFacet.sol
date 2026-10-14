@@ -175,6 +175,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
 
+        // An offer's own size fields are uint128, so a larger cap could never bind.
+        require(maxOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
+
         // Reverts unless the market exists on Midnight; the equality holds by construction.
         require(
             IMidnightLike(midnight).toMarket(marketId).maturity == market.maturity,

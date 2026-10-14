@@ -464,4 +464,19 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         );
     }
 
+    function test_makeDisableLeavesTheTakerPathWorking() external {
+        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMakeConfig(market, 0);
+
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightRatifier/make-not-enabled");
+
+        uint256 creditBefore = _credit();
+
+        _seedCredit();
+
+        assertEq(_credit(), creditBefore + seedUnits);
+    }
+
 }

@@ -295,7 +295,9 @@ interface IMidnightFacet is IFacet {
      *         committed to by the id they are stored under and can never be passed loose. Reverts
      *         unless the market names the configured venue, is already take-onboarded, and exists
      *         on Midnight, so a mistyped or uncreated market fails in the spell instead of
-     *         silently resting an unfillable book. Setting `maxOfferSize` to zero disables making.
+     *         silently resting an unfillable book. A cap above `type(uint128).max` is rejected,
+     *         since an offer's own size fields are `uint128` and a larger cap could never bind.
+     *         Setting `maxOfferSize` to zero disables making.
      * @param  market       Full market config; its id is derived here.
      * @param  maxOfferSize Largest size a single resting offer may carry.
      */
