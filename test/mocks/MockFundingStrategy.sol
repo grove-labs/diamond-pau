@@ -34,9 +34,30 @@ contract MockFundingStrategy {
         // Midnight pokes a consumed offer at zero, which fundFill rejects outright.
         if (buyerAssets == 0) return CALLBACK_SUCCESS;
 
-        IMidnightController(controller).midnight_fundFill(marketId, buyerAssets, units);
+        IMidnightController(controller).midnight_fundFill(marketId, false, buyerAssets, units);
 
         IERC20(market.loanToken).approve(msg.sender, buyerAssets);
+
+        return CALLBACK_SUCCESS;
+    }
+
+    function onSell(
+        bytes32       marketId,
+        Market memory,
+        uint256       sellerAssets,
+        uint256       units,
+        uint256,
+        address,
+        address,
+        bytes  memory
+    )
+        external
+        returns (bytes32)
+    {
+        if (sellerAssets == 0) return CALLBACK_SUCCESS;
+
+        // Midnight has already paid the proxy, so this only reports the fill for metering.
+        IMidnightController(controller).midnight_fundFill(marketId, true, sellerAssets, units);
 
         return CALLBACK_SUCCESS;
     }

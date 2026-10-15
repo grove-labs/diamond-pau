@@ -23,6 +23,21 @@ interface IOnBuyLike {
 
 }
 
+interface IOnSellLike {
+
+    function onSell(
+        bytes32 id,
+        Market  memory market,
+        uint256 sellerAssets,
+        uint256 units,
+        uint256 pendingFeeDecrease,
+        address seller,
+        address receiver,
+        bytes   memory data
+    ) external returns (bytes32);
+
+}
+
 // Takers call the singleton directly, so no code of ours runs on the exit leg.
 interface ITakeLike {
 
@@ -51,7 +66,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
     MockFundingStrategy internal strategy;
 
-    bytes32 internal strategyKey;
+    bytes32 internal makeKey;
 
     uint256 internal maxOfferSize;
 
@@ -61,16 +76,14 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         strategy = new MockFundingStrategy(address(mainnetController));
 
         maxOfferSize = 2 * seedUnits;
-        strategyKey  = mainnetController.midnight_getStrategyRateLimitKey(
-            address(strategy),
-            marketId
-        );
+        makeKey      = mainnetController.midnight_getMakeRateLimitKey(marketId);
 
         vm.startPrank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
         mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
-        rateLimits.setRateLimitData(strategyKey, rateLimit, rateLimit / 1 days);
+        mainnetController.midnight_setStrategyAllowed(marketId, address(strategy), true);
+        rateLimits.setRateLimitData(makeKey, rateLimit, rateLimit / 1 days);
         vm.stopPrank();
 
         vm.label(address(strategy), "MockFundingStrategy");
@@ -92,7 +105,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
             expiry                  : block.timestamp + MAX_OFFER_WINDOW,
             tick                    : tick,
             group                   : buy ? BUY_GROUP : SELL_GROUP,
-            callback                : buy ? address(strategy) : address(0),
+            callback                : address(strategy),
             callbackData            : new bytes(0),
             receiverIfMakerIsSeller : buy ? address(0) : address(almProxy),
             ratifier                : SETTER_RATIFIER,
@@ -150,6 +163,8 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         uint256 creditBefore  = _credit();
         uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
 
+        uint256 buyLimitBefore = rateLimits.getCurrentRateLimit(buyKey);
+
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, units);
 
         ( uint256 buyerAssets, uint256 sellerAssets ) = _take(sell, units);
@@ -160,8 +175,11 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                            creditBefore - units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + sellerAssets);
 
-        // Exit fills touch no controller code, so the entry meter is untouched.
-        assertEq(rateLimits.getCurrentRateLimit(strategyKey), rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(makeKey), rateLimit - sellerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - sellerAssets);
+
+        // Seeding spent from the entry budget, so the exit has room to put back.
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore + sellerAssets);
 
         assertEq(midnight.consumed(address(almProxy), SELL_GROUP), units);
 
@@ -170,8 +188,9 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         creditBefore  = _credit();
         balanceBefore = loanToken.balanceOf(address(almProxy));
 
-        uint256 strategyLimitBefore = rateLimits.getCurrentRateLimit(strategyKey);
-        uint256 buyLimitBefore      = rateLimits.getCurrentRateLimit(buyKey);
+        uint256 makeLimitBefore = rateLimits.getCurrentRateLimit(makeKey);
+
+        buyLimitBefore = rateLimits.getCurrentRateLimit(buyKey);
 
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, units);
 
@@ -183,8 +202,8 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                              creditBefore + units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - buyerAssets);
 
-        assertEq(rateLimits.getCurrentRateLimit(strategyKey), strategyLimitBefore - buyerAssets);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),      buyLimitBefore      - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(makeKey), makeLimitBefore - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  buyLimitBefore  - buyerAssets);
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
@@ -222,6 +241,34 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         _take(buy, units);
     }
 
+    // Same pin on the exit side, where the receiver argument sits between seller and data.
+    function test_makerSell_onSellArgumentsArePinned() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        uint256 units = seedUnits / 2;
+
+        vm.expectCall(
+            address(strategy),
+            abi.encodeCall(
+                IOnSellLike.onSell,
+                (
+                    marketId,
+                    market,
+                    _makerSellerAssets(units, MAKER_SELL_TICK),
+                    units,
+                    uint256(0),
+                    address(almProxy),
+                    address(almProxy),
+                    new bytes(0)
+                )
+            )
+        );
+
+        _take(sell, units);
+    }
+
     function test_makerBuy_partialFill() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
@@ -231,7 +278,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
 
         assertEq(_credit(), units);
 
-        assertEq(rateLimits.getCurrentRateLimit(strategyKey), rateLimit - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(makeKey), rateLimit - buyerAssets);
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
@@ -240,7 +287,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(), 2 * units);
 
         assertEq(
-            rateLimits.getCurrentRateLimit(strategyKey),
+            rateLimits.getCurrentRateLimit(makeKey),
             rateLimit - buyerAssets - moreAssets
         );
 
@@ -299,15 +346,65 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
     }
 
-    function test_zeroingPairLimitRevokesStrategy() external {
-        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+    function test_tighteningExitTickKillsRestingOffer() external {
+        _seedCredit();
 
-        _take(buy, seedUnits / 4);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        _take(sell, seedUnits / 4);
+
+        _setConfig(TICK_99, MAKER_SELL_TICK + 4, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-price-too-low");
+    }
+
+    function test_tighteningExitYieldKillsRestingOffer() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        _take(sell, seedUnits / 4);
+
+        // At 180 days a 1% exit yield floors above the offer's tick price.
+        _setYields(MIN_BUY_YIELD, 1_00);
+
+        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-price-too-low");
+    }
+
+    function test_removingStrategyRevokesBothLegs() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        _take(buy,  seedUnits / 4);
+        _take(sell, seedUnits / 4);
 
         vm.prank(Ethereum.SPARK_PROXY);
-        rateLimits.setRateLimitData(strategyKey, 0, 0);
+        mainnetController.midnight_setStrategyAllowed(marketId, address(strategy), false);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/strategy-not-authorized");
+        _takeExpectRevert(buy,  seedUnits / 4, "MidnightFacet/strategy-not-allowed");
+        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/strategy-not-allowed");
+    }
+
+    // The make limit never restores, so an exhausted one stops the book in both directions.
+    function test_exhaustingMakeLimitStopsBothLegs() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        uint256 units = seedUnits / 4;
+
+        _take(buy, units);
+
+        assertLt(rateLimits.getCurrentRateLimit(makeKey), rateLimit);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(makeKey, 1, 0);
+
+        _takeExpectRevert(buy,  units, "RateLimits/rate-limit-exceeded");
+        _takeExpectRevert(sell, units, "RateLimits/rate-limit-exceeded");
     }
 
     function test_offerDiesAtExpiry() external {
