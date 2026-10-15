@@ -141,8 +141,10 @@ already signed and published, and therefore unrecallable.
   resting offer, in units or assets whichever the offer sets, not the size of the book.
 - **External calls:** `midnight.toMarket(marketId)` (view only).
 - **Zero-amount semantics:** `maxOfferSize == 0` is the default and means making is disabled.
-  It is also the per-market kill switch: the ratifier reads it on every fill, so zeroing it
-  stops both directions at the next take.
+  It is also the per-market kill switch, but not a graceful one: the ratifier does not read it,
+  so a zeroed market keeps ratifying and the fill then fails inside `fundFill`
+  (`MidnightFacet/make-not-enabled`), reverting the taker. `cancelOfferGroup` retires the book
+  instead and is the better stop.
 
 ### `setRatifierAuthorization(address ratifier, bool authorized)`
 
@@ -318,9 +320,11 @@ clear the capped-fee bound, not the live-fee one.
 `getBuyRateLimitKey(bytes32)`, `getSellRateLimitKey(bytes32)`,
 `getRedeemRateLimitKey(bytes32)`, `getMakeRateLimitKey(bytes32)` (pure key derivations),
 `getMarketConfig(bytes32)`, `getMakeConfig(bytes32)`, `getDesignatedGroups(bytes32)`,
-`isCallbackAllowed(bytes32, address)`, `midnight()` (immutable). The ratifier reads
-`getMakeConfig`, `getDesignatedGroups` and `isCallbackAllowed` on every fill, so those three
-views are a live policy interface, not diagnostics.
+`isCallbackAllowed(bytes32, address)`, `midnight()` (immutable). The ratifier staticcalls
+`getDesignatedGroups` and `isCallbackAllowed` on every fill, so those two views are a live
+policy interface, not diagnostics. Upstream declares `isRatified` as `view`, so that read path
+has to survive a static context: the controller's dispatch does no write of its own, and
+`MidnightWiring.t.sol` pins it.
 
 ## Fund-exit map
 
@@ -431,10 +435,10 @@ Declared deviations from the usual facet shape, each with rationale:
   be reached through the controller, and neither is audited or opcode-scanned here: both come
   from the periphery repository, which also carries the integration tests that exercise real
   policy against this facet. The dummies under `test/mocks` carry none of it.
-- **Policy read back through the controller.** The ratifier reads `getMarketConfig`,
-  `getMakeConfig` and `getDesignatedGroups` through `IMidnightController` rather than holding
-  its own copy. One source of truth, and it is what makes every bound retroactive over
-  published offers; the cost is that the ratifier depends on the diamond being live.
+- **Policy read back through the controller.** The ratifier reads `getDesignatedGroups` and
+  `isCallbackAllowed` through `IMidnightController` rather than holding its own copy, and
+  `fundFill` reads the rest per fill. One source of truth, and it is what makes every bound
+  retroactive over published offers; the cost is that both depend on the diamond being live.
 
 ## Dependencies
 

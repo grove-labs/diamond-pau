@@ -155,7 +155,7 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 | `isCallbackAllowed(marketId, callback)` | Whether that callback may settle this market's fills             |
 | `midnight()`                      | The immutable Midnight singleton every call is pinned to              |
 
-`getMakeConfig`, `getDesignatedGroups` and `isCallbackAllowed` are not diagnostics: the ratifier reads them on every maker fill, so they are the live policy interface maker mode runs on.
+`getDesignatedGroups` and `isCallbackAllowed` are not diagnostics: the ratifier staticcalls both on every maker fill, so they are the live policy interface maker mode runs on. The rest of the policy is read by `fundFill` itself.
 
 ---
 
@@ -265,7 +265,7 @@ One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstr
 
 Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since an offer's own size fields are `uint128` and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
 
-`maxOfferSize` caps each single resting offer, in units or assets whichever the offer sets, not the size of the book. Zero is the default and means making is disabled; it is also the per-market kill switch, because the ratifier reads it on every fill.
+`maxOfferSize` caps each single resting offer, in units or assets whichever the offer sets, not the size of the book. Zero is the default and means making is disabled; it is also the per-market kill switch. The ratifier does not read it, so a zeroed market still ratifies and then fails inside `fundFill` with `make-not-enabled`, which reverts the taker rather than refusing the offer. `cancelOfferGroup` is the cleaner stop, since it retires the book instead of leaving it failing.
 
 **Event:** `MidnightMakeConfigSet(marketId, maxOfferSize, maturity, loanToken)`
 
@@ -439,7 +439,7 @@ Reverts raised by the ratifier and the funding strategy are theirs to document, 
 | `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` entry on a market whose lenders have already been slashed               |
 | `MidnightFacet/continuous-fee-too-high`       | facet    | `fundFill` entry while the live fee exceeds the configured ceiling                 |
 | `MidnightFacet/debt-not-zero`                 | facet    | `fundFill` exit leaving the proxy's position holding debt                          |
-| `NotRatified()`                               | Midnight | the ratifier refused the offer, or never ratified that exact one                   |
+| `RatifierFailed()`                            | Midnight | the ratifier returned anything other than the success value                        |
 | `ConsumedUnits()`                             | Midnight | the designated group is exhausted, including by `cancelOfferGroup`                 |
 | `UnusedReceiverMustBeZero()`                  | Midnight | a buy offer naming a receiver, refused before ratification runs                    |
 | `RatifierUnauthorized()`                      | Midnight | the ratifier's authorization was revoked                                           |
