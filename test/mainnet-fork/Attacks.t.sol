@@ -559,7 +559,7 @@ contract MainnetController_Maple_Attack_Tests is Maple_TestBase {
 }
 
 // A maker whose sell callback runs inside the proxy's buy, after the transfers, while the proxy's
-// approval to Midnight for the rest of the batch is still open.
+// approval to Midnight is still open.
 contract MidnightHostileMaker {
 
     bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
@@ -686,7 +686,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
     address internal victim = makeAddr("victim");
 
-    uint256 internal attackUnits;  // 1k units, small enough to leave the batch approval mostly open
+    uint256 internal attackUnits;  // 1k units, small enough to leave the approval mostly open
 
     MidnightHostileMaker  internal hostile;
     MidnightSlashingMaker internal slasher;
@@ -780,31 +780,8 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         assertFalse(midnight.isAuthorized(address(almProxy), address(hostile)));
     }
 
-    // Consuming the rest of the batch from inside the first fill cannot leave the proxy half
-    // entered: Midnight rejects the proxy's take of the drained offer and the whole buy unwinds.
-    // The `ConsumedUnits()` revert is itself the proof that the hostile take landed first.
-    function test_attack_hostileMakerCallbackDrainsBatch_buyMidnight() external {
-        Offer memory drained = _offer(false, TICK_98, attackUnits);
-        Offer memory first   = _offer(false, TICK_98, attackUnits);
-
-        // The callback takes the batch's second offer for itself, exhausting that offer's budget.
-        first.callback     = address(hostile);
-        first.callbackData =
-            abi.encode(address(almProxy), drained, _ratifierData(drained), attackUnits);
-        _ratify(first);
-
-        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
-
-        fills[0] = _fill(first,   attackUnits);
-        fills[1] = _fill(drained, attackUnits);
-
-        vm.expectRevert(abi.encodeWithSignature("ConsumedUnits()"));
-        vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, fills, type(uint256).max);
-    }
-
-    // The exact credit delta check is what catches a write-down landing inside the batch.
-    function test_attack_slashedMidBatch_buyMidnight() external {
+    // The exact credit delta check is what catches a write-down landing inside the fill.
+    function test_attack_slashedMidFill_buyMidnight() external {
         Offer memory offer = _offer(false, TICK_98, attackUnits);
         offer.callback = address(slasher);
         _ratify(offer);
@@ -813,7 +790,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         _buy(offer, attackUnits, type(uint256).max);
     }
 
-    function test_attack_slashedMidBatch_sellMidnight() external {
+    function test_attack_slashedMidFill_sellMidnight() external {
         uint256 units = seedUnits / 2;
 
         Offer memory offer = _offer(true, TICK_99, units);

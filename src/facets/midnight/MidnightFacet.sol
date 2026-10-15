@@ -93,11 +93,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
         uint256 continuousFee;    // Market's current rate, set on the buy leg only.
         uint256 tickPriceBound;   // Ceiling when buying, floor when selling; fee applied per offer.
         uint256 yieldPriceBound;  // Same shape, derived from the yield rail.
-        uint256 creditCap;        // Sellable position, ignored when buying.
         uint256 creditBefore;
         uint256 pendingFeeBefore;
         uint256 balanceBefore;
-        uint256 totalUnits;
+        uint256 unitsTaken;       // Set by _takeFill, after the sell leg's cap to live credit.
     }
 
     /**********************************************************************************************/
@@ -188,7 +187,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @inheritdoc IMidnightFacet
     function buy(
         bytes32         marketId,
-        Fill[] calldata fills,
+        Offer  calldata offer,
+        bytes  calldata ratifierData,
+        uint256         units,
         uint256         maxAssetsIn
     )
         external
@@ -201,9 +202,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(config.maxBuyTick != 0, "MidnightFacet/buy-not-enabled");
         require(maxAssetsIn != 0,       "MidnightFacet/max-assets-in-not-set");
-        require(fills.length != 0,      "MidnightFacet/empty-batch");
 
-        TakeContext memory ctx = _takeContext(marketId, fills[0].offer.market, false);
+        TakeContext memory ctx = _takeContext(marketId, offer.market, false);
 
         ctx.continuousFee = IMidnightLike(midnight).continuousFee(marketId);
 
@@ -226,7 +226,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, maxAssetsIn);
 
-        _takeBatch(ctx, fills);
+        _takeFill(ctx, offer, ratifierData, units);
 
         // Clear the approval in case Midnight did not pull the full amount.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
@@ -240,7 +240,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // The proxy never holds debt, so a buy increases credit by exactly the units taken.
         require(
-            creditAfter == ctx.creditBefore + ctx.totalUnits,
+            creditAfter == ctx.creditBefore + ctx.unitsTaken,
             "MidnightFacet/credit-delta-mismatch"
         );
 
@@ -248,7 +248,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         _decreaseRateLimit(getBuyRateLimitKey(marketId), assetsSpent);
 
-        emit MidnightBuy(marketId, ctx.totalUnits, assetsSpent);
+        emit MidnightBuy(marketId, ctx.unitsTaken, assetsSpent);
     }
 
     /// @inheritdoc IMidnightFacet
@@ -305,7 +305,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @inheritdoc IMidnightFacet
     function sell(
         bytes32         marketId,
-        Fill[] calldata fills,
+        Offer  calldata offer,
+        bytes  calldata ratifierData,
+        uint256         units,
         uint256         minAssetsOut
     )
         external
@@ -318,9 +320,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(config.minSellTick != 0, "MidnightFacet/sell-not-enabled");
         require(minAssetsOut != 0,       "MidnightFacet/min-assets-out-not-set");
-        require(fills.length != 0,       "MidnightFacet/empty-batch");
 
-        TakeContext memory ctx = _takeContext(marketId, fills[0].offer.market, true);
+        TakeContext memory ctx = _takeContext(marketId, offer.market, true);
 
         ctx.tickPriceBound = MidnightUtils.tickToPrice(config.minSellTick);
 
@@ -331,9 +332,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             ctx.pendingFeeBefore
         );
 
-        ctx.creditCap = ctx.creditBefore;
-
-        _takeBatch(ctx, fills);
+        _takeFill(ctx, offer, ratifierData, units);
 
         // Measure the loan token actually received rather than trusting the take return values.
         assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy) - ctx.balanceBefore;
@@ -343,7 +342,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( uint256 creditAfter, ) = _credit(ctx.market, marketId, ctx.proxy);
 
         require(
-            ctx.creditBefore == creditAfter + ctx.totalUnits,
+            ctx.creditBefore == creditAfter + ctx.unitsTaken,
             "MidnightFacet/credit-delta-mismatch"
         );
 
@@ -354,7 +353,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Restores entry capacity by the assets returned; skipped when no buy limit is set.
         _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assetsReceived);
 
-        emit MidnightSell(marketId, ctx.totalUnits, assetsReceived);
+        emit MidnightSell(marketId, ctx.unitsTaken, assetsReceived);
     }
 
     /**********************************************************************************************/
@@ -390,71 +389,54 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /*** Internal Functions                                                                     ***/
     /**********************************************************************************************/
 
-    function _takeBatch(TakeContext memory ctx, Fill[] calldata fills) internal {
-        for (uint256 i = 0; i < fills.length; ++i) {
-            Offer memory offer = fills[i].offer;
-
-            // The id commits to the whole market config, venue included.
-            require(
-                MidnightUtils.toId(offer.market) == ctx.marketId,
-                "MidnightFacet/market-mismatch"
-            );
-
-            require(offer.buy == ctx.selling, "MidnightFacet/invalid-offer-direction");
-            require(fills[i].units != 0,      "MidnightFacet/zero-units");
-
-            uint256 price     = MidnightUtils.tickToPrice(offer.tick);
-            uint256 takeUnits = fills[i].units;
-
-            if (ctx.selling) {
-                // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
-                // Bounded before the rails so an offer left unreachable cannot gate the batch.
-                if (takeUnits > ctx.creditCap) takeUnits = ctx.creditCap;
-                if (takeUnits == 0)            break;
-
-                ctx.creditCap -= takeUnits;
-
-                // The fee is taken out of the proceeds, so both floors bind on the gross price.
-                require(
-                    price >= ctx.tickPriceBound + ctx.settlementFee,
-                    "MidnightFacet/sell-price-too-low"
-                );
-                require(
-                    price >= ctx.yieldPriceBound + ctx.settlementFee,
-                    "MidnightFacet/sell-yield-too-high"
-                );
-            } else {
-                // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
-                require(
-                    price + ctx.settlementFee <= ctx.tickPriceBound,
-                    "MidnightFacet/buy-price-too-high"
-                );
-                require(
-                    price + ctx.settlementFee <= ctx.yieldPriceBound,
-                    "MidnightFacet/buy-yield-too-low"
-                );
-
-                // Paying ourselves nets the transfer out and hides the spend from the rate limit.
-                require(
-                    offer.receiverIfMakerIsSeller != ctx.proxy,
-                    "MidnightFacet/invalid-offer-receiver"
-                );
-            }
-
-            ctx.totalUnits += takeUnits;
-
-            _take(ctx, offer, fills[i].ratifierData, takeUnits);
-        }
-    }
-
-    function _take(
+    function _takeFill(
         TakeContext memory ctx,
-        Offer       memory offer,
+        Offer     calldata offer,
         bytes     calldata ratifierData,
         uint256            units
     )
         internal
     {
+        require(offer.buy == ctx.selling, "MidnightFacet/invalid-offer-direction");
+        require(units != 0,               "MidnightFacet/zero-units");
+
+        uint256 price = MidnightUtils.tickToPrice(offer.tick);
+
+        if (ctx.selling) {
+            // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
+            if (units > ctx.creditBefore) units = ctx.creditBefore;
+
+            require(units != 0, "MidnightFacet/no-credit-to-sell");
+
+            // The fee is taken out of the proceeds, so both floors bind on the gross price.
+            require(
+                price >= ctx.tickPriceBound + ctx.settlementFee,
+                "MidnightFacet/sell-price-too-low"
+            );
+            require(
+                price >= ctx.yieldPriceBound + ctx.settlementFee,
+                "MidnightFacet/sell-yield-too-high"
+            );
+        } else {
+            // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
+            require(
+                price + ctx.settlementFee <= ctx.tickPriceBound,
+                "MidnightFacet/buy-price-too-high"
+            );
+            require(
+                price + ctx.settlementFee <= ctx.yieldPriceBound,
+                "MidnightFacet/buy-yield-too-low"
+            );
+
+            // Paying ourselves nets the transfer out and hides the spend from the rate limit.
+            require(
+                offer.receiverIfMakerIsSeller != ctx.proxy,
+                "MidnightFacet/invalid-offer-receiver"
+            );
+        }
+
+        ctx.unitsTaken = units;
+
         // Midnight requires the unused receiver to be zero; taker mode uses no taker callback.
         IALMProxy(ctx.proxy).doCall(
             midnight,
