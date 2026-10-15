@@ -99,11 +99,11 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         calls[16]     = IMidnightController.midnight_getDesignatedGroups.selector;
         delegates[16] = IMidnightFacet.getDesignatedGroups.selector;
 
-        calls[17]     = IMidnightController.midnight_isStrategyAllowed.selector;
-        delegates[17] = IMidnightFacet.isStrategyAllowed.selector;
+        calls[17]     = IMidnightController.midnight_isCallbackAllowed.selector;
+        delegates[17] = IMidnightFacet.isCallbackAllowed.selector;
 
-        calls[18]     = IMidnightController.midnight_setStrategyAllowed.selector;
-        delegates[18] = IMidnightFacet.setStrategyAllowed.selector;
+        calls[18]     = IMidnightController.midnight_setCallbackAllowed.selector;
+        delegates[18] = IMidnightFacet.setCallbackAllowed.selector;
 
         calls[19]     = IMidnightController.midnight_getMakeRateLimitKey.selector;
         delegates[19] = IMidnightFacet.getMakeRateLimitKey.selector;

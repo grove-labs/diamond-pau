@@ -24,7 +24,7 @@ contract MockFundingStrategy {
         Market   memory market,
         uint256         buyerAssets,
         uint256         units,
-        uint256,
+        uint256         pendingFeeIncrease,
         address,
         bytes    memory
     )
@@ -34,7 +34,13 @@ contract MockFundingStrategy {
         // Midnight pokes a consumed offer at zero, which fundFill rejects outright.
         if (buyerAssets == 0) return CALLBACK_SUCCESS;
 
-        IMidnightController(controller).midnight_fundFill(marketId, false, buyerAssets, units);
+        IMidnightController(controller).midnight_fundFill({
+            marketId   : marketId,
+            buy        : true,
+            assets     : buyerAssets,
+            units      : units,
+            pendingFee : pendingFeeIncrease
+        });
 
         IERC20(market.loanToken).approve(msg.sender, buyerAssets);
 
@@ -46,7 +52,7 @@ contract MockFundingStrategy {
         Market memory,
         uint256       sellerAssets,
         uint256       units,
-        uint256,
+        uint256       pendingFeeDecrease,
         address,
         address,
         bytes  memory
@@ -54,10 +60,16 @@ contract MockFundingStrategy {
         external
         returns (bytes32)
     {
-        if (sellerAssets == 0) return CALLBACK_SUCCESS;
+        if (units == 0) return CALLBACK_SUCCESS;
 
         // Midnight has already paid the proxy, so this only reports the fill for metering.
-        IMidnightController(controller).midnight_fundFill(marketId, true, sellerAssets, units);
+        IMidnightController(controller).midnight_fundFill({
+            marketId   : marketId,
+            buy        : false,
+            assets     : sellerAssets,
+            units      : units,
+            pendingFee : pendingFeeDecrease
+        });
 
         return CALLBACK_SUCCESS;
     }

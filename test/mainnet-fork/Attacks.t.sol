@@ -80,8 +80,13 @@ interface IUniswapV4PositionManagerLike {
 
 interface IMidnightFundFillLike {
 
-    function midnight_fundFill(bytes32 marketId, bool selling, uint256 assets, uint256 units)
-        external;
+    function midnight_fundFill(
+        bytes32 marketId,
+        bool    buy,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
+    ) external;
 
 }
 
@@ -960,8 +965,11 @@ contract MidnightGreedyStrategy {
         controller = controller_;
     }
 
-    function pull(bytes32 marketId, bool selling, uint256 assets, uint256 units) external {
-        IMidnightFundFillLike(controller).midnight_fundFill(marketId, selling, assets, units);
+    function pull(bytes32 marketId, bool buy, uint256 assets, uint256 units, uint256 pendingFee)
+        external
+    {
+        IMidnightFundFillLike(controller)
+            .midnight_fundFill(marketId, buy, assets, units, pendingFee);
     }
 
 }
@@ -1054,13 +1062,13 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         _setConfig(MAKER_BUY_TICK, TICK_98, 0, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setStrategyAllowed(marketId, address(greedy), true);
+        mainnetController.midnight_setCallbackAllowed(marketId, address(greedy), true);
 
         uint256 units = seedUnits;
         uint256 bound = units * MidnightUtils.tickToPrice(MAKER_BUY_TICK) / 1e18;
 
         vm.expectRevert("MidnightFacet/fill-price-too-high");
-        greedy.pull(marketId, false, bound + 1, units);
+        greedy.pull(marketId, true, bound + 1, units, 0);
 
         // 362 of the 1,686 accessible steps are flat, so a step up the grid being dearer has to
         // be asserted rather than assumed.
@@ -1069,11 +1077,11 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         assertGt(dearer, bound);
 
         vm.expectRevert("MidnightFacet/fill-price-too-high");
-        greedy.pull(marketId, false, dearer, units);
+        greedy.pull(marketId, true, dearer, units, 0);
 
         uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
 
-        greedy.pull(marketId, false, bound, units);
+        greedy.pull(marketId, true, bound, units, 0);
 
         assertEq(loanToken.balanceOf(address(greedy)),   bound);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - bound);
@@ -1085,13 +1093,13 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
     // make limit is what bounds the whole game.
     function test_attack_strategyFakesExitsToRestoreEntryRoom_makeMidnight() external {
         vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setStrategyAllowed(marketId, address(greedy), true);
+        mainnetController.midnight_setCallbackAllowed(marketId, address(greedy), true);
 
         uint256 units = seedUnits;
         uint256 floorAssets = units * MidnightUtils.tickToPrice(TICK_98) / 1e18;
 
         // Drain the entry budget down by one honest-priced entry's worth.
-        greedy.pull(marketId, false, floorAssets, units);
+        greedy.pull(marketId, true, floorAssets, units, 0);
 
         uint256 buyAfterEntry  = rateLimits.getCurrentRateLimit(buyKey);
         uint256 makeAfterEntry = rateLimits.getCurrentRateLimit(makeKey);
@@ -1102,7 +1110,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         uint256 proxyBalanceBefore  = loanToken.balanceOf(address(almProxy));
         uint256 greedyBalanceBefore = loanToken.balanceOf(address(greedy));
 
-        greedy.pull(marketId, true, floorAssets, units);
+        greedy.pull(marketId, false, floorAssets, units, 0);
 
         // Entry room comes back, but the fabricated exit paid for it twice over and moved nothing.
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  rateLimit);

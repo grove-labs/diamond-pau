@@ -82,7 +82,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
         mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
-        mainnetController.midnight_setStrategyAllowed(marketId, address(strategy), true);
+        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), true);
         rateLimits.setRateLimitData(makeKey, rateLimit, rateLimit / 1 days);
         vm.stopPrank();
 
@@ -371,7 +371,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-price-too-low");
     }
 
-    function test_removingStrategyRevokesBothLegs() external {
+    function test_removingCallbackRevokesBothLegs() external {
         _seedCredit();
 
         Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
@@ -381,10 +381,10 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _take(sell, seedUnits / 4);
 
         vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setStrategyAllowed(marketId, address(strategy), false);
+        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), false);
 
-        _takeExpectRevert(buy,  seedUnits / 4, "MidnightFacet/strategy-not-allowed");
-        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/strategy-not-allowed");
+        _takeExpectRevert(buy,  seedUnits / 4, "MidnightFacet/callback-not-allowed");
+        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/callback-not-allowed");
     }
 
     // The make limit never restores, so an exhausted one stops the book in both directions.
