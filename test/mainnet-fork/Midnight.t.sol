@@ -339,27 +339,6 @@ abstract contract Midnight_TestBase is ForkTestBase {
         return abi.encode(MidnightHashLib.hashOffer(offer), uint256(0), new bytes32[](0));
     }
 
-    function _fill(Offer memory offer, uint256 units)
-        internal
-        pure
-        returns (IMidnightFacet.Fill memory)
-    {
-        return IMidnightFacet.Fill({
-            offer        : offer,
-            ratifierData : _ratifierData(offer),
-            units        : units
-        });
-    }
-
-    function _batch(Offer memory offer, uint256 units)
-        internal
-        pure
-        returns (IMidnightFacet.Fill[] memory fills)
-    {
-        fills    = new IMidnightFacet.Fill[](1);
-        fills[0] = _fill(offer, units);
-    }
-
     /**********************************************************************************************/
     /*** Controller helpers                                                                     ***/
     /**********************************************************************************************/
@@ -369,7 +348,9 @@ abstract contract Midnight_TestBase is ForkTestBase {
         returns (uint256)
     {
         vm.prank(allocator);
-        return mainnetController.midnight_buy(marketId, _batch(offer, units), maxAssetsIn);
+        return mainnetController.midnight_buy(
+            marketId, offer, _ratifierData(offer), units, maxAssetsIn
+        );
     }
 
     function _sell(Offer memory offer, uint256 units, uint256 minAssetsOut)
@@ -377,7 +358,9 @@ abstract contract Midnight_TestBase is ForkTestBase {
         returns (uint256)
     {
         vm.prank(allocator);
-        return mainnetController.midnight_sell(marketId, _batch(offer, units), minAssetsOut);
+        return mainnetController.midnight_sell(
+            marketId, offer, _ratifierData(offer), units, minAssetsOut
+        );
     }
 
     function _redeem(uint256 units, uint256 minAssetsOut) internal returns (uint256) {
@@ -570,18 +553,22 @@ contract MainnetController_Midnight_Utils_Tests is Midnight_TestBase {
 contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
     function test_buyMidnight_reentrancy() external {
+        Offer memory offer;
+
         _setControllerEntered();
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
-        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
+        mainnetController.midnight_buy(marketId, offer, new bytes(0), 1, 1);
     }
 
     function test_buyMidnight_notAllocator() external {
+        Offer memory offer;
+
         vm.expectRevert(abi.encodeWithSignature(
             "AccessControlUnauthorizedAccount(address,bytes32)",
             address(this),
             ALLOCATOR_ROLE
         ));
-        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
+        mainnetController.midnight_buy(marketId, offer, new bytes(0), 1, 1);
     }
 
     function test_buyMidnight_buyNotEnabled() external {
@@ -598,12 +585,6 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/max-assets-in-not-set");
         _buy(offer, seedUnits, 0);
-    }
-
-    function test_buyMidnight_emptyBatch() external {
-        vm.expectRevert("MidnightFacet/empty-batch");
-        vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_buyMidnight_invalidMidnight() external {
@@ -632,24 +613,6 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/market-mismatch");
         _buy(offer, seedUnits, type(uint256).max);
-    }
-
-    // Only the first fill's market is bound when the context is built, so every later fill rests
-    // on the per-fill check inside the batch loop.
-    function test_buyMidnight_marketMismatchInBatch() external {
-        uint256 units = seedUnits / 2;
-
-        Offer memory mismatched = _offer(false, TICK_99, units);
-        mismatched.market.maturity += 1 days;
-
-        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
-
-        fills[0] = _fill(_offer(false, TICK_98, units), units);
-        fills[1] = _fill(mismatched, units);
-
-        vm.expectRevert("MidnightFacet/market-mismatch");
-        vm.prank(allocator);
-        mainnetController.midnight_buy(marketId, fills, type(uint256).max);
     }
 
     function test_buyMidnight_invalidOfferDirection() external {
@@ -922,29 +885,32 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
     }
 
-    function test_buyMidnight_usdc_batch() external {
+    function test_buyMidnight_usdc_twoSequentialTakes() external {
         uint256 units1 = seedUnits;
         uint256 units2 = seedUnits / 2;
 
-        uint256 expected = _buyerAssets(units1, TICK_98) + _buyerAssets(units2, TICK_99);
+        uint256 assets1  = _buyerAssets(units1, TICK_98);
+        uint256 assets2  = _buyerAssets(units2, TICK_99);
+        uint256 expected = assets1 + assets2;
 
-        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
-
-        fills[0] = _fill(_offer(false, TICK_98, units1), units1);
-        fills[1] = _fill(_offer(false, TICK_99, units2), units2);
+        Offer memory offer1 = _offer(false, TICK_98, units1);
+        Offer memory offer2 = _offer(false, TICK_99, units2);
 
         vm.expectEmit(address(mainnetController));
-        emit IMidnightFacet.MidnightBuy(marketId, units1 + units2, expected);
+        emit IMidnightFacet.MidnightBuy(marketId, units1, assets1);
 
-        vm.prank(allocator);
-        uint256 assetsSpent = mainnetController.midnight_buy(marketId, fills, expected);
+        assertEq(_buy(offer1, units1, assets1), assets1);
 
-        assertEq(assetsSpent,                                      expected);
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightBuy(marketId, units2, assets2);
+
+        assertEq(_buy(offer2, units2, assets2), assets2);
+
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - expected);
         assertEq(_credit(),                                        units1 + units2);
-        assertEq(midnight.consumed(maker, fills[0].offer.group),   units1);
-        assertEq(midnight.consumed(maker, fills[1].offer.group),   units2);
+        assertEq(midnight.consumed(maker, offer1.group),           units1);
+        assertEq(midnight.consumed(maker, offer2.group),           units2);
         assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - expected);
     }
 
@@ -971,18 +937,22 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     }
 
     function test_sellMidnight_reentrancy() external {
+        Offer memory offer;
+
         _setControllerEntered();
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
-        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
+        mainnetController.midnight_sell(marketId, offer, new bytes(0), 1, 1);
     }
 
     function test_sellMidnight_notAllocator() external {
+        Offer memory offer;
+
         vm.expectRevert(abi.encodeWithSignature(
             "AccessControlUnauthorizedAccount(address,bytes32)",
             address(this),
             ALLOCATOR_ROLE
         ));
-        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
+        mainnetController.midnight_sell(marketId, offer, new bytes(0), 1, 1);
     }
 
     // A non-zero minSellTick is what marks a market as onboarded, so only an unconfigured id
@@ -1001,12 +971,6 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/min-assets-out-not-set");
         _sell(offer, seedUnits, 0);
-    }
-
-    function test_sellMidnight_emptyBatch() external {
-        vm.expectRevert("MidnightFacet/empty-batch");
-        vm.prank(allocator);
-        mainnetController.midnight_sell(marketId, new IMidnightFacet.Fill[](0), 1);
     }
 
     function test_sellMidnight_invalidMidnight() external {
@@ -1037,6 +1001,18 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/zero-units");
         _sell(offer, 0, 1);
+    }
+
+    function test_sellMidnight_noCreditToSell() external {
+        uint256 expected = _sellerAssets(seedUnits, TICK_99);
+
+        assertEq(_sell(_offer(true, TICK_99, seedUnits), seedUnits, expected), expected);
+        assertEq(_credit(), 0);
+
+        Offer memory offer = _offer(true, TICK_99, seedUnits);
+
+        vm.expectRevert("MidnightFacet/no-credit-to-sell");
+        _sell(offer, seedUnits, 1);
     }
 
     function test_sellMidnight_zeroMaxAmount() external {
@@ -1330,8 +1306,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
     }
 
-    // An oversized ask is clamped to the live position instead of turning into naked debt.
-    // Credit decays every block once a continuous fee is live, so a batch sized from a stale read
+    // Credit decays every block once a continuous fee is live, so an ask sized from a stale read
     // has to be trimmed to the live balance rather than turned into debt.
     function test_sellMidnight_usdc_creditDecaysWithContinuousFee() external {
         _setContinuousFee(MAX_CONTINUOUS_FEE);
@@ -1366,47 +1341,6 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         assertEq(_credit(),                                  0);
         assertEq(midnight.debt(marketId, address(almProxy)), 0);
-    }
-
-    // Once credit runs out the rest of the batch is skipped rather than filled with debt.
-    function test_sellMidnight_usdc_batchStopsWhenCreditRunsOut() external {
-        uint256 expected = _sellerAssets(seedUnits, TICK_99);
-
-        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
-
-        fills[0] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
-        fills[1] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
-
-        vm.expectEmit(address(mainnetController));
-        emit IMidnightFacet.MidnightSell(marketId, seedUnits, expected);
-
-        vm.prank(allocator);
-        uint256 assetsReceived = mainnetController.midnight_sell(marketId, fills, expected);
-
-        assertEq(assetsReceived,                                 expected);
-        assertEq(_credit(),                                      0);
-        assertEq(midnight.debt(marketId, address(almProxy)),     0);
-        assertEq(midnight.consumed(maker, fills[0].offer.group), seedUnits);
-        assertEq(midnight.consumed(maker, fills[1].offer.group), 0);
-    }
-
-    // An offer left unreachable once credit is exhausted must not gate the batch, even when its
-    // price sits outside the rails: the rails guard taking, and this one is never taken.
-    function test_sellMidnight_usdc_unreachableOfferOutsideRailsIsSkipped() external {
-        uint256 expected = _sellerAssets(seedUnits, TICK_99);
-
-        IMidnightFacet.Fill[] memory fills = new IMidnightFacet.Fill[](2);
-
-        fills[0] = _fill(_offer(true, TICK_99, seedUnits), seedUnits);
-        fills[1] = _fill(_offer(true, 3000,    seedUnits), seedUnits);
-
-        vm.prank(allocator);
-        uint256 assetsReceived = mainnetController.midnight_sell(marketId, fills, expected);
-
-        assertEq(assetsReceived,                                 expected);
-        assertEq(_credit(),                                      0);
-        assertEq(midnight.consumed(maker, fills[0].offer.group), seedUnits);
-        assertEq(midnight.consumed(maker, fills[1].offer.group), 0);
     }
 
     // Offers may cap on assets instead of units. The clamp bounds our credit, not the maker's asset

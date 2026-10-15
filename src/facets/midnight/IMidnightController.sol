@@ -2,6 +2,7 @@
 pragma solidity ^0.8.34;
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
+import { Offer } from "./MidnightUtils.sol";
 
 import { Market } from "./MidnightUtils.sol";
 
@@ -40,9 +41,11 @@ interface IMidnightController {
     ) external;
 
     function midnight_buy(
-        bytes32                        marketId,
-        IMidnightFacet.Fill[] calldata fills,
-        uint256                        maxAssetsIn
+        bytes32         marketId,
+        Offer  calldata offer,
+        bytes  calldata ratifierData,
+        uint256         units,
+        uint256         maxAssetsIn
     )
         external
         returns (uint256 assetsSpent);
@@ -52,9 +55,11 @@ interface IMidnightController {
         returns (uint256 assetsWithdrawn);
 
     function midnight_sell(
-        bytes32                        marketId,
-        IMidnightFacet.Fill[] calldata fills,
-        uint256                        minAssetsOut
+        bytes32         marketId,
+        Offer  calldata offer,
+        bytes  calldata ratifierData,
+        uint256         units,
+        uint256         minAssetsOut
     )
         external
         returns (uint256 assetsReceived);
