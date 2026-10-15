@@ -85,7 +85,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   and leaving the exits configured. A zero `minBuyYield` is accepted and is not a disabled
   bound: it still refuses to pay above what a unit returns.
 
-### `buy(bytes32 marketId, Fill[] calldata fills, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
+### `buy(bytes32 marketId, Offer calldata offer, bytes calldata ratifierData, uint256 units, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
 
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** outbound (loan token leaves custody, credit units accrue to the
@@ -94,44 +94,45 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   enforcing decrease of the measured loan-token balance delta.
 - **Refill:** none; entry is refilled by the exits.
 - **Loss bounds:** `maxAssetsIn` (non-zero, also the exact approval granted to Midnight
-  for the call); per-offer `tickToPrice(offer.tick) + settlementFee(marketId,
+  for the call); `tickToPrice(offer.tick) + settlementFee(marketId,
   timeToMaturity) <= tickToPrice(maxBuyTick)` and `tickToPrice(offer.tick) + settlementFee
   <= maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`, the price at which the all-in
   cash flow still earns `minBuyYield` at simple interest over ACT/365 on a payoff of par
   less the continuous fee crystallized for the remaining term; market `continuousFee <=
   continuousFeePerSecond(maxContinuousFee)` and `lossFactor <= maxLossFactor` at call time;
   exact credit delta
-  (`credit_after == credit_before + sum(units)`) and zero debt after the batch.
-- **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData,
-  fills[i].units, proxy, address(0), address(0), "")` via `doCall`, once per offer, with
-  `offer.buy == false`. Reads
+  (`credit_after == credit_before + units`) and zero debt after the take.
+- **External calls:** `midnight.take(offer, ratifierData, units, proxy, address(0),
+  address(0), "")` via `doCall`, once, with `offer.buy == false`. Reads
   `continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `debt` on the
-  immutable singleton only. `fills[0].offer.market.midnight` must equal the immutable
-  singleton and every `fills[i].offer.market` must hash to `marketId`; `fills[0]` is
+  immutable singleton only. `offer.market.midnight` must equal the immutable
+  singleton and `offer.market` must hash to `marketId`; both are
   checked before the price bounds are computed, so a fabricated maturity cannot reach the
   bound arithmetic.
-- **Zero-amount semantics:** empty batch, zero `maxAssetsIn` and zero per-offer units
-  all revert in the facet. Midnight itself would accept a zero
+- **Zero-amount semantics:** zero `maxAssetsIn` and zero `units`
+  both revert in the facet. Midnight itself would accept a zero
   take; the facet forbids it because a zero fill still runs the maker's callback.
+- **Batching:** none. One call takes one offer; a relayer wanting several issues several
+  calls in one transaction, each with its own bound, allowance and meter decrease.
 
-### `sell(bytes32 marketId, Fill[] calldata fills, uint256 minAssetsOut) returns (uint256 assetsReceived)`
+### `sell(bytes32 marketId, Offer calldata offer, bytes calldata ratifierData, uint256 units, uint256 minAssetsOut) returns (uint256 assetsReceived)`
 
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** returning (loan token to proxy, credit units leave the position)
 - **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
 - **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsReceived)`.
-- **Loss bounds:** `minAssetsOut` (non-zero) over the batch; per-offer
+- **Loss bounds:** `minAssetsOut` (non-zero);
   `tickToPrice(offer.tick) >= tickToPrice(minSellTick) + settlementFee(marketId,
   timeToMaturity)` and `tickToPrice(offer.tick) >= minSellPrice(maxSellYield,
   timeToMaturity, credit, pendingFee) + settlementFee`, so the proceeds give up at most
   `maxSellYield` on the same basis the buy leg uses. A position keeps the continuous fee it
   was bought at, so the floor is measured against the lien that position still carries
   (`pendingFee / credit` from `updatePositionView`) rather than the market's current rate,
-  which a later fee change would otherwise move in either direction; per-offer units
-  capped at the proxy's remaining live credit and the batch stops when credit is exhausted,
-  so a sell can never create debt; exact credit delta (`credit_before == credit_after +
-  sum(cappedUnits)`) and zero debt after the batch. A lien is fully accrued by maturity, so
+  which a later fee change would otherwise move in either direction; `units`
+  capped at the proxy's live credit, and a cap to zero reverts
+  (`MidnightFacet/no-credit-to-sell`), so a sell can never create debt; exact credit delta
+  (`credit_before == credit_after + cappedUnits`) and zero debt after the take. A lien is fully accrued by maturity, so
   the yield-implied price floor converges on par, and a post-maturity sell only clears at
   par; a discounted dump against an available par redemption is refused, and with a live
   settlement fee it does not clear at all, leaving `redeem` as the exit. That costs
@@ -139,13 +140,14 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   no fee, so no post-maturity sell can beat redemption. No configuration reopens a
   discounted exit either, since the floor at zero time to maturity is par for every
   `maxSellYield`.
-- **External calls:** `midnight.take(fills[i].offer, fills[i].ratifierData, cappedUnits,
-  proxy, proxy, address(0), "")` via `doCall`, once per offer, with `offer.buy == true`.
+- **External calls:** `midnight.take(offer, ratifierData, cappedUnits,
+  proxy, proxy, address(0), "")` via `doCall`, once, with `offer.buy == true`.
   Reads `settlementFee`, `updatePositionView` and `debt` on the singleton; the market's
   `continuousFee` is not read, since the floor comes from the position. Same venue and id
   binding as `buy`.
-- **Zero-amount semantics:** as `buy`; additionally a batch whose first offer caps to
-  zero units (no credit) stops before any take and fails `minAssetsOut`.
+- **Zero-amount semantics:** as `buy`; additionally an ask against a position with no live
+  credit caps to zero and reverts `MidnightFacet/no-credit-to-sell` before any take.
+- **Batching:** none, as `buy`.
 
 ### `redeem(bytes32 marketId, uint256 units, uint256 minAssetsOut) returns (uint256 assetsWithdrawn)`
 
@@ -194,15 +196,15 @@ the proxy as receiver.
 ## Standing approvals & declared exceptions
 
 None. `buy` approves exactly `maxAssetsIn` to the singleton and resets it to zero after the
-batch. `sell` and `redeem` grant no approval.
+take. `sell` and `redeem` grant no approval.
 
 Declared deviations from the usual facet shape, each with rationale:
 
-- **Opaque calldata forwarded to third parties.** Each `Fill`'s offer and ratifier data are
+- **Opaque calldata forwarded to third parties.** The offer and its ratifier data are
   passed through to Midnight and, by Midnight, to the maker's ratifier and callback. The
   facet validates outcomes (venue, id, direction, price bound, deltas, debt), not the
   offer's provenance. Callback-backed offers are how makers source liquidity, so banning
-  callbacks is not an option; the reentrancy guard held for the whole batch and the exact
+  callbacks is not an option; the reentrancy guard held for the whole call and the exact
   post-checks are the containment.
 - **Yield bounds derived in the facet, not read from the venue.** `maxBuyPrice` and
   `minSellPrice` in `MidnightUtils.sol` have no upstream counterpart: Midnight prices
@@ -245,10 +247,9 @@ exists.
   value can only tighten them. Required attack tests: a hostile maker callback
   attempting `take`, `withdraw`,
   `setIsAuthorized` and `repay` against the proxy from inside a fill
-  (`test_attack_hostileMakerCallback_buyMidnight`); a callback draining the rest of the
-  batch (`test_attack_hostileMakerCallbackDrainsBatch_buyMidnight`, whole buy unwinds); a
+  (`test_attack_hostileMakerCallback_buyMidnight`); a
   callback socializing a third borrower's bad debt mid-fill in both directions
-  (`test_attack_slashedMidBatch_{buy,sell}Midnight`, caught by the credit-delta check);
+  (`test_attack_slashedMidFill_{buy,sell}Midnight`, caught by the credit-delta check);
   mocked venue reads for the two guards a live venue cannot trip
   (`test_attack_debtReported_*`, `test_attack_loanTokenOvercharges_buyMidnight`).
 - **Async/multi-step state a rogue allocator could grief:** none. Every operation settles
