@@ -354,7 +354,7 @@ The funding strategy does approve the singleton, but it holds no proxy funds bet
 
 Midnight gates maker fills on `isAuthorized[maker][ratifier]`, and that is one flat mapping: the same entry also authorizes `withdraw`, `repay`, `supplyCollateral`, `withdrawCollateral`, `setConsumed` and `setIsAuthorized` on the proxy's behalf. (`borrow` and `liquidate` are not on that list.) Authorizing a ratifier therefore hands it the proxy's whole position on the venue, not just the right to answer ratification questions. There is no narrower grant to ask for.
 
-The containment is that the authorized contract must be *incapable* of using the grant: non-upgradeable, with no constructor or admin path that can reach the singleton, and with every function `view` or `pure` so that its deployed runtime contains no `CALL`, `CALLCODE`, `DELEGATECALL`, `CREATE`, `CREATE2` or `SELFDESTRUCT` opcode at all.
+The containment is that the authorized contract must be *incapable* of using the grant: non-upgradeable, with no constructor or admin path that can reach the singleton, and with a deployed runtime containing no `CALL`, `CALLCODE`, `DELEGATECALL`, `CREATE`, `CREATE2` or `SELFDESTRUCT` opcode at all. That is the property to scan for, and it is weaker than "every function is `view`": the deployed ratifier does hold mutable role state, so it can grant and revoke its own quoter, but a contract that cannot emit a call cannot touch the position the grant covers.
 
 **That containment is not verified in this repository, and cannot be.** The ratifier ships from the periphery repository, which is where the opcode scan over its deployed runtime belongs, and the dummy this repo tests with would make the same scan vacuous. Two things here are unaffected: the facet's own call surface is still scanned for the forbidden selectors with `take` as a positive control, and the fork suite still asserts that `isAuthorized[proxy][x]` holds for exactly one address. The scan over the real ratifier's bytecode is therefore a **deployment precondition** on the authorizing spell, not an assertion this suite can make. Nothing but a reviewed, immutable, scanned contract should ever be passed to `setRatifierAuthorization`.
 
@@ -468,7 +468,7 @@ Steps 1 to 3 above are prerequisites. Maker mode is off until all of the followi
 7. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups. Leave a side zero to make the market one-directional. These are the only groups `cancelOfferGroup` can retire, so publish offers into nothing else.
 8. `setCallbackAllowed(marketId, callback, true)` for each funding strategy the market's offers may name, then configure `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the authorization; the make limit is the aggregate cap on all of them, and it is restored by nothing. Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind too: a maker sell debits it, and exhausting it reverts the taker's fill rather than ours.
 9. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place and verified. This is the blanket grant described above, and it is what makes resting offers fillable at all.
-10. Set the quoter on the ratifier (`setQuoter`, ratifier admin) to the signing key that will publish offers. Rotating it invalidates every offer signed by the old key.
+10. Grant the ratifier's quoter role (`grantRole(QUOTER_ROLE, key)`, held by its `MANAGER_ROLE`) to the signing key that will publish offers. The role is checked at ratification, not at signing, so revoking it invalidates every offer the old key signed, in one transaction and with no redeployment.
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
@@ -499,7 +499,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 When maker mode is enabled, additionally:
 
 - **`isAuthorized[proxy][x]` on the singleton**: must hold for the ratifier and no other address. Any other entry is a blanket grant over the proxy's position.
-- **The quoter key's custody**: it is the only thing that can create a fillable offer. Treat a rotation (`setQuoter`) as the fastest way to void everything signed so far.
+- **The quoter key's custody**: it is the only thing that can create a fillable offer. Revoking its role on the ratifier is the fastest way to void everything signed so far, since the role is checked at ratification rather than at signing.
 - **Published offers** against `maxOfferSize` and against the designated groups' consumed counters, which is what bounds how much of a signed offer can still be filled.
 - **`LIMIT_MIDNIGHT_MAKE` drawdown** as the maker turnover rate. Nothing restores it, so a market whose make key is near zero has a book that will start reverting takers' fills; retire the groups rather than leaving it there.
 

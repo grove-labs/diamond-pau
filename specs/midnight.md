@@ -562,8 +562,9 @@ Steps 1 to 3 are prerequisites for taking as well.
 11. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place
     and verified. This is the blanket grant described in the trust assumptions, and it is
     what makes resting offers fillable at all.
-12. Set the quoter on the ratifier (`setQuoter`, ratifier admin) to the signing key that will
-    publish offers. Rotating it invalidates every offer signed by the old key.
+12. Grant the ratifier's quoter role (`grantRole(QUOTER_ROLE, key)`, held by its `MANAGER_ROLE`)
+    to the signing key that will publish offers. The role is checked at ratification rather
+    than at signing, so revoking it voids every offer the old key signed without a redeploy.
 
 **Choosing the maker entry tick.** `maxBuyTick` has to clear `fundFill`'s capped-fee bound,
 not the live-fee bound that taker entry uses. At a 180 day term with the 1%/year cap the two
