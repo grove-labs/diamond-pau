@@ -348,7 +348,7 @@ All three operations size their rate-limit accounting from observed balance chan
 
 The buy approval is set to `maxAssetsIn` and reset to zero after the take. Outside a `buy` transaction Midnight holds no allowance on ALMProxy funds. `sell`, `redeem` and `fundFill` grant no approval from the proxy at all, and maker mode adds no standing grant from the proxy to the singleton.
 
-The funding strategy does approve the singleton, but it holds no proxy funds between settlements: `onBuy` sets the allowance with `forceApprove` to exactly the amount Midnight is about to pull, and the pull consumes it inside the same `take`. A disagreement between what `fundFill` sent and what the singleton pulls leaves the pull unfunded and reverts the whole settlement, so nothing accumulates. `skim` is permissionless and sends any stray balance to the proxy.
+The funding strategy does approve the singleton, but it holds no proxy funds between settlements: `onBuy` sets the allowance with `forceApprove` to exactly the amount Midnight is about to pull, and the pull consumes it inside the same `take`. A disagreement between what `fundFill` sent and what the singleton pulls leaves the pull unfunded and reverts the whole settlement, so nothing accumulates. `rescue` is permissionless and sends any stray balance to the proxy.
 
 ### Ratifier Authorization Is a Blanket Grant
 
@@ -358,9 +358,9 @@ The containment is that the authorized contract must be *incapable* of using the
 
 **That containment is not verified in this repository, and cannot be.** The ratifier ships from the periphery repository, which is where the opcode scan over its deployed runtime belongs, and the dummy this repo tests with would make the same scan vacuous. Two things here are unaffected: the facet's own call surface is still scanned for the forbidden selectors with `take` as a positive control, and the fork suite still asserts that `isAuthorized[proxy][x]` holds for exactly one address. The scan over the real ratifier's bytecode is therefore a **deployment precondition** on the authorizing spell, not an assertion this suite can make. Nothing but a reviewed, immutable, scanned contract should ever be passed to `setRatifierAuthorization`.
 
-### Maker Exits Carry No Meter
+### Maker Exits Run in a Stranger's Transaction
 
-`fundFill` meters maker entry, but the exit leg has no facet call to meter (see [The Maker Exit Leg](#the-maker-exit-leg)). This is the one path in the integration where value moves out of the proxy's Midnight position without any of our code running. It is bounded by the signed offer, the group's consumed counter and the revocation levers, never by a rate limit, so the signing policy on the quoter key is a control surface in its own right.
+`onSell` reaches `fundFill`, so a maker exit is priced and metered like any other leg. What it cannot have is a caller of ours: the settlement is a third party's transaction, so a revert inside `fundFill` fails *their* take, not anything of ours. That makes the sell and make meters a liveness surface as well as a loss bound, and it is why `cancelOfferGroup` is the lever to reach for when the exit budget is nearly spent rather than letting a resting offer start failing. The facet still cannot re-derive the credit delta, since the callback carries no offer, so the price floor, the two meters and the zero-debt post-condition are what bound the fill.
 
 ### Nested Controller Entry
 
