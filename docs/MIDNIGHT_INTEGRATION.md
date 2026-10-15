@@ -17,7 +17,7 @@ Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a
 - Fees: a **settlement fee** (per-market, resolved from a piecewise schedule over time to maturity) widens the spread on every take, and a **continuous fee** (per second, WAD) is crystallized on the buyer over the remaining term when credit is created.
 - Loss: when a liquidation cannot cover a borrower's debt, the shortfall is **socialized** across all lenders in the market through a monotone `lossFactor` ratchet.
 
-In **taker mode**, the subject of this document, the `MidnightFacet` is a **lender-only** integration: the ALMProxy buys units from makers' sell offers, sells them back into makers' buy offers before maturity, and redeems them at par once repayments land. In **maker mode** it also rests its own offers on both sides, still lender-only and still `reduceOnly` on the sell side, so it never opens debt (see `specs/midnight.md`). In neither mode does it supply collateral, borrow, liquidate or hold debt. Every external call is pinned to a single immutable Midnight singleton.
+In **taker mode**, the subject of this document, the `MidnightFacet` is a **lender-only** integration: the ALMProxy buys units from makers' sell offers, sells them back into makers' buy offers before maturity, and redeems them at par once repayments land. In **maker mode** it also rests its own offers on both sides, still lender-only, with every maker exit required to leave the position debt-free (see `specs/midnight.md`). In neither mode does it supply collateral, borrow, liquidate or hold debt. Every external call is pinned to a single immutable Midnight singleton.
 
 Structs and the tick math are vendored verbatim into `MidnightUtils.sol` because the market id is a hash over the struct layout: any drift would silently change every id. The mainnet-fork suite pins parity by recomputing three live market ids.
 
@@ -150,10 +150,10 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 | `getMarketConfig(marketId)`       | Configured `MarketConfig`, all-zero when not onboarded                |
 | `getMakeConfig(marketId)`         | Configured `MakeConfig`, all-zero when making is disabled             |
 | `getDesignatedGroups(marketId)`   | Configured `DesignatedGroups`, all-zero when nothing is designated    |
-| `isStrategyAllowed(marketId, strategy)` | Whether the strategy may settle this market's fills              |
+| `isCallbackAllowed(marketId, callback)` | Whether that callback may settle this market's fills             |
 | `midnight()`                      | The immutable Midnight singleton every call is pinned to              |
 
-`getMakeConfig`, `getDesignatedGroups`, `getMarketConfig` and `isStrategyAllowed` are not diagnostics: the ratifier reads them on every maker fill, so they are the live policy interface maker mode runs on.
+`getMakeConfig`, `getDesignatedGroups` and `isCallbackAllowed` are not diagnostics: the ratifier reads them on every maker fill, so they are the live policy interface maker mode runs on.
 
 ---
 
@@ -161,17 +161,17 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 
 In maker mode the proxy stops waiting for someone else's offer and publishes its own. An off-chain **quoter** key signs an `Offer` naming the proxy as maker; a third party finds it, calls `midnight.take` directly, and the settlement happens with no transaction of ours in the call stack. Two immutable periphery contracts stand in for the facet inside that stack:
 
-- a **ratifier**, the contract Midnight asks whether an offer is live. It must be a pure `view` that recovers the quoter's signature over the offer, re-reads this facet's `MakeConfig`, `DesignatedGroups` and `MarketConfig`, and applies the same bounds the facet would. It must never call the singleton.
+- a **ratifier**, the contract Midnight asks whether an offer is live. It must be a pure `view` that recovers the quoter's signature over the offer, re-reads this facet's `MakeConfig` and `DesignatedGroups`, and refuses anything outside them. It must never call the singleton.
 - a **funding strategy**, named as the `callback` on offers in both directions. On a buy it is the payer Midnight pulls from: it calls `fundFill` to draw the exact amount from the proxy, approves the singleton for it, and is drained inside the same `take`. On a sell it funds nothing, since Midnight has already paid the proxy by the time `onSell` fires; it calls `fundFill` only so the exit is metered.
 
 **Neither contract ships from this repository.** Both are deployed, audited and tested in the periphery repository, against this facet and the ALM controller's matching surface. The dummy ratifier and dummy strategy this repo tests with carry none of the policy, so a maker test here proves the facet's own gates and nothing about an acceptable ratifier. What an acceptable one must enforce is listed below, and that list is the acceptance spec the periphery repository is built against.
 
-The proxy is still lender-only in this mode: buy offers acquire credit, sell offers are required to be `reduceOnly` so a fill can only shed credit the proxy already holds, and nothing opens debt or supplies collateral.
+The proxy is still lender-only in this mode: buy offers acquire credit, every sell fill must leave the position with zero debt so it can only shed credit the proxy already holds, and nothing borrows or supplies collateral.
 
 ```
 Maker buy:   taker calls midnight.take(proxy's buy offer)
              → ratifier.isRatified(offer, sig, taker)                  [view, reverts to refuse]
-             → strategy.onBuy(...) → controller.fundFill(...)
+             → strategy.onBuy(...) → controller.fundFill(..., buying = true)
                  → loanToken (ALMProxy) → strategy
              → midnight pulls buyerAssets from strategy
              credit += units (proxy's position)
@@ -179,7 +179,7 @@ Maker buy:   taker calls midnight.take(proxy's buy offer)
 Maker sell:  taker calls midnight.take(proxy's sell offer)
              → ratifier.isRatified(offer, sig, taker)                  [view, reverts to refuse]
              → loanToken (taker) → ALMProxy, at the offer's tick price
-             → strategy.onSell(...) → controller.fundFill(..., selling = true)
+             → strategy.onSell(...) → controller.fundFill(..., buying = false)
                  → meters only, moves nothing
              credit -= units (proxy's position)
 ```
@@ -188,50 +188,49 @@ The settlement fee always falls on the taker, so on a maker sell the proxy recei
 
 ### What an Acceptable Ratifier Must Enforce
 
-The facet cannot see a resting offer, so each requirement below is enforced by the ratifier or not at all. A ratifier passed to `setRatifierAuthorization` must refuse an offer unless:
+The facet cannot see a resting offer, so anything decidable only from the signed offer is enforced by the ratifier or not at all. A ratifier passed to `setRatifierAuthorization` must refuse an offer unless:
 
 1. it carries a current signature from the quoter over the offer digest, so rotating the quoter voids every outstanding offer;
 2. `maker` is the proxy, `ratifier` is the ratifier itself, and `market.midnight` is the configured singleton;
 3. `receiverIfMakerIsSeller` is the proxy on a sell and zero on a buy, so proceeds cannot be redirected;
-4. `maxOfferSize` is non-zero for the market and the offer's own `maxUnits`/`maxAssets` is within it;
-5. the offer has not expired, its window is not inverted, and the window is no longer than a configured maximum;
-6. a sell offer is `reduceOnly`, so a fill can only shed credit the proxy already holds;
-7. the offer's group is the designated group for its direction, and that direction has one designated;
-8. the callback is a strategy whitelisted for that market, in either direction, since Midnight routes a buy offer's callback to `onBuy` and a sell offer's to `onSell` and the facet meters both;
-9. the tick is within `maxBuyTick` on a buy and `minSellTick` on a sell;
-10. the price is within the yield rail for its direction, computed with the continuous fee at the configured cap on a buy and with the strictest basis on a sell, because the live lien moves between signing and filling;
-11. `continuousFeeCap` is at or below `continuousFeePerSecond(maxContinuousFee)`, because upstream voids a fill whose live fee exceeds the offer's own cap.
+4. the offer has not expired, its window is not inverted, and the window is no longer than a configured maximum;
+5. the offer's group is the designated group for its direction, and that direction has one designated;
+6. the callback is whitelisted for that market, in **both** directions, since Midnight routes a buy offer's callback to `onBuy` and a sell offer's to `onSell`. This is what makes metering unavoidable: an offer naming no callback would settle without reaching the facet at all, which is why `setCallbackAllowed` refuses a zero address.
 
-A funding strategy must refuse to act unless the callback's caller is the singleton and its `buyer` (or `seller`) is the proxy, and must return success *without* calling `fundFill` when the reported assets are zero, because a consumed offer stays pokeable and reverting would fail an unrelated taker's transaction.
+Deliberately **not** on that list: price, size, the continuous fee, the loss factor and make-enabled. All of those depend on the fill rather than on the offer, so they are enforced per fill in `fundFill`, which every fill reaches through the whitelisted callback. Nor is a sell offer required to be `reduceOnly`; `fundFill` requires the position to hold zero debt after the fill instead, which is the same guarantee read from the result rather than promised by a flag. The split is a division of labour, not a gap, and it means the ratifier never has to predict a price it cannot know at signing time.
 
-Items 4, 8, 9 and 10 the facet re-checks, because `fundFill` reads the same config: making enabled, the callback whitelisted, and both price rails for the direction the fill is in. The rest of the list has no second line of defence here.
+A funding strategy must refuse to act unless the callback's caller is the singleton and its `buyer` (or `seller`) is the proxy, and must return success *without* calling `fundFill` when the reported amount is zero, because a consumed offer stays pokeable and reverting would fail an unrelated taker's transaction.
 
-### Fund Fill (strategy, no role)
+### Fund Fill (callback, no role)
 
-**Function:** `fundFill(marketId, selling, assets, units)` (**no role**, see below)
+**Function:** `fundFill(marketId, buying, assets, units, pendingFee)` (**no role**, see below)
 
 Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSell`, never by an allocator. It is the only facet function reached from a third party's transaction.
 
 **Flow, both directions:**
 
-1. Require `isStrategyAllowed(marketId, msg.sender)` (`MidnightFacet/strategy-not-allowed`).
+1. Require `isCallbackAllowed(marketId, msg.sender)` (`MidnightFacet/callback-not-allowed`).
 2. Require `makeConfig.maxOfferSize != 0` (`MidnightFacet/make-not-enabled`), `assets != 0` (`MidnightFacet/zero-assets`), `units != 0` (`MidnightFacet/zero-units`).
 3. Decrement `LIMIT_MIDNIGHT_MAKE` keyed `marketId` by `assets`. Nothing ever restores this key, so it caps maker throughput independently of the entry and exit budgets.
 
-**Then, when `selling` is false (an entry):**
+**Then, when `buying` is true (an entry):**
 
 4. Require `lossFactor(marketId) <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`), read live, so a market whose lenders have already been slashed stops funding fills.
-5. Require `assets <= units * maxFillPrice / WAD` (`MidnightFacet/fill-price-too-high`), where `maxFillPrice` is the lesser of `tickToPrice(maxBuyTick)` and `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))`.
-6. Decrement `LIMIT_MIDNIGHT_BUY` keyed `marketId` by `assets`.
-7. `doCall` `loanToken.transfer(msg.sender, assets)` as the last step, so every gate and both meters have already passed. The loan token comes from stored `MakeConfig`, never from the caller.
+5. Require `continuousFee(marketId) <= continuousFeePerSecond(maxContinuousFee)` (`MidnightFacet/continuous-fee-too-high`), read live. The price bound below is computed at the configured ceiling, so a live rate above it would let the fill clear the bound while earning less than `minBuyYield`.
+6. Require `assets * WAD <= units * maxFillPrice` (`MidnightFacet/fill-price-too-high`), where `maxFillPrice` is the lesser of `tickToPrice(maxBuyTick)` and `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))`.
+7. Decrement `LIMIT_MIDNIGHT_BUY` keyed `marketId` by `assets`.
+8. `doCall` `loanToken.transfer(msg.sender, assets)` as the last step, so every gate and both meters have already passed. The loan token comes from stored `MakeConfig`, never from the caller.
 
-**Then, when `selling` is true (an exit):**
+**Then, when `buying` is false (an exit):**
 
-4. Require `assets >= units * minFillPrice / WAD` (`MidnightFacet/fill-price-too-low`), where `minFillPrice` is the greater of `tickToPrice(minSellTick)` and `minSellPrice(maxSellYield, timeToMaturity, WAD, 0)`. The loss factor is deliberately not checked: a slashed market is when an exit matters most.
-5. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assets`, and `_tryIncreaseRateLimit` the buy key by the same amount, exactly as the taker exit does.
-6. Move nothing. Midnight paid the proxy before calling back, so the exit branch is a meter and a price gate only.
+4. Require `assets * WAD >= units * minFillPrice` (`MidnightFacet/fill-price-too-low`), where `minFillPrice` is the greater of `tickToPrice(minSellTick)` and `minSellPrice(maxSellYield, timeToMaturity, WAD, feePerUnit)`. Neither the loss factor nor the live fee is checked: a slashed market is when an exit matters most, and an exit moves no money of ours.
+5. Require `debt(marketId, proxy) == 0` (`MidnightFacet/debt-not-zero`), so an exit can shed credit but never open a short. Positions are already written when `onSell` fires, so this reads the result of the fill being reported.
+6. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assets`, and `_tryIncreaseRateLimit` the buy key by the same amount, exactly as the taker exit does.
+7. Move nothing. Midnight paid the proxy before calling back, so the exit branch is a meter, a price gate and a post-condition only.
 
-**No role, deliberately.** The per-market whitelist is the authorization: onboarding a strategy is one `setStrategyAllowed`, revoking it is the same call with `false`, and there is no role grant to track separately. The amount is bounded by the make key plus the market's entry or exit key, all debited before any transfer.
+Both price comparisons are cross-multiplied rather than divided, so neither bound is loosened by a wei of flooring.
+
+**No role, deliberately.** The per-market whitelist is the authorization: onboarding a callback is one `setCallbackAllowed`, revoking it is the same call with `false`, and there is no role grant to track separately. The amount is bounded by the make key plus the market's entry or exit key, all debited before any transfer.
 
 **Rate Limit:** `LIMIT_MIDNIGHT_MAKE` keyed `marketId` on every fill, plus `LIMIT_MIDNIGHT_BUY` on an entry or `LIMIT_MIDNIGHT_SELL` on an exit, each debited by `assets`. Maker and taker traffic therefore share one per-market budget per direction, and the make key caps the maker share inside it.
 
@@ -239,7 +238,7 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 
 **Exits can be metered to a stop.** The exit key and the make key both gate a maker sell, and a fill that exceeds either reverts the *taker's* transaction, not ours. Sizing those keys too tightly therefore makes a resting sell offer look broken to the outside. `cancelOfferGroup` on the sell group is the control to use when the exit budget is nearly spent, since it retires the book instead of leaving it failing.
 
-**Event:** `MidnightFillFunded(marketId, strategy, selling, assets, units)`
+**Event:** `MidnightFillFunded(marketId, callback, buy, assets, units)`
 
 **Maker entry is bounded more tightly than `buy`.** `fundFill` prices the continuous fee at the *configured cap*, while `buy` prices the market's *live* rate, because an offer is signed before the rate it will settle at is known and the ratifier has to agree with `fundFill` at signing time. At a 180 day term with the 1%/year cap the two bounds differ by about 48 basis points, so a tick that taker entry accepts can still be refused for a maker buy. Verify an intended `maxBuyTick` against the capped-fee bound before publishing.
 
@@ -249,12 +248,14 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 
 A third party taking a resting **sell** offer moves credit out of the proxy's position with none of our transactions in the stack, but `onSell` does reach `fundFill`, so the exit is priced and metered by the facet.
 
-What the facet can check there is narrower than on the taker exit. The callback carries no offer, so size, expiry, window, `reduceOnly`, group and the identity binds are the ratifier's job or nobody's. What the facet does enforce is the realized price against the configured exit floor and the two meters. Two differences from taker `sell` are deliberate:
+What the facet can check there is narrower than on the taker exit. The callback carries no offer, so size, expiry, window, group and the identity binds are the ratifier's job or nobody's. What the facet does enforce is the realized price against the configured exit floor, the debt post-condition, and the two meters. Two differences from taker `sell` are deliberate:
 
 - there is no `minAssetsOut`, because no caller of ours chooses the size of a maker fill. The configured floor is the whole price defence.
-- the exit floor prices an **unencumbered** unit, `minSellPrice(maxSellYield, timeToMaturity, WAD, 0)`, rather than netting off the position's live pending fee the way taker `sell` does. An offer is signed before the lien it will carry at settlement is known, so a ratifier can only commit to the unencumbered basis; using anything stricter here would let an offer ratify and then fail to settle.
+- the floor's fee basis is **the lesser of what the fill reports and what the position still carries**. `onSell` hands over `sellerPendingFeeDecrease`, the lien the fill sheds, and shedding a lien means the proxy gives up less than par, so a larger lien justifies a lower price. That argument only holds for a lien that exists, and the reported number is not evidence of one. The facet therefore reads the position back from the venue and takes the smaller of the two. Overstating the lien is clamped away; understating it only tightens the floor, which is the caller's loss to take.
 
-There are also no post-conditions: `onSell` fires after Midnight's transfers but the credit delta it implies cannot be re-derived without the offer, so the facet takes the strategy's word for `assets` and `units` and bounds the damage with the meters instead. The ratifier requires `receiverIfMakerIsSeller == proxy` on every sell offer, so the proceeds cannot be redirected.
+The pro-rata split makes the venue read exact rather than approximate: Midnight reduces `pendingFee` and `credit` in the same proportion, so the fee per unit remaining after the fill is the fee per unit the fill shed. A **full** exit leaves no ratio to read, and prices as though no lien was shed, which is the strictest basis available.
+
+One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstream's own end-of-take check only requires the seller to be *healthy*, which collateral alone can satisfy, and it is skipped entirely for the inner take of a nested one. The debt check is therefore both stricter and always run, and it is what keeps the proxy lender-only in place of a `reduceOnly` flag on the offer. Beyond that the facet takes the caller's word for `assets` and `units` and bounds the damage with the meters. The ratifier requires `receiverIfMakerIsSeller == proxy` on every sell offer, so the proceeds cannot be redirected.
 
 ### Set Make Config (admin)
 
@@ -303,7 +304,7 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 All four are denominated in the market's loan token. Maker fills spend the same per-direction budget as taker traffic: an entry debits `LIMIT_MIDNIGHT_BUY`, an exit debits `LIMIT_MIDNIGHT_SELL`. `LIMIT_MIDNIGHT_MAKE` is debited on top of that by every maker fill in either direction and is restored by nothing, so it is the standing cap on how much the book can turn over between governance actions. The three taker limits are sized by measured balance deltas. `sell` and `redeem` refill the buy key by the amount returned (`_tryIncreaseRateLimit`), as does a maker exit, so capital rotated out of a market restores entry headroom for that market without governance action. Splitting sell from redeem lets governance price the two exits differently: redemption is at par and only limited by repayments, while a sell crosses the spread and the settlement fee.
 
-A strategy's authorization is the per-market whitelist, not a rate limit; `LIMIT_MIDNIGHT_MAKE` bounds all whitelisted strategies on a market together rather than capping any one of them.
+A callback's authorization is the per-market whitelist, not a rate limit; `LIMIT_MIDNIGHT_MAKE` bounds all whitelisted callbacks on a market together rather than capping any one of them.
 
 ---
 
@@ -404,12 +405,12 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/maturity-oob`             | facet       | `setMakeConfig` with a maturity above `type(uint64).max`                                  |
 | `MidnightFacet/max-offer-size-oob`       | facet       | `setMakeConfig` with a cap above `type(uint128).max`                                      |
 | `MidnightFacet/zero-ratifier`            | facet       | `setRatifierAuthorization` with a zero address                                            |
-| `MidnightFacet/strategy-not-allowed`     | facet       | `fundFill` from a caller not whitelisted for that market                                  |
+| `MidnightFacet/callback-not-allowed`     | facet       | `fundFill` from a caller not whitelisted for that market                                  |
 | `MidnightFacet/make-not-enabled`         | facet       | `fundFill` on a market whose `maxOfferSize` is zero                                       |
 | `MidnightFacet/zero-assets`              | facet       | `fundFill` with zero assets                                                               |
 | `MidnightFacet/fill-price-too-high`      | facet       | `fundFill` paying above the lesser of the tick and capped-fee yield bounds                 |
 | `MidnightFacet/fill-price-too-low`       | facet       | `fundFill` on an exit realizing below the greater of the tick and yield floors             |
-| `MidnightFacet/zero-strategy`            | facet       | `setStrategyAllowed` with a zero address                                                   |
+| `MidnightFacet/zero-callback`            | facet       | `setCallbackAllowed` with a zero address                                                   |
 | `RateLimits/rate-limit-exceeded`         | rate limits | trade exceeding the configured limit                                                      |
 | `RateLimits/zero-maxAmount`              | rate limits | key unconfigured                                                                          |
 | `MarketNotCreated()`                     | Midnight    | market never touched on the singleton                                                     |
@@ -425,18 +426,19 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 
 Every revert below refuses a fill against one of the proxy's own resting offers. The taker sees it bubble out of `midnight.take`.
 
-Reverts raised by the ratifier and the funding strategy are theirs to document, since neither ships from here. The policy they have to refuse on is the numbered list under [What an Acceptable Ratifier Must Enforce](#what-an-acceptable-ratifier-must-enforce).
+Reverts raised by the ratifier and the funding strategy are theirs to document, since neither ships from here. The policy the ratifier has to refuse on is the numbered list under [What an Acceptable Ratifier Must Enforce](#what-an-acceptable-ratifier-must-enforce); everything else is in the table below.
 
 | Revert                                        | Origin   | Cause                                                                              |
 | --------------------------------------------- | -------- | ---------------------------------------------------------------------------------- |
-| `MidnightFacet/strategy-not-allowed`          | facet    | `fundFill` from an address not whitelisted for that market                         |
+| `MidnightFacet/callback-not-allowed`          | facet    | `fundFill` from an address not whitelisted for that market                         |
 | `MidnightFacet/make-not-enabled`              | facet    | `fundFill` on a market whose `maxOfferSize` is zero                                |
 | `MidnightFacet/fill-price-too-high`           | facet    | `fundFill` above the configured entry bound, fee priced at the cap                 |
-| `MidnightFacet/fill-price-too-low`            | facet    | `fundFill` below the configured exit floor on an unencumbered basis                 |
-| `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` on a market whose lenders have already been slashed                     |
+| `MidnightFacet/fill-price-too-low`            | facet    | `fundFill` below the configured exit floor, on the clamped fee basis                |
+| `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` entry on a market whose lenders have already been slashed               |
+| `MidnightFacet/continuous-fee-too-high`       | facet    | `fundFill` entry while the live fee exceeds the configured ceiling                 |
+| `MidnightFacet/debt-not-zero`                 | facet    | `fundFill` exit leaving the proxy's position holding debt                          |
 | `NotRatified()`                               | Midnight | the ratifier refused the offer, or never ratified that exact one                   |
 | `ConsumedUnits()`                             | Midnight | the designated group is exhausted, including by `cancelOfferGroup`                 |
-| `MakerCreditOrDebtIncreased()`                | Midnight | a `reduceOnly` sell fill that would have increased the position                    |
 | `UnusedReceiverMustBeZero()`                  | Midnight | a buy offer naming a receiver, refused before ratification runs                    |
 | `RatifierUnauthorized()`                      | Midnight | the ratifier's authorization was revoked                                           |
 
@@ -462,7 +464,7 @@ Steps 1 to 3 above are prerequisites. Maker mode is off until all of the followi
 5. Deploy the ratifier and the funding strategy from the periphery repository. Both are immutable; rotating either means a new deployment and a spell. Before authorizing anything: review the deployed bytecode against the audited source, confirm the ratifier enforces the full numbered list above, and run the opcode scan over its runtime, which this repository cannot do for you.
 6. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market, passing the full `Market` struct.
 7. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups. Leave a side zero to make the market one-directional. These are the only groups `cancelOfferGroup` can retire, so publish offers into nothing else.
-8. `setStrategyAllowed(marketId, strategy, true)` for each funding strategy the market's offers may name, then configure `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the authorization; the make limit is the aggregate cap on all of them, and it is restored by nothing. Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind too: a maker sell debits it, and exhausting it reverts the taker's fill rather than ours.
+8. `setCallbackAllowed(marketId, callback, true)` for each funding strategy the market's offers may name, then configure `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the authorization; the make limit is the aggregate cap on all of them, and it is restored by nothing. Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind too: a maker sell debits it, and exhausting it reverts the taker's fill rather than ours.
 9. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place and verified. This is the blanket grant described above, and it is what makes resting offers fillable at all.
 10. Set the quoter on the ratifier (`setQuoter`, ratifier admin) to the signing key that will publish offers. Rotating it invalidates every offer signed by the old key.
 
@@ -474,8 +476,8 @@ Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturit
 | ------------------------------------------- | ------------------------------------------------------- | --------- |
 | `setRatifierAuthorization(ratifier, false)` | every market, both directions, one transaction          | admin     |
 | `setMakeConfig(market, 0)`                  | one market, both directions                             | admin     |
-| `setStrategyAllowed(marketId, strategy, false)` | one strategy on one market, both directions         | admin     |
-| zero `LIMIT_MIDNIGHT_MAKE`                  | every strategy on one market, both directions           | admin     |
+| `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions         | admin     |
+| zero `LIMIT_MIDNIGHT_MAKE`                  | every callback on one market, both directions           | admin     |
 | tighten `setMarketConfig` ticks or yields   | one market, the tightened direction                     | admin     |
 | `cancelOfferGroup(group)`                   | one direction on one market, irreversible for that group | allocator |
 
