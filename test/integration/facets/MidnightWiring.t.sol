@@ -19,7 +19,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     bytes32 internal constant INTEGRATION = "MIDNIGHT_FACET";
 
     // Bumping this is the step that forces a new controller alias to be paired below.
-    uint256 internal constant WIRE_COUNT = 18;
+    uint256 internal constant WIRE_COUNT = 20;
 
     address internal midnight = makeAddr("midnight");
 
@@ -99,8 +99,14 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         calls[16]     = IMidnightController.midnight_getDesignatedGroups.selector;
         delegates[16] = IMidnightFacet.getDesignatedGroups.selector;
 
-        calls[17]     = IMidnightController.midnight_getStrategyRateLimitKey.selector;
-        delegates[17] = IMidnightFacet.getStrategyRateLimitKey.selector;
+        calls[17]     = IMidnightController.midnight_isStrategyAllowed.selector;
+        delegates[17] = IMidnightFacet.isStrategyAllowed.selector;
+
+        calls[18]     = IMidnightController.midnight_setStrategyAllowed.selector;
+        delegates[18] = IMidnightFacet.setStrategyAllowed.selector;
+
+        calls[19]     = IMidnightController.midnight_getMakeRateLimitKey.selector;
+        delegates[19] = IMidnightFacet.getMakeRateLimitKey.selector;
     }
 
     function test_midnightWiring_everyDeclaredPairIsInstalled() external view {
@@ -147,7 +153,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     }
 
     function test_midnightWiring_aliasesDispatchThroughTheController() external view {
-        assertEq(IMidnightController(controller).midnight_VERSION(),  "1.1.0");
+        assertEq(IMidnightController(controller).midnight_VERSION(),  "1.2.0");
         assertEq(IMidnightController(controller).midnight_midnight(), midnight);
     }
 
