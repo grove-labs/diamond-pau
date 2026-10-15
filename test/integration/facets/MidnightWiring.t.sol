@@ -157,4 +157,38 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         assertEq(IMidnightController(controller).midnight_midnight(), midnight);
     }
 
+    // Midnight staticcalls isRatified, so a periphery ratifier can only read policy from here if
+    // the dispatch itself is static-safe.
+    function test_midnightWiring_policyViewsAnswerAStaticCall() external {
+        bytes32 marketId  = keccak256("market");
+        bytes32 buyGroup  = keccak256("buy");
+        bytes32 sellGroup = keccak256("sell");
+
+        address callback = makeAddr("callback");
+
+        vm.startPrank(admin);
+        IMidnightController(controller).midnight_setDesignatedGroups(marketId, buyGroup, sellGroup);
+        IMidnightController(controller).midnight_setCallbackAllowed(marketId, callback, true);
+        vm.stopPrank();
+
+        ( bool ok, bytes memory data ) = controller.staticcall(
+            abi.encodeCall(IMidnightController.midnight_getDesignatedGroups, (marketId))
+        );
+
+        assertTrue(ok);
+
+        IMidnightFacet.DesignatedGroups memory groups =
+            abi.decode(data, (IMidnightFacet.DesignatedGroups));
+
+        assertEq(groups.buyGroup,  buyGroup);
+        assertEq(groups.sellGroup, sellGroup);
+
+        ( ok, data ) = controller.staticcall(
+            abi.encodeCall(IMidnightController.midnight_isCallbackAllowed, (marketId, callback))
+        );
+
+        assertTrue(ok);
+        assertTrue(abi.decode(data, (bool)));
+    }
+
 }
