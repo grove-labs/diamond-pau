@@ -99,6 +99,18 @@ interface IMidnightFacet is IFacet {
     event MidnightBuy(bytes32 indexed marketId, uint256 units, uint256 assetsSpent);
 
     /**
+     * @notice Emitted when an offer callback is whitelisted or removed for a Midnight market.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  callback Offer callback whitelisted or removed.
+     * @param  allowed  Whether the callback may settle fills on this market.
+     */
+    event MidnightCallbackAllowedSet(
+        bytes32 indexed marketId,
+        address indexed callback,
+        bool            allowed
+    );
+
+    /**
      * @notice Emitted when the designated offer groups for a Midnight market are updated.
      * @param  marketId  Identifier of the Midnight market.
      * @param  buyGroup  Group every resting buy offer must name.
@@ -113,16 +125,16 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Emitted when a fill of one of the proxy's resting offers is settled.
      * @param  marketId Identifier of the Midnight market.
-     * @param  strategy Funding strategy that reported the fill.
-     * @param  selling  True when the proxy was the seller, in which case nothing was sent.
-     * @param  assets   Loan token sent to the strategy on a buy, or received by the proxy on a
+     * @param  callback Offer callback that reported the fill.
+     * @param  buy      True when the proxy was the buyer, in which case the loan token was sent.
+     * @param  assets   Loan token sent to the callback on a buy, or received by the proxy on a
      *                  sell.
      * @param  units    Credit units the fill moves for the proxy.
      */
     event MidnightFillFunded(
         bytes32 indexed marketId,
-        address indexed strategy,
-        bool            selling,
+        address indexed callback,
+        bool            buy,
         uint256         assets,
         uint256         units
     );
@@ -193,18 +205,6 @@ interface IMidnightFacet is IFacet {
      */
     event MidnightSell(bytes32 indexed marketId, uint256 units, uint256 assetsReceived);
 
-    /**
-     * @notice Emitted when a funding strategy is whitelisted or removed for a Midnight market.
-     * @param  marketId Identifier of the Midnight market.
-     * @param  strategy Funding strategy whitelisted or removed.
-     * @param  allowed  Whether the strategy may settle fills on this market.
-     */
-    event MidnightStrategyAllowedSet(
-        bytes32 indexed marketId,
-        address indexed strategy,
-        bool            allowed
-    );
-
     /**********************************************************************************************/
     /*** Interactive Functions                                                                  ***/
     /**********************************************************************************************/
@@ -247,22 +247,33 @@ interface IMidnightFacet is IFacet {
      * @dev    Called by the funding strategy named as the offer's callback, from inside Midnight's
      *         settlement. Carries no role on purpose: the caller must be whitelisted for the
      *         market, which is what makes a strategy usable and what revoking it withdraws.
-     * @dev    On a buy the loan token is sent to the caller, which is what Midnight then pulls, and
-     *         the fill must clear the configured loss factor and price at or below the stricter of
-     *         the configured entry tick and entry yield. On a sell the proceeds have already
-     *         reached the proxy, so nothing moves here and the fill must price at or above the
-     *         stricter of the configured exit tick and exit yield. Both price bounds use the
-     *         configured fee ceiling rather than the live fee, and the exit bound prices an
-     *         unencumbered unit, matching the basis a ratifier can commit to at signing time.
+     * @dev    On a buy the loan token is sent to the caller, which is what Midnight then pulls. The
+     *         fill must clear the configured loss factor, meet the configured fee ceiling against
+     *         the market's live continuous fee, and price at or below the stricter of the
+     *         configured entry tick and entry yield. On a sell the proceeds have already reached
+     *         the proxy, so nothing moves here; the fill must price at or above the stricter of the
+     *         configured exit tick and exit yield, and must leave the proxy free of debt on the
+     *         market, which is what stops an exit from opening a short.
+     * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
+     *         position actually carries, read back from the venue, so a caller cannot widen its own
+     *         floor by overstating the lien it sheds.
      * @dev    Metering mirrors the taker legs: a buy decreases the buy limit, a sell decreases the
      *         sell limit and restores the buy limit by the same amount. Both directions also
      *         decrease the make limit, which no direction ever restores.
-     * @param  marketId Identifier of the Midnight market.
-     * @param  selling  True when the proxy is the seller, so the fill is an exit.
-     * @param  assets   Loan token the settlement moves, as reported by the strategy.
-     * @param  units    Credit units the fill moves for the proxy, as reported by the strategy.
+     * @param  marketId   Identifier of the Midnight market.
+     * @param  buying     True when the proxy is the buyer, so the fill is an entry.
+     * @param  assets     Loan token the settlement moves, as reported by the caller.
+     * @param  units      Credit units the fill moves for the proxy, as reported by the caller.
+     * @param  pendingFee Pending fee the fill adds on a buy or sheds on a sell, as reported by the
+     *                    caller. Used only on a sell, and only as far as the venue corroborates it.
      */
-    function fundFill(bytes32 marketId, bool selling, uint256 assets, uint256 units) external;
+    function fundFill(
+        bytes32 marketId,
+        bool    buying,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
+    ) external;
 
     /**
      * @notice Redeems credit units at par out of the market's repayments.
@@ -301,6 +312,18 @@ interface IMidnightFacet is IFacet {
     )
         external
         returns (uint256 assetsReceived);
+
+    /**
+     * @notice Whitelists or removes an offer callback for one Midnight market.
+     * @dev    A callback is only usable on the market it is whitelisted for, so one market's
+     *         callback cannot settle another's fills. Removal is immediate and retroactive: a
+     *         resting offer naming a removed callback stops settling, which reverts the taker's
+     *         take rather than paying out.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  callback Offer callback to whitelist or remove.
+     * @param  allowed  Whether the callback may settle fills on this market.
+     */
+    function setCallbackAllowed(bytes32 marketId, address callback, bool allowed) external;
 
     /**
      * @notice Sets the offer groups the proxy's resting offers must sit in on one market.
@@ -363,18 +386,6 @@ interface IMidnightFacet is IFacet {
      * @param  authorized Whether the address may ratify the proxy's offers.
      */
     function setRatifierAuthorization(address ratifier, bool authorized) external;
-
-    /**
-     * @notice Whitelists or removes a funding strategy for one Midnight market.
-     * @dev    A strategy is only usable on the market it is whitelisted for, so one market's
-     *         strategy cannot settle another's fills. Removal is immediate and retroactive: a
-     *         resting offer naming a removed strategy stops settling, which reverts the taker's
-     *         take rather than paying out.
-     * @param  marketId Identifier of the Midnight market.
-     * @param  strategy Funding strategy to whitelist or remove.
-     * @param  allowed  Whether the strategy may settle fills on this market.
-     */
-    function setStrategyAllowed(bytes32 marketId, address strategy, bool allowed) external;
 
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
@@ -442,12 +453,12 @@ interface IMidnightFacet is IFacet {
     function getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     /**
-     * @notice Returns whether a funding strategy may settle fills on a Midnight market.
+     * @notice Returns whether an offer callback may settle fills on a Midnight market.
      * @param  marketId Identifier of the Midnight market.
-     * @param  strategy Funding strategy address.
-     * @return allowed  Whether the strategy is whitelisted for this market.
+     * @param  callback Offer callback address.
+     * @return allowed  Whether the callback is whitelisted for this market.
      */
-    function isStrategyAllowed(bytes32 marketId, address strategy)
+    function isCallbackAllowed(bytes32 marketId, address callback)
         external
         view
         returns (bool allowed);

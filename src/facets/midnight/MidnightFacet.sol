@@ -75,7 +75,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         mapping (bytes32 marketId => MakeConfig config)       makeConfigs;
         mapping (bytes32 marketId => DesignatedGroups groups) designatedGroups;
         mapping (bytes32 marketId =>
-            mapping (address strategy => bool allowed))       allowedStrategies;
+            mapping (address callback => bool allowed))       allowedCallbacks;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -142,6 +142,21 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
     /*** External Interactive Admin Functions                                                   ***/
     /**********************************************************************************************/
+
+    /// @inheritdoc IMidnightFacet
+    function setCallbackAllowed(bytes32 marketId, address callback, bool allowed)
+        external
+        override
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        // A zero callback is never invoked upstream, so allowing it would ratify unmetered fills.
+        require(callback != address(0), "MidnightFacet/zero-callback");
+
+        _getFacetStorage().allowedCallbacks[marketId][callback] = allowed;
+
+        emit MidnightCallbackAllowedSet(marketId, callback, allowed);
+    }
 
     /// @inheritdoc IMidnightFacet
     function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
@@ -266,20 +281,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
 
         emit MidnightRatifierAuthorizationSet(ratifier, authorized);
-    }
-
-    /// @inheritdoc IMidnightFacet
-    function setStrategyAllowed(bytes32 marketId, address strategy, bool allowed)
-        external
-        override
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        require(strategy != address(0), "MidnightFacet/zero-strategy");
-
-        _getFacetStorage().allowedStrategies[marketId][strategy] = allowed;
-
-        emit MidnightStrategyAllowedSet(marketId, strategy, allowed);
     }
 
     /**********************************************************************************************/
@@ -484,7 +485,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
 
     /// @inheritdoc IMidnightFacet
-    function fundFill(bytes32 marketId, bool selling, uint256 assets, uint256 units)
+    function fundFill(
+        bytes32 marketId,
+        bool    buying,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
+    )
         external
         override
         nonReentrant
@@ -496,8 +503,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // No role gate: the whitelist is the authorization, so removal revokes it retroactively.
         require(
-            $.allowedStrategies[marketId][msg.sender],
-            "MidnightFacet/strategy-not-allowed"
+            $.allowedCallbacks[marketId][msg.sender],
+            "MidnightFacet/callback-not-allowed"
         );
 
         require(makeConfig.maxOfferSize != 0, "MidnightFacet/make-not-enabled");
@@ -508,18 +515,29 @@ contract MidnightFacet is IMidnightFacet, Facet {
         _decreaseRateLimit(getMakeRateLimitKey(marketId), assets);
 
         // Midnight pays the proxy before calling back on an exit, so this branch moves nothing.
-        if (selling) {
+        if (!buying) {
+            address proxy = _getSharedControllerStorage().proxy;
+
+            uint256 floor = _minFillPrice(
+                config,
+                makeConfig.maturity,
+                _exitFeePerUnit(marketId, proxy, units, pendingFee)
+            );
+
             require(
-                assets >= units * _minFillPrice(config, makeConfig.maturity) / MidnightUtils.WAD,
+                assets * MidnightUtils.WAD >= units * floor,
                 "MidnightFacet/fill-price-too-low"
             );
+
+            // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
+            _requireDebtFree(marketId, proxy);
 
             _decreaseRateLimit(getSellRateLimitKey(marketId), assets);
 
             // Mirrors the taker exit: capital out of a market restores that market's entry room.
             _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assets);
 
-            emit MidnightFillFunded(marketId, msg.sender, true, assets, units);
+            emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
 
             return;
         }
@@ -530,8 +548,15 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/loss-factor-too-high"
         );
 
+        // The entry bound is priced at the ceiling, so a higher live fee undercuts the yield.
         require(
-            assets <= units * _maxFillPrice(config, makeConfig.maturity) / MidnightUtils.WAD,
+            IMidnightLike(midnight).continuousFee(marketId)
+                <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
+            "MidnightFacet/continuous-fee-too-high"
+        );
+
+        require(
+            assets * MidnightUtils.WAD <= units * _maxFillPrice(config, makeConfig.maturity),
             "MidnightFacet/fill-price-too-high"
         );
 
@@ -543,7 +568,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             abi.encodeCall(IERC20Like.transfer, (msg.sender, assets))
         );
 
-        emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
+        emit MidnightFillFunded(marketId, msg.sender, true, assets, units);
     }
 
     /**********************************************************************************************/
@@ -601,13 +626,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /// @inheritdoc IMidnightFacet
-    function isStrategyAllowed(bytes32 marketId, address strategy)
+    function isCallbackAllowed(bytes32 marketId, address callback)
         external
         view
         override
         returns (bool)
     {
-        return _getFacetStorage().allowedStrategies[marketId][strategy];
+        return _getFacetStorage().allowedCallbacks[marketId][callback];
     }
 
     /**********************************************************************************************/
@@ -736,8 +761,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         if (yieldBound < bound) bound = yieldBound;
     }
 
-    // Prices an unencumbered unit, so a ratifier can commit to this bound when it signs.
-    function _minFillPrice(MarketConfig storage config, uint64 maturity)
+    function _minFillPrice(MarketConfig storage config, uint64 maturity, uint256 feePerUnit)
         internal
         view
         returns (uint256 bound)
@@ -748,10 +772,27 @@ contract MidnightFacet is IMidnightFacet, Facet {
             config.maxSellYield,
             _timeToMaturity(maturity),
             MidnightUtils.WAD,
-            0
+            feePerUnit
         );
 
         if (yieldBound > bound) bound = yieldBound;
+    }
+
+    function _exitFeePerUnit(bytes32 marketId, address proxy, uint256 units, uint256 pendingFee)
+        internal
+        view
+        returns (uint256 feePerUnit)
+    {
+        feePerUnit = pendingFee * MidnightUtils.WAD / units;
+
+        ( uint256 credit, uint256 carried ) =
+            _credit(IMidnightLike(midnight).toMarket(marketId), marketId, proxy);
+
+        // The split is pro rata, so what is left per unit is what the fill shed per unit. A full
+        // exit leaves no ratio to read, and prices unencumbered.
+        uint256 carriedPerUnit = credit == 0 ? 0 : carried * MidnightUtils.WAD / credit;
+
+        if (carriedPerUnit < feePerUnit) feePerUnit = carriedPerUnit;
     }
 
     function _credit(Market memory market, bytes32 marketId, address user)

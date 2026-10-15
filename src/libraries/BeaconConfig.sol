@@ -1150,13 +1150,13 @@ library BeaconConfig {
         );
 
         wires[17] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_isStrategyAllowed.selector,
-            IMidnightFacet.isStrategyAllowed.selector
+            IMidnightController.midnight_isCallbackAllowed.selector,
+            IMidnightFacet.isCallbackAllowed.selector
         );
 
         wires[18] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_setStrategyAllowed.selector,
-            IMidnightFacet.setStrategyAllowed.selector
+            IMidnightController.midnight_setCallbackAllowed.selector,
+            IMidnightFacet.setCallbackAllowed.selector
         );
 
         wires[19] = IEnumerableIntegrations.Wire(
