@@ -137,8 +137,11 @@ already signed and published, and therefore unrecallable.
   bounds were never set; `market.maturity <= type(uint64).max`;
   `maxOfferSize <= type(uint128).max`, since an offer's own size fields are `uint128` and a
   larger cap could never bind; and `toMarket(marketId).maturity == market.maturity`, which
-  reverts unless the market exists on the singleton. `maxOfferSize` bounds each single
-  resting offer, in units or assets whichever the offer sets, not the size of the book.
+  reverts unless the market exists on the singleton. `maxOfferSize` is intended to bound each
+  single resting offer, in units or assets whichever the offer sets, rather than the book, but
+  no contract enforces that: the facet reads it only as `!= 0` and the deployed ratifier does
+  not read it at all, so a single fill is bounded by `LIMIT_MIDNIGHT_MAKE` and the direction
+  limit, not by this value.
 - **External calls:** `midnight.toMarket(marketId)` (view only).
 - **Zero-amount semantics:** `maxOfferSize == 0` is the default and means making is disabled.
   It is also the per-market kill switch, but not a graceful one: the ratifier does not read it,
@@ -549,8 +552,9 @@ Steps 1 to 3 are prerequisites for taking as well.
    anything: review the deployed bytecode against the audited source, confirm the ratifier
    enforces the policy list in `docs/MIDNIGHT_INTEGRATION.md`, and run the opcode scan over
    its runtime. None of those three is verifiable from this repository.
-8. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market. `maxOfferSize` is
-   the cap on a single resting offer.
+8. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market. Non-zero enables
+   making; it is stored as a per-offer cap but nothing on chain enforces it as one, so size
+   the rate limits to bound a fill.
 9. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups.
    Leave a side zero to make the market one-directional. These are the only groups
    `cancelOfferGroup` can retire, so publish offers into nothing else.
@@ -585,7 +589,8 @@ be recalled from the venue:
 | tighten `setMarketConfig` ticks or yields | one market, the tightened direction | admin |
 | `cancelOfferGroup(group)` | one direction on one market, irreversible for that group | allocator |
 
-13. Monitoring, maker-specific: published offers against `maxOfferSize` and against the
-    designated groups' consumed counters; `LIMIT_MIDNIGHT_MAKE` drawdown as the maker
-    entry rate; the quoter key's custody; and `isAuthorized[proxy][x]` on the singleton, which
-    must hold for the ratifier and no other address.
+13. Monitoring, maker-specific: published offers against the designated groups' consumed
+    counters, and against `maxOfferSize` off chain since nothing enforces it on chain;
+    `LIMIT_MIDNIGHT_MAKE` drawdown as the maker entry rate; the quoter key's custody; and
+    `isAuthorized[proxy][x]` on the singleton, which must hold for the ratifier and no
+    other address.
