@@ -164,6 +164,36 @@ already signed and published, and therefore unrecallable.
   kill switch: it invalidates every resting offer naming that ratifier in one transaction,
   across all markets and both directions.
 
+### `setCallbackAllowed(bytes32 marketId, address callback, bool allowed)`
+
+- **Role:** DEFAULT_ADMIN_ROLE
+- **Value direction:** config, but the entry it writes is what authorizes a contract to draw
+  the proxy's loan token through `fundFill`.
+- **Rate limit:** none
+- **Refill:** none, config only
+- **Loss bounds:** `callback != address(0)` (`MidnightFacet/zero-callback`). A zero callback is
+  never invoked upstream, so allowing it would ratify fills that never reach the facet.
+  Nothing else is checked: the containment is that only a reviewed, non-upgradeable strategy
+  is ever whitelisted, and the make and direction limits bound what it can draw.
+- **External calls:** none
+- **Zero-amount semantics:** n/a. Setting the same value twice is a no-op write; see
+  `removeCallback` for the allocator-level revocation.
+
+### `removeCallback(bytes32 marketId, address callback)`
+
+- **Role:** ALLOCATOR_ROLE
+- **Value direction:** config, strictly tightening. It can only clear a whitelist entry, and
+  re-setting one is `setCallbackAllowed` at admin level, which is why it is safe at allocator
+  level while that setter is not.
+- **Rate limit:** none
+- **Refill:** none, config only
+- **Loss bounds:** the entry must currently be set (`MidnightFacet/callback-not-allowed`), so
+  the call is never a no-op and the authority it grants is a subset of `cancelOfferGroup`,
+  which the allocator already holds and which stops the same fills irreversibly.
+- **External calls:** none
+- **Zero-amount semantics:** n/a. Offers naming the removed callback are not recalled; their
+  fills revert inside `fundFill` from here on, which fails the taker's transaction.
+
 ### `buy(bytes32 marketId, Offer calldata offer, bytes calldata ratifierData, uint256 units, uint256 maxAssetsIn) returns (uint256 assetsSpent)`
 
 - **Role:** ALLOCATOR_ROLE
@@ -268,7 +298,8 @@ an allocator. It is the only facet function reached from a third party's transac
 
 - **Role:** none, deliberately. The per-market callback whitelist is the authorization
   (`MidnightFacet/callback-not-allowed`), so onboarding is one `setCallbackAllowed` and
-  revoking is the same call with `false`, with no role grant to track separately.
+  revoking is that same call with `false` at admin level or `removeCallback` at allocator
+  level, with no role grant to track separately.
 - **Value direction:** outbound on an entry (loan token leaves custody to the calling
   strategy; credit units accrue to the proxy's position in the same `take`). None on an exit:
   Midnight paid the proxy before calling back, so that branch meters and prices only.
@@ -422,8 +453,8 @@ Declared deviations from the usual facet shape, each with rationale:
 - **A facet function with no role gate.** `fundFill` is reached from a third party's
   transaction, so the caller is a contract address rather than a role holder. A per-market
   callback whitelist is the authorization: onboarding is one `setCallbackAllowed`, revoking is
-  the same call with `false`, and there is no separate role grant that could be left behind
-  after revocation. Every other gate on the function is unconditional.
+  that same call with `false` or `removeCallback`, and there is no separate role grant that
+  could be left behind after revocation. Every other gate on the function is unconditional.
 - **A rate limit that nothing restores.** `LIMIT_MIDNIGHT_MAKE` is debited by every maker fill
   in either direction and refilled only by its own drip. The whitelist makes a callback usable
   but carries no amount, so this key is what bounds all whitelisted callbacks on a market
@@ -561,6 +592,8 @@ Steps 1 to 3 are prerequisites for taking as well.
 10. `setCallbackAllowed(marketId, callback, true)` per callback, then configure
     `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the callback's authorization; the
     make limit is the aggregate cap on all whitelisted callbacks and is restored by nothing.
+    Onboarding a callback needs a spell; ejecting one does not, since the allocator holds
+    `removeCallback`.
     Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind as well, since a maker sell debits it
     and exhausting it reverts the taker's fill rather than ours.
 11. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place
@@ -577,8 +610,9 @@ a maker buy with `buy-yield-too-low`. Verify the intended tick against
 `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before
 publishing, not against the live fee.
 
-**Revoking, fastest first.** All six act on offers already signed and published, which cannot
-be recalled from the venue:
+**Revoking, fastest first.** All seven act on offers already signed and published, which
+cannot be recalled from the venue. The two allocator rows are the only ones that do not need a
+spell:
 
 | Lever | Scope | Role |
 |---|---|---|
@@ -587,6 +621,7 @@ be recalled from the venue:
 | `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions | admin |
 | zero `LIMIT_MIDNIGHT_MAKE` | every callback on one market, both directions | admin |
 | tighten `setMarketConfig` ticks or yields | one market, the tightened direction | admin |
+| `removeCallback(marketId, callback)` | one callback on one market, both directions | allocator |
 | `cancelOfferGroup(group)` | one direction on one market, irreversible for that group | allocator |
 
 13. Monitoring, maker-specific: published offers against the designated groups' consumed

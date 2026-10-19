@@ -232,7 +232,7 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 
 Both price comparisons are cross-multiplied rather than divided, so neither bound is loosened by a wei of flooring.
 
-**No role, deliberately.** The per-market whitelist is the authorization: onboarding a callback is one `setCallbackAllowed`, revoking it is the same call with `false`, and there is no role grant to track separately. The amount is bounded by the make key plus the market's entry or exit key, all debited before any transfer.
+**No role, deliberately.** The per-market whitelist is the authorization: onboarding a callback is one `setCallbackAllowed`, and there is no role grant to track separately. Revoking it is that same call with `false` at admin level, or `removeCallback` at allocator level when a spell is too slow. The amount is bounded by the make key plus the market's entry or exit key, all debited before any transfer.
 
 **Rate Limit:** `LIMIT_MIDNIGHT_MAKE` keyed `marketId` on every fill, plus `LIMIT_MIDNIGHT_BUY` on an entry or `LIMIT_MIDNIGHT_SELL` on an exit, each debited by `assets`. Maker and taker traffic therefore share one per-market budget per direction, and the make key caps the maker share inside it.
 
@@ -292,6 +292,18 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 `doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same.
 
 **Event:** `MidnightOfferGroupCancelled(group)`
+
+### Remove Callback (allocator)
+
+**Function:** `removeCallback(marketId, callback)` (`ALLOCATOR_ROLE`)
+
+Clears one callback's whitelist entry on one market. Reverts unless the entry is currently set (`MidnightFacet/callback-not-allowed`), so the call is never a no-op and a transaction that lands has ejected something. Re-whitelisting is `setCallbackAllowed`, which is admin-only, so this lever can only ever tighten.
+
+It exists because the admin setter needs a spell. The allocator already holds `cancelOfferGroup`, which stops the same fills *irreversibly*, so a reversible strictly-tightening lever adds no authority and narrows what an incident response has to reach for: eject one misbehaving strategy and leave the rest of the market trading.
+
+Offers naming a removed callback stay published and signed. They are not recalled; their fills revert inside `fundFill` from here on, which fails the taker's transaction.
+
+**Event:** `MidnightCallbackRemoved(marketId, callback)`
 
 ---
 
@@ -407,7 +419,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/maturity-oob`             | facet       | `setMakeConfig` with a maturity above `type(uint64).max`                                  |
 | `MidnightFacet/max-offer-size-oob`       | facet       | `setMakeConfig` with a cap above `type(uint128).max`                                      |
 | `MidnightFacet/zero-ratifier`            | facet       | `setRatifierAuthorization` with a zero address                                            |
-| `MidnightFacet/callback-not-allowed`     | facet       | `fundFill` from a caller not whitelisted for that market                                  |
+| `MidnightFacet/callback-not-allowed`     | facet       | `fundFill` from a caller not whitelisted there, or `removeCallback` with nothing to clear |
 | `MidnightFacet/make-not-enabled`         | facet       | `fundFill` on a market whose `maxOfferSize` is zero                                       |
 | `MidnightFacet/zero-assets`              | facet       | `fundFill` with zero assets                                                               |
 | `MidnightFacet/fill-price-too-high`      | facet       | `fundFill` paying above the lesser of the tick and capped-fee yield bounds                 |
@@ -466,13 +478,13 @@ Steps 1 to 3 above are prerequisites. Maker mode is off until all of the followi
 5. Deploy the ratifier and the funding strategy from the periphery repository. Both are immutable; rotating either means a new deployment and a spell. Before authorizing anything: review the deployed bytecode against the audited source, confirm the ratifier enforces the full numbered list above, and run the opcode scan over its runtime, which this repository cannot do for you.
 6. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market, passing the full `Market` struct.
 7. `setDesignatedGroups(marketId, buyGroup, sellGroup)` with two distinct non-zero groups. Leave a side zero to make the market one-directional. These are the only groups `cancelOfferGroup` can retire, so publish offers into nothing else.
-8. `setCallbackAllowed(marketId, callback, true)` for each funding strategy the market's offers may name, then configure `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the authorization; the make limit is the aggregate cap on all of them, and it is restored by nothing. Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind too: a maker sell debits it, and exhausting it reverts the taker's fill rather than ours.
+8. `setCallbackAllowed(marketId, callback, true)` for each funding strategy the market's offers may name, then configure `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the authorization; the make limit is the aggregate cap on all of them, and it is restored by nothing. Onboarding a callback needs a spell, ejecting one does not: the allocator can `removeCallback` at any time. Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind too: a maker sell debits it, and exhausting it reverts the taker's fill rather than ours.
 9. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place and verified. This is the blanket grant described above, and it is what makes resting offers fillable at all.
 10. Grant the ratifier's quoter role (`grantRole(QUOTER_ROLE, key)`, held by its `MANAGER_ROLE`) to the signing key that will publish offers. The role is checked at ratification, not at signing, so revoking it invalidates every offer the old key signed, in one transaction and with no redeployment.
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-**Revoking, fastest first.** All six levers act on offers already signed and published, which cannot be recalled from the venue:
+**Revoking, fastest first.** All seven levers act on offers already signed and published, which cannot be recalled from the venue. The two allocator rows are the only ones that do not need a spell:
 
 | Lever                                       | Scope                                                   | Role      |
 | ------------------------------------------- | ------------------------------------------------------- | --------- |
@@ -481,6 +493,7 @@ Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturit
 | `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions         | admin     |
 | zero `LIMIT_MIDNIGHT_MAKE`                  | every callback on one market, both directions           | admin     |
 | tighten `setMarketConfig` ticks or yields   | one market, the tightened direction                     | admin     |
+| `removeCallback(marketId, callback)`        | one callback on one market, both directions             | allocator |
 | `cancelOfferGroup(group)`                   | one direction on one market, irreversible for that group | allocator |
 
 ### Liquidity
