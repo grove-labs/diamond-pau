@@ -41,6 +41,8 @@ interface IControllerLike {
 
     function setCallbackAllowed(bytes32 marketId, address strategy, bool allowed) external;
 
+    function removeCallback(bytes32 marketId, address strategy) external;
+
     function fundFill(
         bytes32 marketId,
         bool    buy,
@@ -238,7 +240,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](16);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](17);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -318,6 +320,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         wires[15] = IEnumerableIntegrations.Wire(
             IControllerLike.getMakeRateLimitKey.selector,
             IMidnightFacet.getMakeRateLimitKey.selector
+        );
+
+        wires[16] = IEnumerableIntegrations.Wire(
+            IControllerLike.removeCallback.selector,
+            IMidnightFacet.removeCallback.selector
         );
 
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config(facet, wires);
@@ -1730,6 +1737,115 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setCallbackAllowed(MARKET_ID, strategy, false);
 
         assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), false);
+    }
+
+    /**********************************************************************************************/
+    /*** removeCallback Tests                                                                   ***/
+    /**********************************************************************************************/
+
+    function test_removeCallback_reentrancy() external {
+        _setEntered(address(controller));
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        controller.removeCallback(MARKET_ID, strategy);
+    }
+
+    function test_removeCallback_unauthorizedAccount() external {
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            address(this),
+            ALLOCATOR_ROLE
+        ));
+        controller.removeCallback(MARKET_ID, strategy);
+    }
+
+    function test_removeCallback_callbackNotAllowed() external {
+        assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), false);
+
+        vm.expectRevert("MidnightFacet/callback-not-allowed");
+        vm.prank(allocator);
+        controller.removeCallback(MARKET_ID, strategy);
+    }
+
+    function test_removeCallback_adminOnlyCannotBeReversedByAllocator() external {
+        vm.prank(admin);
+        controller.setCallbackAllowed(MARKET_ID, strategy, true);
+
+        vm.prank(allocator);
+        controller.removeCallback(MARKET_ID, strategy);
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            allocator,
+            DEFAULT_ADMIN_ROLE
+        ));
+        vm.prank(allocator);
+        controller.setCallbackAllowed(MARKET_ID, strategy, true);
+
+        assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), false);
+
+        vm.prank(admin);
+        controller.setCallbackAllowed(MARKET_ID, strategy, true);
+
+        assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), true);
+    }
+
+    function test_removeCallback_marketScoped() external {
+        bytes32 otherMarket = keccak256("other-market");
+
+        vm.startPrank(admin);
+        controller.setCallbackAllowed(MARKET_ID,   strategy, true);
+        controller.setCallbackAllowed(otherMarket, strategy, true);
+        vm.stopPrank();
+
+        vm.prank(allocator);
+        controller.removeCallback(MARKET_ID, strategy);
+
+        assertEq(controller.isCallbackAllowed(MARKET_ID,   strategy), false);
+        assertEq(controller.isCallbackAllowed(otherMarket, strategy), true);
+    }
+
+    function test_removeCallback() external {
+        vm.prank(admin);
+        controller.setCallbackAllowed(MARKET_ID, strategy, true);
+
+        assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), true);
+
+        vm.record();
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightCallbackRemoved(MARKET_ID, strategy);
+
+        vm.prank(allocator);
+        controller.removeCallback(MARKET_ID, strategy);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        assertEq(controller.isCallbackAllowed(MARKET_ID, strategy), false);
+
+        vm.expectRevert("MidnightFacet/callback-not-allowed");
+        vm.prank(allocator);
+        controller.removeCallback(MARKET_ID, strategy);
+    }
+
+    function test_removeCallback_stopsBothFillLegs() external {
+        _onboardAndEnableMake(0);
+        _allowCallback(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        vm.prank(allocator);
+        controller.removeCallback(_marketId(), strategy);
+
+        vm.expectRevert("MidnightFacet/callback-not-allowed");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, _honestAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        vm.expectRevert("MidnightFacet/callback-not-allowed");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), FILL_UNITS, 0);
     }
 
 }

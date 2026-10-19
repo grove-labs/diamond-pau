@@ -54,6 +54,8 @@ interface IMidnightController {
         external
         returns (uint256 assetsWithdrawn);
 
+    function midnight_removeCallback(bytes32 marketId, address callback) external;
+
     function midnight_sell(
         bytes32         marketId,
         Offer  calldata offer,

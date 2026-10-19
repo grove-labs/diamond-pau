@@ -1062,7 +1062,7 @@ library BeaconConfig {
      * @param  facet  Address of the deployed MidnightFacet contract.
      */
     function setMidnightIntegration(address beacon, address facet) internal {
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](20);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](21);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_setMarketConfig.selector,
@@ -1162,6 +1162,11 @@ library BeaconConfig {
         wires[19] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_getMakeRateLimitKey.selector,
             IMidnightFacet.getMakeRateLimitKey.selector
+        );
+
+        wires[20] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_removeCallback.selector,
+            IMidnightFacet.removeCallback.selector
         );
 
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config({

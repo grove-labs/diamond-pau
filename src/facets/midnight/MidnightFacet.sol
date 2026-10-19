@@ -113,7 +113,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     bytes32 internal constant _LIMIT_SELL   = keccak256("LIMIT_MIDNIGHT_SELL");
 
     /// @inheritdoc IFacet
-    string public constant override VERSION = "1.2.0";
+    string public constant override VERSION = "1.3.0";
 
     /**********************************************************************************************/
     /*** Declarations                                                                           ***/
@@ -434,6 +434,22 @@ contract MidnightFacet is IMidnightFacet, Facet {
         _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assetsWithdrawn);
 
         emit MidnightRedeem(marketId, units, assetsWithdrawn);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function removeCallback(bytes32 marketId, address callback)
+        external
+        override
+        nonReentrant
+        onlyRole(ALLOCATOR_ROLE)
+    {
+        FacetStorage storage $ = _getFacetStorage();
+
+        require($.allowedCallbacks[marketId][callback], "MidnightFacet/callback-not-allowed");
+
+        $.allowedCallbacks[marketId][callback] = false;
+
+        emit MidnightCallbackRemoved(marketId, callback);
     }
 
     /// @inheritdoc IMidnightFacet

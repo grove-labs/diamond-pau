@@ -97,6 +97,13 @@ interface IMidnightFacet is IFacet {
     );
 
     /**
+     * @notice Emitted when an offer callback is removed from a Midnight market by an allocator.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  callback Offer callback removed.
+     */
+    event MidnightCallbackRemoved(bytes32 indexed marketId, address indexed callback);
+
+    /**
      * @notice Emitted when the designated offer groups for a Midnight market are updated.
      * @param  marketId  Identifier of the Midnight market.
      * @param  buyGroup  Group every resting buy offer must name.
@@ -279,6 +286,16 @@ interface IMidnightFacet is IFacet {
     function redeem(bytes32 marketId, uint256 units, uint256 minAssetsOut)
         external
         returns (uint256 assetsWithdrawn);
+
+    /**
+     * @notice Removes an offer callback from a Midnight market, stopping it funding further fills.
+     * @dev    Reverts unless the callback is currently whitelisted on this market. Re-whitelisting
+     *         is admin-only, so this can only ever tighten. Offers naming the removed callback
+     *         stay published and signed, and their fills revert inside `fundFill` from here on.
+     * @param  marketId Identifier of the Midnight market.
+     * @param  callback Offer callback to remove.
+     */
+    function removeCallback(bytes32 marketId, address callback) external;
 
     /**
      * @notice Sells credit units by taking one maker's buy offer on a Midnight market.

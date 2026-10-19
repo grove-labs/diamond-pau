@@ -493,6 +493,32 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         );
     }
 
+    function test_allocatorEjectsStrategyAndAdminRestoresIt() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        uint256 units = seedUnits / 8;
+
+        _take(buy,  units);
+        _take(sell, units);
+
+        vm.prank(allocator);
+        mainnetController.midnight_removeCallback(marketId, address(strategy));
+
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy)));
+
+        _takeExpectRevert(buy,  units, "MidnightFacet/callback-not-allowed");
+        _takeExpectRevert(sell, units, "MidnightFacet/callback-not-allowed");
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), true);
+
+        _take(buy,  units);
+        _take(sell, units);
+    }
+
     function test_makeDisableLeavesTheTakerPathWorking() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
