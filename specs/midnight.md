@@ -188,8 +188,10 @@ already signed and published, and therefore unrecallable.
 - **Rate limit:** none
 - **Refill:** none, config only
 - **Loss bounds:** the entry must currently be set (`MidnightFacet/callback-not-allowed`), so
-  the call is never a no-op and the authority it grants is a subset of `cancelOfferGroup`,
-  which the allocator already holds and which stops the same fills irreversibly.
+  the call is never a no-op. As a power handed to an allocator it is a subset of
+  `cancelOfferGroup`, which the same role already holds and which stops a market's maker flow
+  irreversibly. What it covers that no other lever does is a whitelisted strategy calling
+  `fundFill` with no fill behind it, which involves no offer, group, ratifier or `take`.
 - **External calls:** none
 - **Zero-amount semantics:** n/a. Offers naming the removed callback are not recalled; their
   fills revert inside `fundFill` from here on, which fails the taker's transaction.
@@ -515,10 +517,11 @@ exists.
 - **Maker mode, a whitelisted strategy reporting fills that never happened:** nothing in
   `fundFill` proves a fill occurred, because `onBuy` fires before the singleton's transfers
   and `onSell` carries no offer, so neither a credit delta nor a debt-free post-condition is
-  available. An entry reported out of band is bounded by the price bound and pays out only to
-  `msg.sender`; an exit reported out of band moves nothing but restores entry room, and is
-  bounded because each restore burns the same amount of `LIMIT_MIDNIGHT_MAKE`, which no leg
-  refills. Required attack test: a fabricated exit used to restore entry room.
+  available. An entry reported out of band pays out only to `msg.sender`, and is bounded by the
+  remaining make and buy budgets rather than by the price bound, which only ties `assets` to a
+  `units` the caller picks; an exit reported out of band moves nothing but restores entry
+  room, and is bounded because each restore burns the same amount of `LIMIT_MIDNIGHT_MAKE`,
+  which no leg refills. Required attack test: a fabricated exit used to restore entry room.
 - **Maker mode, forged or substituted offers:** an attacker can publish an offer naming the
   proxy as maker, our ratifier, or our strategy, and call `take` on it. Required attack
   tests: an offer naming the proxy as maker with an attacker's ratifier (fails on
@@ -544,12 +547,12 @@ exists.
   `MidnightFacet/zero-assets`, which fails an unrelated taker's transaction rather than ours.
   Required test: a zero-unit poke on a consumed offer against the deployed singleton.
 - **Maker mode, nested entry into the controller:** filling one of our resting buy offers runs
-  through `fundFill`, so a hostile callback reached during one of our own batches can attempt a
+  through `fundFill`, so a hostile callback reached during one of our own takes can attempt a
   second controller entry. Two independent layers refuse it: the diamond's shared reentrancy
-  guard fires first, and the buy path's credit-delta check rejects the same attempt on its own
-  (with the guard removed, the outer `buy` fails `MidnightFacet/credit-delta-mismatch` instead).
-  Required test: a hostile sell-offer callback taking one of our resting buy offers mid-batch,
-  asserting which guard refused.
+  guard fires first, and the buy path's credit-delta check rejects any credit change that lands
+  inside a fill, whatever moved it. Required tests: a hostile sell-offer callback taking one of
+  our resting buy offers inside one of our own takes, asserting which guard refused; and a
+  callback that writes the position down mid-fill, asserting `MidnightFacet/credit-delta-mismatch`.
 
 ## Operational requirements
 
@@ -612,22 +615,34 @@ a maker buy with `buy-yield-too-low`. Verify the intended tick against
 `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before
 publishing, not against the live fee.
 
-**Revoking, fastest first.** All seven act on offers already signed and published, which
-cannot be recalled from the venue. The two allocator rows are the only ones that do not need a
-spell:
+**Revoking, fastest first.** Every lever acts on offers already signed and published, which
+cannot be recalled from the venue. Only the first two rows avoid a spell, and the fastest lever
+of all is in the periphery: revoking the quoter's role voids every outstanding signature.
 
 | Lever | Scope | Role |
 |---|---|---|
-| `setRatifierAuthorization(ratifier, false)` | every market, both directions, one transaction | admin |
-| `setMakeConfig(market, 0)` | one market, both directions | admin |
-| `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions | admin |
-| zero `LIMIT_MIDNIGHT_MAKE` | every callback on one market, both directions | admin |
-| tighten `setMarketConfig` ticks or yields | one market, the tightened direction | admin |
 | `removeCallback(marketId, callback)` | one callback on one market, both directions | allocator |
 | `cancelOfferGroup(group)` | one direction on one market, irreversible for that group | allocator |
+| `setRatifierAuthorization(ratifier, false)` | every market, both directions, one transaction | admin |
+| `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions | admin |
+| `controller.removeIntegrations(["MIDNIGHT_FACET"])` | every Midnight function, `fundFill` included, so maker exits stop too | admin |
+| revoke the controller's `CONTROLLER` role on `RateLimits` | every metered path in the system, maker exits included | limits admin |
+
+`setMakeConfig(market, 0)`, zeroing `LIMIT_MIDNIGHT_MAKE` and tightening `setMarketConfig` are
+dominated by the rows above: same spell, and each refuses the fill inside `fundFill` after
+ratification has passed, so it reverts a stranger's transaction rather than stopping the book.
+
+Order anything that needs the proxy first. `cancelOfferGroup` and `setRatifierAuthorization`
+reach the venue through `IALMProxy.doCall`, so both die with the controller's `CONTROLLER` role
+on the ALMProxy, and `removeIntegrations` unwires them. That proxy cutoff stops maker entries
+but not maker exits, since the exit branch makes no proxy call. `removeCallback` touches only
+facet storage, so it survives either cutoff. Both fast levers are visible in the mempool before
+they land, so send them through a private relay.
 
 13. Monitoring, maker-specific: published offers against the designated groups' consumed
     counters, and against `maxOfferSize` off chain since nothing enforces it on chain;
     `LIMIT_MIDNIGHT_MAKE` drawdown as the maker entry rate; the quoter key's custody; and
     `isAuthorized[proxy][x]` on the singleton, which must hold for the ratifier and no
-    other address.
+    other address. Alert on `SetIsAuthorized` with `onBehalf` equal to the proxy, not only on
+    the mapping: the grant permits `setIsAuthorized`, so an authorized contract can add an
+    entry that revoking the ratifier does not clear.

@@ -277,6 +277,16 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 **Event:** `MidnightDesignatedGroupsSet(marketId, buyGroup, sellGroup)`
 
+### Set Callback Allowed (admin)
+
+**Function:** `setCallbackAllowed(marketId, callback, allowed)` (`DEFAULT_ADMIN_ROLE`)
+
+Writes one entry in the per-market callback whitelist, which is the whole authorization for drawing the proxy's loan token through `fundFill`. Only `callback != address(0)` is checked (`MidnightFacet/zero-callback`), because a zero callback is never invoked upstream and an offer naming one would settle without reaching the facet. Nothing else about the grantee can be checked here, so the containment is that only a reviewed strategy is ever whitelisted and that the make and direction limits bound what any of them can draw.
+
+`allowed == false` revokes, for both directions and for offers already published. [Remove Callback](#remove-callback-allocator) is the same revocation at allocator level, and is the one to reach for in an incident.
+
+**Event:** `MidnightCallbackAllowedSet(marketId, callback, allowed)`
+
 ### Set Ratifier Authorization (admin)
 
 **Function:** `setRatifierAuthorization(ratifier, authorized)` (`DEFAULT_ADMIN_ROLE`)
@@ -299,7 +309,9 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 Clears one callback's whitelist entry on one market. Reverts unless the entry is currently set (`MidnightFacet/callback-not-allowed`), so the call is never a no-op and a transaction that lands has ejected something. Re-whitelisting is `setCallbackAllowed`, which is admin-only, so this lever can only ever tighten.
 
-It exists because the admin setter needs a spell. The allocator already holds `cancelOfferGroup`, which stops the same fills *irreversibly*, so a reversible strictly-tightening lever adds no authority and narrows what an incident response has to reach for: eject one misbehaving strategy and leave the rest of the market trading.
+It exists because the admin setter needs a spell. As a power handed to an allocator it adds nothing: `cancelOfferGroup` already lets the same role stop a market's maker flow, irreversibly, while this one only tightens and only an admin can undo it.
+
+What it adds as a defence is the case no other lever reaches. A whitelisted strategy can call `fundFill` with no fill behind it, and that call involves no offer, no group, no ratifier and no `take`, so `cancelOfferGroup` cannot touch it. The entry branch pays `msg.sender`, and the price bound only ties `assets` to `units`, which the caller chooses, so what bounds a fabricated entry is the remaining make and buy budgets, not the price. Cumulative exposure is the make budget, since every leg in both directions debits it. Clearing the entry is what stops it, and ejecting one strategy leaves the rest of the market trading.
 
 Offers naming a removed callback stay published and signed. They are not recalled; their fills revert inside `fundFill` from here on, which fails the taker's transaction.
 
@@ -376,7 +388,7 @@ The containment is that the authorized contract must be *incapable* of using the
 
 ### Nested Controller Entry
 
-A taker could try to reach the controller from inside a maker fill: take a resting offer, and from the callback call back into `buy` or `fundFill`. Two independent layers refuse it. `fundFill` is `nonReentrant`, so the second entry reverts on the guard; and with that guard removed the outer settlement still fails the facet's exact credit reconciliation (`MidnightFacet/credit-delta-mismatch`), because the nested fill moved the position mid-batch. The fork suite asserts both, the second by removing the guard and showing the outer call still reverts.
+A taker could try to reach the controller from inside a maker fill: take a resting offer, and from the callback call back into `buy` or `fundFill`. Two independent layers refuse it. `fundFill` is `nonReentrant`, so the second entry reverts on the guard; and the facet's exact credit reconciliation (`MidnightFacet/credit-delta-mismatch`) rejects any credit change that lands inside a fill, whatever moved it. The fork suite asserts both separately: the nested-entry test shows the inner call reverting on the guard with credit, the make meter and `consumed` all untouched, and the write-down-mid-fill tests show the reconciliation catching a credit change made from a callback.
 
 ### Reentrancy
 
@@ -484,17 +496,22 @@ Steps 1 to 4 above are prerequisites, the rate limits included: a maker entry de
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-**Revoking, fastest first.** All seven levers act on offers already signed and published, which cannot be recalled from the venue. The two allocator rows are the only ones that do not need a spell:
+**Revoking, fastest first.** Every lever here acts on offers already signed and published, which cannot be recalled from the venue. Only the first two rows avoid a spell, and the fastest lever of all lives in the periphery: revoking the quoter's role voids every outstanding signature at once.
 
-| Lever                                       | Scope                                                   | Role      |
-| ------------------------------------------- | ------------------------------------------------------- | --------- |
-| `setRatifierAuthorization(ratifier, false)` | every market, both directions, one transaction          | admin     |
-| `setMakeConfig(market, 0)`                  | one market, both directions                             | admin     |
-| `setCallbackAllowed(marketId, callback, false)` | one callback on one market, both directions         | admin     |
-| zero `LIMIT_MIDNIGHT_MAKE`                  | every callback on one market, both directions           | admin     |
-| tighten `setMarketConfig` ticks or yields   | one market, the tightened direction                     | admin     |
-| `removeCallback(marketId, callback)`        | one callback on one market, both directions             | allocator |
-| `cancelOfferGroup(group)`                   | one direction on one market, irreversible for that group | allocator |
+| Lever                                                     | Scope                                                                         | Role         |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------ |
+| `removeCallback(marketId, callback)`                      | one callback on one market, both directions                                   | allocator    |
+| `cancelOfferGroup(group)`                                 | one direction on one market, irreversible for that group                      | allocator    |
+| `setRatifierAuthorization(ratifier, false)`               | every market, both directions, one transaction                                | admin        |
+| `setCallbackAllowed(marketId, callback, false)`           | one callback on one market, both directions                                   | admin        |
+| `controller.removeIntegrations(["MIDNIGHT_FACET"])`       | every Midnight function at once, `fundFill` included, so maker exits stop too | admin        |
+| revoke the controller's `CONTROLLER` role on `RateLimits` | every metered path in the system, maker exits included                        | limits admin |
+
+Three more admin levers exist and are dominated by the rows above: `setMakeConfig(market, 0)`, zeroing `LIMIT_MIDNIGHT_MAKE`, and tightening `setMarketConfig`. Each needs the same spell, and each refuses the fill inside `fundFill` after ratification has already passed, so it reverts a stranger's transaction instead of stopping the book. Treat them as configuration, not as an incident response.
+
+**Order anything that needs the proxy first.** `cancelOfferGroup` and `setRatifierAuthorization` reach the venue through `IALMProxy.doCall`, so both stop working once the controller loses its `CONTROLLER` role on the ALMProxy, and `removeIntegrations` unwires them outright. That proxy cutoff also stops maker entries without stopping maker exits, because the exit branch makes no proxy call. `removeCallback` writes nothing but facet storage, so it is the only Midnight lever that survives either cutoff.
+
+**Both fast levers announce themselves.** A compromised strategy watching the mempool can draw whatever budget is left in front of an eject transaction, so send it through a private relay.
 
 ### Liquidity
 
@@ -511,7 +528,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 
 When maker mode is enabled, additionally:
 
-- **`isAuthorized[proxy][x]` on the singleton**: must hold for the ratifier and no other address. Any other entry is a blanket grant over the proxy's position.
+- **`isAuthorized[proxy][x]` on the singleton**: must hold for the ratifier and no other address. Any other entry is a blanket grant over the proxy's position. Alert on the `SetIsAuthorized` event with `onBehalf` equal to the proxy rather than only sampling the mapping: the grant permits `setIsAuthorized`, so an authorized contract can add an entry of its own, and revoking the ratifier does not clear it.
 - **The quoter key's custody**: it is the only thing that can create a fillable offer. Revoking its role on the ratifier is the fastest way to void everything signed so far, since the role is checked at ratification rather than at signing.
 - **Published offers** against the designated groups' consumed counters, which is what bounds how much of a signed offer can still be filled, and against `maxOfferSize` as an off-chain check, since nothing on chain compares an offer's size to it.
 - **`LIMIT_MIDNIGHT_MAKE` drawdown** as the maker turnover rate. Nothing restores it, so a market whose make key is near zero has a book that will start reverting takers' fills; retire the groups rather than leaving it there.
