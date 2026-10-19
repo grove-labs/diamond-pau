@@ -473,7 +473,7 @@ No seeding is required: the integration holds no intermediate token and uses no 
 
 ### Enabling maker mode on a market
 
-Steps 1 to 3 above are prerequisites. Maker mode is off until all of the following are done, and each one on its own is a kill switch.
+Steps 1 to 4 above are prerequisites, the rate limits included: a maker entry debits the buy key and a maker exit the sell key, and an unset key reverts with `RateLimits/zero-maxAmount` rather than passing. Maker mode is off until all of the following are done, and each one on its own is a kill switch.
 
 5. Deploy the ratifier and the funding strategy from the periphery repository. Both are immutable; rotating either means a new deployment and a spell. Before authorizing anything: review the deployed bytecode against the audited source, confirm the ratifier enforces the full numbered list above, and run the opcode scan over its runtime, which this repository cannot do for you.
 6. `setMakeConfig(market, maxOfferSize)` on an already-onboarded market, passing the full `Market` struct.

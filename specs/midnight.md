@@ -576,7 +576,9 @@ exists.
 ### Enabling maker mode on a market
 
 Maker mode is off until all six of these are done, and each one on its own is a kill switch.
-Steps 1 to 3 are prerequisites for taking as well.
+Steps 1 to 4 are prerequisites for taking as well, the rate limits included: a maker entry
+debits the buy key and a maker exit the sell key, and `_decreaseRateLimit` has no existence
+guard, so an unset key reverts `RateLimits/zero-maxAmount` instead of passing.
 
 7. Deploy the ratifier and the funding strategy from the periphery repository. Both are
    immutable; rotating either means a new deployment and a spell. Before authorizing
