@@ -92,7 +92,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
   proxy's Midnight position)
 - **Rate limit:** `LIMIT_MIDNIGHT_BUY`, `makeBytes32Key(_LIMIT_BUY, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** none; entry is refilled by the exits.
+- **Refill:** none; no leg refills another, so entry room returns only from this key's slope.
 - **Loss bounds:** `maxAssetsIn` (non-zero, also the exact approval granted to Midnight
   for the call); `tickToPrice(offer.tick) + settlementFee(marketId,
   timeToMaturity) <= tickToPrice(maxBuyTick)` and `tickToPrice(offer.tick) + settlementFee
@@ -121,7 +121,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Value direction:** returning (loan token to proxy, credit units leave the position)
 - **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsReceived)`.
+- **Refill:** none; the buy key is not read, so the exit neither depends on it nor refills it.
 - **Loss bounds:** `minAssetsOut` (non-zero);
   `tickToPrice(offer.tick) >= tickToPrice(minSellTick) + settlementFee(marketId,
   timeToMaturity)` and `tickToPrice(offer.tick) >= minSellPrice(maxSellYield,
@@ -155,7 +155,7 @@ supplies collateral, never borrows, never liquidates and never holds debt.
 - **Value direction:** returning (loan token to proxy at par)
 - **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsWithdrawn)`.
+- **Refill:** none, as on `sell`.
 - **Loss bounds:** `minAssetsOut` (non-zero); `units` capped at both the proxy's live
   credit and the market's `withdrawable`; zero debt after the call. Redemption is at par,
   so no price bound applies.
