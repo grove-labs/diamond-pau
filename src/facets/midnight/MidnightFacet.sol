@@ -102,7 +102,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     bytes32 internal constant _LIMIT_SELL   = keccak256("LIMIT_MIDNIGHT_SELL");
 
     /// @inheritdoc IFacet
-    string public constant override VERSION = "1.1.0";
+    string public constant override VERSION = "1.0.0";
 
     /**********************************************************************************************/
     /*** Declarations                                                                           ***/
