@@ -140,7 +140,7 @@ already signed and published, and therefore unrecallable.
   reverts unless the market exists on the singleton. `maxOfferSize` is intended to bound each
   single resting offer, in units or assets whichever the offer sets, rather than the book, but
   no contract enforces that: the facet reads it only as `!= 0` and the deployed ratifier does
-  not read it at all, so a single fill is bounded by `LIMIT_MIDNIGHT_MAKE` and the direction
+  not read it at all, so a single fill is bounded only by the direction
   limit, not by this value.
 - **External calls:** `midnight.toMarket(marketId)` (view only).
 - **Zero-amount semantics:** `maxOfferSize == 0` is the default and means making is disabled.
@@ -305,12 +305,11 @@ an allocator. It is the only facet function reached from a third party's transac
 - **Value direction:** outbound on an entry (loan token leaves custody to the calling
   strategy; credit units accrue to the proxy's position in the same `take`). None on an exit:
   Midnight paid the proxy before calling back, so that branch meters and prices only.
-- **Rate limit:** `LIMIT_MIDNIGHT_MAKE` keyed `marketId` on every fill, plus
-  `LIMIT_MIDNIGHT_BUY` on an entry or `LIMIT_MIDNIGHT_SELL` on an exit, each decremented by
-  `assets` before any transfer. Maker and taker traffic therefore share one per-market budget
-  per direction, and the make key bounds the maker share inside it.
-- **Refill:** the make key has none and is restored by no leg. An exit calls
-  `_tryIncreaseRateLimit` on the buy key by `assets`, exactly as the taker exit does.
+- **Rate limit:** `LIMIT_MIDNIGHT_BUY` keyed `marketId` on an entry, `LIMIT_MIDNIGHT_SELL` on
+  an exit, decremented by `assets` before any transfer. There is no separate maker budget:
+  maker and taker traffic share one per-market budget per direction.
+- **Refill:** neither maker leg restores anything, so entry room comes back only from the buy
+  key's own slope. A maker exit burns exit room without returning entry room.
 - **Loss bounds, both directions:** `makeConfig.maxOfferSize != 0`; non-zero `assets` and
   `units`. On an entry: `lossFactor(marketId) <= maxLossFactor` and
   `continuousFee(marketId) <= continuousFeePerSecond(maxContinuousFee)`, both read live, so a
@@ -354,7 +353,7 @@ clear the capped-fee bound, not the live-fee one.
 ### Views
 
 `getBuyRateLimitKey(bytes32)`, `getSellRateLimitKey(bytes32)`,
-`getRedeemRateLimitKey(bytes32)`, `getMakeRateLimitKey(bytes32)` (pure key derivations),
+`getRedeemRateLimitKey(bytes32)` (pure key derivations),
 `getMarketConfig(bytes32)`, `getMakeConfig(bytes32)`, `getDesignatedGroups(bytes32)`,
 `isCallbackAllowed(bytes32, address)`, `midnight()` (immutable). The ratifier staticcalls
 `getDesignatedGroups` and `isCallbackAllowed` on every fill, so those two views are a live
@@ -367,8 +366,8 @@ has to survive a static context: the controller's dispatch does no write of its 
 | # | Path | Destination | Bounded by |
 |---|------|-------------|------------|
 | 1 | `doCall` `midnight.take` (taker buy leg, proxy pays `buyerAssets` per offer) | Midnight singleton (settlement fee) and the counterparty maker's `receiverIfMakerIsSeller`, which must not be the proxy | `LIMIT_MIDNIGHT_BUY` per `marketId`; `maxAssetsIn` as both the approval and the post-check |
-| 2 | `doCall` `loanToken.transfer` inside `fundFill` (maker entry leg) | the calling funding strategy, which approves the exact amount to the singleton and is drained by it in the same `take` | per-market callback whitelist as the authorization; `LIMIT_MIDNIGHT_MAKE` and `LIMIT_MIDNIGHT_BUY`, both debited by `assets` before the transfer; `assets * WAD <= units * maxFillPrice`; live `lossFactor` and live `continuousFee` |
-| 3 | a third party's `take` against a resting proxy sell offer (maker exit leg) | `offer.receiverIfMakerIsSeller`, which the ratifier requires to be the proxy | the ratifier at fill time (parties, group, expiry, window, receiver, signature, callback whitelist); the offer's own `maxUnits` against the group's consumed counter; `fundFill` through `onSell`, which enforces `assets * WAD >= units * minFillPrice` on the clamped fee basis, requires zero debt afterwards, and debits `LIMIT_MIDNIGHT_MAKE` and `LIMIT_MIDNIGHT_SELL` |
+| 2 | `doCall` `loanToken.transfer` inside `fundFill` (maker entry leg) | the calling funding strategy, which approves the exact amount to the singleton and is drained by it in the same `take` | per-market callback whitelist as the authorization; `LIMIT_MIDNIGHT_BUY`, debited by `assets` before the transfer; `assets * WAD <= units * maxFillPrice`; live `lossFactor` and live `continuousFee` |
+| 3 | a third party's `take` against a resting proxy sell offer (maker exit leg) | `offer.receiverIfMakerIsSeller`, which the ratifier requires to be the proxy | the ratifier at fill time (parties, group, expiry, window, receiver, signature, callback whitelist); the offer's own `maxUnits` against the group's consumed counter; `fundFill` through `onSell`, which enforces `assets * WAD >= units * minFillPrice` on the clamped fee basis, requires zero debt afterwards, and debits `LIMIT_MIDNIGHT_SELL` |
 
 Path 3 is the one asymmetry in the integration: **credit units can leave the proxy's position
 without any transaction of ours.** A third party calls the singleton directly, and whether the
@@ -457,11 +456,11 @@ Declared deviations from the usual facet shape, each with rationale:
   callback whitelist is the authorization: onboarding is one `setCallbackAllowed`, revoking is
   that same call with `false` or `removeCallback`, and there is no separate role grant that
   could be left behind after revocation. Every other gate on the function is unconditional.
-- **A rate limit that nothing restores.** `LIMIT_MIDNIGHT_MAKE` is debited by every maker fill
-  in either direction and refilled only by its own drip. The whitelist makes a callback usable
-  but carries no amount, so this key is what bounds all whitelisted callbacks on a market
-  together. It is also why a fabricated exit cannot be used to refill entry room for free: the
-  restore it triggers on the buy key costs the same amount of a key with no restore path.
+- **Maker legs that restore nothing.** The whitelist makes a callback usable but carries no
+  amount, so the per-direction keys are what bound all whitelisted callbacks on a market,
+  alongside taker traffic. Neither maker leg calls `_tryIncreaseRateLimit`, unlike the taker
+  exits, which is what stops a fabricated exit from manufacturing entry room: it burns the
+  sell key and returns nothing.
 - **Two periphery contracts that are not facets, and do not ship from this repository.** A
   ratifier must be standalone because the singleton calls `isRatified` on the address named in
   the offer and that address holds the blanket authorization; a funding strategy must be
@@ -517,11 +516,11 @@ exists.
 - **Maker mode, a whitelisted strategy reporting fills that never happened:** nothing in
   `fundFill` proves a fill occurred, because `onBuy` fires before the singleton's transfers
   and `onSell` carries no offer, so neither a credit delta nor a debt-free post-condition is
-  available. An entry reported out of band pays out only to `msg.sender`, and is bounded by the
-  remaining make and buy budgets rather than by the price bound, which only ties `assets` to a
-  `units` the caller picks; an exit reported out of band moves nothing but restores entry
-  room, and is bounded because each restore burns the same amount of `LIMIT_MIDNIGHT_MAKE`,
-  which no leg refills. Required attack test: a fabricated exit used to restore entry room.
+  available. An entry reported out of band pays out only to `msg.sender`, and is bounded by
+  the remaining buy budget rather than by the price bound, which only ties `assets` to a
+  `units` the caller picks. An exit reported out of band moves nothing and restores nothing,
+  so it cannot manufacture entry room; it only burns the sell budget. Required attack test: a
+  fabricated exit, asserting the entry budget is unchanged and a later entry still reverts.
 - **Maker mode, forged or substituted offers:** an attacker can publish an offer naming the
   proxy as maker, our ratifier, or our strategy, and call `take` on it. Required attack
   tests: an offer naming the proxy as maker with an attacker's ratifier (fails on
@@ -595,8 +594,8 @@ guard, so an unset key reverts `RateLimits/zero-maxAmount` instead of passing.
    Leave a side zero to make the market one-directional. These are the only groups
    `cancelOfferGroup` can retire, so publish offers into nothing else.
 10. `setCallbackAllowed(marketId, callback, true)` per callback, then configure
-    `LIMIT_MIDNIGHT_MAKE` keyed `marketId`. The whitelist is the callback's authorization; the
-    make limit is the aggregate cap on all whitelisted callbacks and is restored by nothing.
+    the per-direction keys from step 4. The whitelist is the callback's authorization; those
+    keys are the aggregate cap on all whitelisted callbacks, shared with taker traffic.
     Onboarding a callback needs a spell; ejecting one does not, since the allocator holds
     `removeCallback`.
     Size `LIMIT_MIDNIGHT_SELL` with maker exits in mind as well, since a maker sell debits it
@@ -628,7 +627,7 @@ of all is in the periphery: revoking the quoter's role voids every outstanding s
 | `controller.removeIntegrations(["MIDNIGHT_FACET"])` | every Midnight function, `fundFill` included, so maker exits stop too | admin |
 | revoke the controller's `CONTROLLER` role on `RateLimits` | every metered path in the system, maker exits included | limits admin |
 
-`setMakeConfig(market, 0)`, zeroing `LIMIT_MIDNIGHT_MAKE` and tightening `setMarketConfig` are
+`setMakeConfig(market, 0)`, zeroing a direction key and tightening `setMarketConfig` are
 dominated by the rows above: same spell, and each refuses the fill inside `fundFill` after
 ratification has passed, so it reverts a stranger's transaction rather than stopping the book.
 
@@ -641,7 +640,7 @@ they land, so send them through a private relay.
 
 13. Monitoring, maker-specific: published offers against the designated groups' consumed
     counters, and against `maxOfferSize` off chain since nothing enforces it on chain;
-    `LIMIT_MIDNIGHT_MAKE` drawdown as the maker entry rate; the quoter key's custody; and
+    buy and sell key drawdown as the maker turnover rate; the quoter key's custody; and
     `isAuthorized[proxy][x]` on the singleton, which must hold for the ratifier and no
     other address. Alert on `SetIsAuthorized` with `onBehalf` equal to the proxy, not only on
     the mapping: the grant permits `setIsAuthorized`, so an authorized contract can add an
