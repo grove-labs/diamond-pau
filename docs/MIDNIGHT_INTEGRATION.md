@@ -83,7 +83,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 4. Apply the same direction (`offer.buy == true`) and non-zero-units checks as `buy`. Cap `units` at the proxy's **live credit** and require what is left to be non-zero (`MidnightFacet/no-credit-to-sell`), so a sell can never be filled with debt. Then `tickToPrice(offer.tick) >= tickFloor + settlementFee` (`MidnightFacet/sell-price-too-low`) and `tickToPrice(offer.tick) >= yieldFloor + settlementFee` (`MidnightFacet/sell-yield-too-high`). Then `doCall` `midnight.take(offer, ratifierData, cappedUnits, proxy, proxy, 0, "")`.
 5. Measure `assetsReceived` as the ALMProxy balance delta and require `assetsReceived >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
 6. Require the live credit to have shrunk by exactly the units sold (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`).
-7. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assetsReceived`, and `_tryIncreaseRateLimit` the buy key by the same amount (see [Try-Increase](./RATE_LIMITS.md#try-increase-not-gate-check): the refill silently no-ops when the buy key is unconfigured, and the buy key is not a precondition for exit).
+7. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assetsReceived`. The buy key is not read, so it is neither a precondition for the exit nor restored by it.
 
 **Rate Limit:** `LIMIT_MIDNIGHT_SELL` via `makeBytes32Key(LIMIT_MIDNIGHT_SELL, marketId)`.
 
@@ -104,7 +104,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 3. Cap `units` at both the proxy's live credit and the market's `withdrawable` amount (repaid, not yet withdrawn), then require the result to be non-zero (`MidnightFacet/zero-units`). Passing `type(uint256).max` redeems everything currently available.
 4. Snapshot the balance, `doCall` `midnight.withdraw(market, units, proxy, proxy)`, and measure `assetsWithdrawn` as the balance delta. Require `assetsWithdrawn >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
 5. Require the proxy's debt to be zero (`MidnightFacet/debt-not-zero`).
-6. Decrement `LIMIT_MIDNIGHT_REDEEM` keyed `marketId` by `assetsWithdrawn`, and `_tryIncreaseRateLimit` the buy key by the same amount.
+6. Decrement `LIMIT_MIDNIGHT_REDEEM` keyed `marketId` by `assetsWithdrawn`. As on `sell`, the buy key is not read.
 
 **Rate Limit:** `LIMIT_MIDNIGHT_REDEEM` via `makeBytes32Key(LIMIT_MIDNIGHT_REDEEM, marketId)`.
 
@@ -325,7 +325,11 @@ Offers naming a removed callback stay published and signed. They are not recalle
 | `LIMIT_MIDNIGHT_SELL`      | `(marketId)`            | `makeBytes32Key`         |
 | `LIMIT_MIDNIGHT_REDEEM`    | `(marketId)`            | `makeBytes32Key`         |
 
-All three are denominated in the market's loan token, and there is no separate maker budget: a maker entry debits `LIMIT_MIDNIGHT_BUY` and a maker exit debits `LIMIT_MIDNIGHT_SELL`, the same keys taker traffic spends. The taker limits are sized by measured balance deltas; the maker legs are sized by what the strategy reports, which is why both are also price-bounded. `sell` and `redeem` refill the buy key by the amount returned (`_tryIncreaseRateLimit`); the maker legs restore nothing, so a maker exit burns exit room without returning entry room. Splitting sell from redeem lets governance price the two exits differently: redemption is at par and only limited by repayments, while a sell crosses the spread and the settlement fee.
+All three are denominated in the market's loan token, and there is no separate maker budget: a maker entry debits `LIMIT_MIDNIGHT_BUY` and a maker exit debits `LIMIT_MIDNIGHT_SELL`, the same keys taker traffic spends. The taker limits are sized by measured balance deltas; the maker legs are sized by what the strategy reports, which is why both are also price-bounded. Every leg only ever decrements, and only the key for its own direction, so no leg restores another and entry headroom comes back only from the buy key's own slope.
+
+That is a deliberate trade for a smaller blast radius. A refilling buy key makes the cumulative entry bound unbounded in the number of round trips, because each exit buys back the room the next entry spends. Without it the bound over any window is the buy key's `maxAmount` plus its slope, independent of how much is rotated, and a compromised strategy fabricating exits cannot manufacture entry room at all. The cost is that a genuine rotation waits on the slope, and that an operator who wants a faster re-entry has to raise the buy limit rather than let the exit fund it.
+
+Splitting sell from redeem lets governance price the two exits differently: redemption is at par and only limited by repayments, while a sell crosses the spread and the settlement fee.
 
 A callback's authorization is the per-market whitelist, not a rate limit. The direction keys bound all whitelisted callbacks on a market together, alongside taker traffic, rather than capping any one of them.
 
@@ -476,7 +480,7 @@ Per market (`marketId`):
 1. Confirm the market exists on the singleton (`toMarket(marketId)` resolves, `settlementFee` does not revert). If not, anyone can `touchMarket(market)` once; the facet does not.
 2. Review the market config the id commits to: loan token, maturity, collateral tiers (LLTV, liquidation cursor, oracle), `rcfThreshold`, gates. A tier at LLTV `1e18` lets a borrower sell against the full collateral value, so any adverse oracle move leaves bad debt for lenders; treat it as a due-diligence red flag.
 3. `setMarketConfig(marketId, ...)`: required, and every limit is passed in the one call. `minSellTick` non-zero and below par net of the settlement fee; `maxBuyTick` at the highest all-in price acceptable for the remaining term; `minBuyYield` at the lowest rate worth entering for and `maxSellYield` (non-zero) at the widest give-up an exit may pay, both in basis points a year; `maxContinuousFee` (centi-basis points a year) and `maxLossFactor` at the tolerances the position can absorb, both defaulting to zero.
-4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM` keyed `marketId`, in the loan token's units. The exits are gated only by their own keys; zeroing the buy key pauses entry without touching exits.
+4. Configure `LIMIT_MIDNIGHT_BUY`, `LIMIT_MIDNIGHT_SELL` and `LIMIT_MIDNIGHT_REDEEM` keyed `marketId`, in the loan token's units. The exits are gated only by their own keys; zeroing the buy key pauses entry without touching exits. Size the buy key's slope to the pace of entry the market should sustain, not to the size of the position: no exit refills it, so rotating out and straight back in waits on that slope.
 
 No seeding is required: the integration holds no intermediate token and uses no auxiliary module. Offers are sourced off-chain from makers (or the Morpho API) and passed in calldata by the allocator together with each maker's ratifier data.
 
@@ -522,6 +526,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 - **`withdrawable` vs. credit** around maturity: redemption is first come first served out of repayments. Slow repayment after maturity means slow redemption, not loss, unless liquidations fall short.
 - **Oracle health** of every collateral tier in the market: a stale or manipulated oracle is what turns a borrower's default into a lender's loss.
 - **Maker concentration**: the position's exit before maturity depends on makers willing to buy. A single maker on both sides of the book is a liquidity risk, not a solvency one.
+- **Buy key headroom per market**: entry draws it down and nothing but its own slope puts it back, so a market that is rotated frequently will run out of entry room while both exits stay open. That is the intended failure direction, but it is a liveness event worth seeing before the allocator does.
 
 When maker mode is enabled, additionally:
 
