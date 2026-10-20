@@ -117,7 +117,7 @@ contract FacetVersions_Tests is Test {
         assertEq(layerZeroFacet.VERSION(),     "1.0.0");
         assertEq(mapleFacet.VERSION(),         "1.0.0");
         assertEq(merklFacet.VERSION(),         "1.0.0");
-        assertEq(midnightFacet.VERSION(),      "1.3.0");
+        assertEq(midnightFacet.VERSION(),      "1.4.0");
         assertEq(nfatHaloFacet.VERSION(),      "1.0.0");
         assertEq(nfatPrimeFacet.VERSION(),     "1.0.0");
         assertEq(otcFacet.VERSION(),           "1.0.0");

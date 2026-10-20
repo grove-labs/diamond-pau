@@ -108,12 +108,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
 
     bytes32 internal constant _LIMIT_BUY    = keccak256("LIMIT_MIDNIGHT_BUY");
-    bytes32 internal constant _LIMIT_MAKE   = keccak256("LIMIT_MIDNIGHT_MAKE");
     bytes32 internal constant _LIMIT_REDEEM = keccak256("LIMIT_MIDNIGHT_REDEEM");
     bytes32 internal constant _LIMIT_SELL   = keccak256("LIMIT_MIDNIGHT_SELL");
 
     /// @inheritdoc IFacet
-    string public constant override VERSION = "1.3.0";
+    string public constant override VERSION = "1.4.0";
 
     /**********************************************************************************************/
     /*** Declarations                                                                           ***/
@@ -553,9 +552,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(assets != 0,                  "MidnightFacet/zero-assets");
         require(units  != 0,                  "MidnightFacet/zero-units");
 
-        // Caps maker throughput in either direction and is never restored by either.
-        _decreaseRateLimit(getMakeRateLimitKey(marketId), assets);
-
         // Midnight pays the proxy before calling back on an exit, so this branch moves nothing.
         if (!buying) {
             address proxy = _getSharedControllerStorage().proxy;
@@ -575,9 +571,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             _requireDebtFree(marketId, proxy);
 
             _decreaseRateLimit(getSellRateLimitKey(marketId), assets);
-
-            // Mirrors the taker exit: capital out of a market restores that market's entry room.
-            _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assets);
 
             emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
 
@@ -640,11 +633,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         returns (MakeConfig memory)
     {
         return _getFacetStorage().makeConfigs[marketId];
-    }
-
-    /// @inheritdoc IMidnightFacet
-    function getMakeRateLimitKey(bytes32 marketId) public pure override returns (bytes32) {
-        return makeBytes32Key(_LIMIT_MAKE, marketId);
     }
 
     /// @inheritdoc IMidnightFacet

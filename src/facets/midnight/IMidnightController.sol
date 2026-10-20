@@ -78,8 +78,6 @@ interface IMidnightController {
         view
         returns (IMidnightFacet.MakeConfig memory config);
 
-    function midnight_getMakeRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
-
     function midnight_getMarketConfig(bytes32 marketId)
         external
         view

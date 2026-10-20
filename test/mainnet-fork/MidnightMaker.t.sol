@@ -66,8 +66,6 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
     MockFundingStrategy internal strategy;
 
-    bytes32 internal makeKey;
-
     uint256 internal maxOfferSize;
 
     function setUp() public virtual override {
@@ -76,14 +74,12 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         strategy = new MockFundingStrategy(address(mainnetController));
 
         maxOfferSize = 2 * seedUnits;
-        makeKey      = mainnetController.midnight_getMakeRateLimitKey(marketId);
 
         vm.startPrank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
         mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
         mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), true);
-        rateLimits.setRateLimitData(makeKey, rateLimit, rateLimit / 1 days);
         vm.stopPrank();
 
         vm.label(address(strategy), "MockFundingStrategy");
@@ -175,11 +171,10 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                            creditBefore - units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + sellerAssets);
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), rateLimit - sellerAssets);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - sellerAssets);
 
-        // Seeding spent from the entry budget, so the exit has room to put back.
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore + sellerAssets);
+        // The exit leg debits its own meter and puts nothing back on the entry side.
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore);
 
         assertEq(midnight.consumed(address(almProxy), SELL_GROUP), units);
 
@@ -187,8 +182,6 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
 
         creditBefore  = _credit();
         balanceBefore = loanToken.balanceOf(address(almProxy));
-
-        uint256 makeLimitBefore = rateLimits.getCurrentRateLimit(makeKey);
 
         buyLimitBefore = rateLimits.getCurrentRateLimit(buyKey);
 
@@ -202,8 +195,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                              creditBefore + units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - buyerAssets);
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), makeLimitBefore - buyerAssets);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  buyLimitBefore  - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore - buyerAssets);
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
@@ -278,7 +270,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
 
         assertEq(_credit(), units);
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), rateLimit - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - buyerAssets);
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
@@ -287,7 +279,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(), 2 * units);
 
         assertEq(
-            rateLimits.getCurrentRateLimit(makeKey),
+            rateLimits.getCurrentRateLimit(buyKey),
             rateLimit - buyerAssets - moreAssets
         );
 
@@ -387,8 +379,8 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/callback-not-allowed");
     }
 
-    // The make limit never restores, so an exhausted one stops the book in both directions.
-    function test_exhaustingMakeLimitStopsBothLegs() external {
+    // Each maker leg is bounded by the taker meter for its own direction, and by nothing else.
+    function test_exhaustingADirectionLimitStopsThatLegOnly() external {
         _seedCredit();
 
         Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
@@ -396,14 +388,21 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         uint256 units = seedUnits / 4;
 
-        _take(buy, units);
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey, 1, 0);
 
-        assertLt(rateLimits.getCurrentRateLimit(makeKey), rateLimit);
+        _takeExpectRevert(buy, units, "RateLimits/rate-limit-exceeded");
+
+        _take(sell, units);
+
+        assertLt(rateLimits.getCurrentRateLimit(sellKey), rateLimit);
+
+        // Exiting restored no entry room, so the buy leg is still stopped.
+        _takeExpectRevert(buy, units, "RateLimits/rate-limit-exceeded");
 
         vm.prank(Ethereum.SPARK_PROXY);
-        rateLimits.setRateLimitData(makeKey, 1, 0);
+        rateLimits.setRateLimitData(sellKey, 1, 0);
 
-        _takeExpectRevert(buy,  units, "RateLimits/rate-limit-exceeded");
         _takeExpectRevert(sell, units, "RateLimits/rate-limit-exceeded");
     }
 

@@ -253,9 +253,8 @@ interface IMidnightFacet is IFacet {
      * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
      *         position actually carries, read back from the venue, so a caller cannot widen its own
      *         floor by overstating the lien it sheds.
-     * @dev    Metering mirrors the taker legs: a buy decreases the buy limit, a sell decreases the
-     *         sell limit and restores the buy limit by the same amount. Both directions also
-     *         decrease the make limit, which no direction ever restores.
+     * @dev    Metering uses the same per-market keys as the taker legs: a buy decreases the buy
+     *         limit, a sell decreases the sell limit. Neither direction restores anything.
      * @param  marketId   Identifier of the Midnight market.
      * @param  buying     True when the proxy is the buyer, so the fill is an entry.
      * @param  assets     Loan token the settlement moves, as reported by the caller.
@@ -430,15 +429,6 @@ interface IMidnightFacet is IFacet {
      * @return config   Configured limits. A zero `maxOfferSize` means making is disabled.
      */
     function getMakeConfig(bytes32 marketId) external view returns (MakeConfig memory config);
-
-    /**
-     * @notice Returns the derived make rate limit key for a Midnight market.
-     * @dev    Decreased by every fill of a resting offer in either direction and restored by none,
-     *         so it caps maker throughput independently of the entry and exit budgets.
-     * @param  marketId Identifier of the Midnight market.
-     * @return key      Derived rate limit key.
-     */
-    function getMakeRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     /**
      * @notice Returns the governance limits configured for a Midnight market.

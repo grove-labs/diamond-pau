@@ -72,8 +72,6 @@ interface IControllerLike {
 
     function getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32);
 
-    function getMakeRateLimitKey(bytes32 marketId) external pure returns (bytes32);
-
     function isCallbackAllowed(bytes32 marketId, address strategy) external view returns (bool);
 
     function midnight() external view returns (address);
@@ -240,7 +238,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](17);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](16);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -318,11 +316,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
 
         wires[15] = IEnumerableIntegrations.Wire(
-            IControllerLike.getMakeRateLimitKey.selector,
-            IMidnightFacet.getMakeRateLimitKey.selector
-        );
-
-        wires[16] = IEnumerableIntegrations.Wire(
             IControllerLike.removeCallback.selector,
             IMidnightFacet.removeCallback.selector
         );
@@ -449,15 +442,13 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.stopPrank();
     }
 
-    // Keys resolved before the prank: an external call in the argument list would consume it.
+    // Key resolved before the prank: an external call in the argument list would consume it.
     function _allowCallback(uint256 maxAmount) internal {
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
-        bytes32 buyKey  = controller.getBuyRateLimitKey(_marketId());
+        bytes32 buyKey = controller.getBuyRateLimitKey(_marketId());
 
         vm.startPrank(admin);
         controller.setCallbackAllowed(_marketId(), strategy, true);
-        rateLimits.setRateLimitData(makeKey, maxAmount, 0);
-        rateLimits.setRateLimitData(buyKey,  maxAmount, 0);
+        rateLimits.setRateLimitData(buyKey, maxAmount, 0);
         vm.stopPrank();
     }
 
@@ -466,13 +457,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(admin);
         rateLimits.setRateLimitData(buyKey, maxAmount, 0);
-    }
-
-    function _setMakeLimit(uint256 maxAmount) internal {
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
-
-        vm.prank(admin);
-        rateLimits.setRateLimitData(makeKey, maxAmount, 0);
     }
 
     function _setSellLimit(uint256 maxAmount) internal {
@@ -715,13 +699,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(
             controller.getSellRateLimitKey(MARKET_ID),
             makeBytes32Key(keccak256("LIMIT_MIDNIGHT_SELL"), MARKET_ID)
-        );
-    }
-
-    function test_getMakeRateLimitKey() external view {
-        assertEq(
-            controller.getMakeRateLimitKey(MARKET_ID),
-            makeBytes32Key(keccak256("LIMIT_MIDNIGHT_MAKE"), MARKET_ID)
         );
     }
 
@@ -1507,11 +1484,9 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _allowCallback(MAX_OFFER_SIZE);
         _mockLossFactor(0);
 
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
-        bytes32 buyKey  = controller.getBuyRateLimitKey(_marketId());
+        bytes32 buyKey = controller.getBuyRateLimitKey(_marketId());
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), MAX_OFFER_SIZE);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), MAX_OFFER_SIZE);
 
         assertEq(IERC20Mock(loanToken).balanceOf(proxy),               PROXY_BALANCE);
         assertEq(IERC20Mock(loanToken).balanceOf(strategy),            0);
@@ -1531,8 +1506,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         _assertReentrancyGuardWrittenToTwice(address(controller));
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), MAX_OFFER_SIZE - assets);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE - assets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), MAX_OFFER_SIZE - assets);
 
         assertEq(IERC20Mock(loanToken).balanceOf(proxy),               PROXY_BALANCE - assets);
         assertEq(IERC20Mock(loanToken).balanceOf(strategy),            assets);
@@ -1545,7 +1519,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _allowCallback(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
         bytes32 buyKey  = controller.getBuyRateLimitKey(_marketId());
         bytes32 sellKey = controller.getSellRateLimitKey(_marketId());
 
@@ -1561,7 +1534,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         _assertReentrancyGuardWrittenToTwice(address(controller));
 
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), MAX_OFFER_SIZE - assets);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), MAX_OFFER_SIZE - assets);
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE);
 
@@ -1570,34 +1542,34 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(IERC20Mock(loanToken).balanceOf(address(controller)), 0);
     }
 
-    // An entry then an exit of the same size: entry room comes back, maker throughput does not.
-    function test_fundFill_roundTripRestoresEntryRoomOnly() external {
+    // An entry then an exit of the same size: each leg debits its own meter and restores neither.
+    function test_fundFill_roundTripRestoresNothing() external {
         _onboardAndEnableMake(0);
         _allowCallback(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
         _mockLossFactor(0);
 
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
         bytes32 buyKey  = controller.getBuyRateLimitKey(_marketId());
+        bytes32 sellKey = controller.getSellRateLimitKey(_marketId());
 
         uint256 assets = _honestAssets(FILL_UNITS);
 
         vm.prank(strategy);
         controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
 
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), MAX_OFFER_SIZE - assets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE - assets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), MAX_OFFER_SIZE);
 
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
 
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE);
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), MAX_OFFER_SIZE - 2 * assets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE - assets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), MAX_OFFER_SIZE - assets);
     }
 
-    // No buy limit is a configuration choice, not a reason to block an exit.
+    // The exit leg never touches the buy meter, so an unset buy key cannot block it.
     function test_fundFill_sell_noBuyLimit() external {
         _onboardAndEnableMake(0);
-        _setMakeLimit(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
         vm.prank(admin);
@@ -1613,39 +1585,9 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(rateLimits.getRateLimitData(buyKey).maxAmount, 0);
     }
 
-    // The make key is the aggregate bound, so it binds on both legs and neither restores it.
-    function test_fundFill_makeRateLimitBoundary() external {
-        _onboardAndEnableMake(0);
-        _allowCallback(MAX_OFFER_SIZE);
-        _setSellLimit(MAX_OFFER_SIZE);
-        _mockLossFactor(0);
-
-        bytes32 makeKey = controller.getMakeRateLimitKey(_marketId());
-
-        uint256 assets = _honestAssets(FILL_UNITS);
-
-        _setMakeLimit(assets - 1);
-
-        vm.expectRevert("RateLimits/rate-limit-exceeded");
-        vm.prank(strategy);
-        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
-
-        vm.expectRevert("RateLimits/rate-limit-exceeded");
-        vm.prank(strategy);
-        controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
-
-        _setMakeLimit(assets);
-
-        vm.prank(strategy);
-        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
-
-        assertEq(rateLimits.getCurrentRateLimit(makeKey), 0);
-    }
-
     // The whitelist is per market, so being usable elsewhere is no authorization for this one.
     function test_fundFill_callbackAllowedOnAnotherMarket() external {
         _onboardAndEnableMake(0);
-        _setMakeLimit(MAX_OFFER_SIZE);
         _setBuyLimit(MAX_OFFER_SIZE);
 
         vm.prank(admin);
