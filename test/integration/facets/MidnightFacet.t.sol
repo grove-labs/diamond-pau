@@ -1542,7 +1542,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(IERC20Mock(loanToken).balanceOf(address(controller)), 0);
     }
 
-    // An entry then an exit of the same size: each leg debits its own meter and restores neither.
+    // Entry, exit, entry: each leg debits its own meter and neither one restores the other's.
     function test_fundFill_roundTripRestoresNothing() external {
         _onboardAndEnableMake(0);
         _allowCallback(MAX_OFFER_SIZE);
@@ -1564,6 +1564,13 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
 
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE - assets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), MAX_OFFER_SIZE - assets);
+
+        // The sell meter is below its ceiling now, so a restore from the entry would show.
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  MAX_OFFER_SIZE - 2 * assets);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), MAX_OFFER_SIZE - assets);
     }
 
