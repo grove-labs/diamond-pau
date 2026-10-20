@@ -203,7 +203,7 @@ already signed and published, and therefore unrecallable.
   proxy's Midnight position)
 - **Rate limit:** `LIMIT_MIDNIGHT_BUY`, `makeBytes32Key(_LIMIT_BUY, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** none; entry is refilled by the exits.
+- **Refill:** none; no leg refills another, so entry room returns only from this key's slope.
 - **Loss bounds:** `maxAssetsIn` (non-zero, also the exact approval granted to Midnight
   for the call); `tickToPrice(offer.tick) + settlementFee(marketId,
   timeToMaturity) <= tickToPrice(maxBuyTick)` and `tickToPrice(offer.tick) + settlementFee
@@ -232,7 +232,7 @@ already signed and published, and therefore unrecallable.
 - **Value direction:** returning (loan token to proxy, credit units leave the position)
 - **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsReceived)`.
+- **Refill:** none; the buy key is not read, so the exit neither depends on it nor refills it.
 - **Loss bounds:** `minAssetsOut` (non-zero);
   `tickToPrice(offer.tick) >= tickToPrice(minSellTick) + settlementFee(marketId,
   timeToMaturity)` and `tickToPrice(offer.tick) >= minSellPrice(maxSellYield,
@@ -266,7 +266,7 @@ already signed and published, and therefore unrecallable.
 - **Value direction:** returning (loan token to proxy at par)
 - **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`;
   enforcing decrease of the measured loan-token balance delta.
-- **Refill:** `_tryIncreaseRateLimit(LIMIT_MIDNIGHT_BUY key, assetsWithdrawn)`.
+- **Refill:** none, as on `sell`.
 - **Loss bounds:** `minAssetsOut` (non-zero); `units` capped at both the proxy's live
   credit and the market's `withdrawable`; zero debt after the call. Redemption is at par,
   so no price bound applies.
@@ -456,11 +456,10 @@ Declared deviations from the usual facet shape, each with rationale:
   callback whitelist is the authorization: onboarding is one `setCallbackAllowed`, revoking is
   that same call with `false` or `removeCallback`, and there is no separate role grant that
   could be left behind after revocation. Every other gate on the function is unconditional.
-- **Maker legs that restore nothing.** The whitelist makes a callback usable but carries no
-  amount, so the per-direction keys are what bound all whitelisted callbacks on a market,
-  alongside taker traffic. Neither maker leg calls `_tryIncreaseRateLimit`, unlike the taker
-  exits, which is what stops a fabricated exit from manufacturing entry room: it burns the
-  sell key and returns nothing.
+- **Legs that restore nothing.** The whitelist makes a callback usable but carries no amount,
+  so the per-direction keys are what bound all whitelisted callbacks on a market, alongside
+  taker traffic. No leg on either side calls `_tryIncreaseRateLimit`, which is what stops a
+  fabricated exit from manufacturing entry room: it burns the sell key and returns nothing.
 - **Two periphery contracts that are not facets, and do not ship from this repository.** A
   ratifier must be standalone because the singleton calls `isRatified` on the address named in
   the offer and that address holds the blanket authorization; a funding strategy must be

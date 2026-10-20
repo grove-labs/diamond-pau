@@ -225,7 +225,7 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 
 3. Require `assets * WAD >= units * minFillPrice` (`MidnightFacet/fill-price-too-low`), where `minFillPrice` is the greater of `tickToPrice(minSellTick)` and `minSellPrice(maxSellYield, timeToMaturity, WAD, feePerUnit)`. Neither the loss factor nor the live fee is checked: a slashed market is when an exit matters most, and an exit moves no money of ours.
 4. Require `debt(marketId, proxy) == 0` (`MidnightFacet/debt-not-zero`), so an exit can shed credit but never open a short. Positions are already written when `onSell` fires, so this reads the result of the fill being reported.
-5. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assets`, the same key a taker `sell` spends. Nothing is restored on either leg.
+5. Decrement `LIMIT_MIDNIGHT_SELL` keyed `marketId` by `assets`, the same key a taker `sell` spends. Nothing is restored on any leg.
 6. Move nothing. Midnight paid the proxy before calling back, so the exit branch is a meter, a price gate and a post-condition only.
 
 Both price comparisons are cross-multiplied rather than divided, so neither bound is loosened by a wei of flooring.
@@ -533,7 +533,7 @@ When maker mode is enabled, additionally:
 - **`isAuthorized[proxy][x]` on the singleton**: must hold for the ratifier and no other address. Any other entry is a blanket grant over the proxy's position. Alert on the `SetIsAuthorized` event with `onBehalf` equal to the proxy rather than only sampling the mapping: the grant permits `setIsAuthorized`, so an authorized contract can add an entry of its own, and revoking the ratifier does not clear it.
 - **The quoter key's custody**: it is the only thing that can create a fillable offer. Revoking its role on the ratifier is the fastest way to void everything signed so far, since the role is checked at ratification rather than at signing.
 - **Published offers** against the designated groups' consumed counters, which is what bounds how much of a signed offer can still be filled, and against `maxOfferSize` as an off-chain check, since nothing on chain compares an offer's size to it.
-- **Buy and sell key drawdown** as the maker turnover rate, since maker flow shares those keys with taker traffic and neither maker leg restores anything. A market whose key for a direction is near zero has a book that will start reverting takers' fills on that side; retire the groups rather than leaving it there.
+- **Buy and sell key drawdown** as the maker turnover rate, since maker flow shares those keys with taker traffic and no leg on either side restores anything. A market whose key for a direction is near zero has a book that will start reverting takers' fills on that side; retire the groups rather than leaving it there.
 
 ## Related Documentation
 

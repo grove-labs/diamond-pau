@@ -49,7 +49,7 @@ The system is designed with the assumption that an actor with `ALLOCATOR_ROLE` c
 
 2. **Losses bounded by rate limits** - Any single attack is limited to the current rate limit capacity
     - Morpho Midnight maker fills are metered through `fundFill` in both directions, on the same
-      per-direction market keys taker traffic spends, and neither maker leg restores either. The
+      per-direction market keys taker traffic spends, and no leg on either side restores. The
       fill still happens in a third party's transaction, so a maker fill that exceeds a meter
       reverts the taker rather than us; the price floors the ratifier enforces at signing time and
       six revocation levers that act retroactively on published offers are what bound the rest
