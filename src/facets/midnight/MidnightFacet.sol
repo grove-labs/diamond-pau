@@ -102,7 +102,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     bytes32 internal constant _LIMIT_SELL   = keccak256("LIMIT_MIDNIGHT_SELL");
 
     /// @inheritdoc IFacet
-    string public constant override VERSION = "1.0.0";
+    string public constant override VERSION = "1.1.0";
 
     /**********************************************************************************************/
     /*** Declarations                                                                           ***/
@@ -307,9 +307,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         _decreaseRateLimit(getRedeemRateLimitKey(marketId), assetsWithdrawn);
 
-        // Restores entry capacity by the assets returned; skipped when no buy limit is set.
-        _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assetsWithdrawn);
-
         emit MidnightRedeem(marketId, units, assetsWithdrawn);
     }
 
@@ -376,9 +373,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         _requireDebtFree(marketId, ctx.proxy);
 
         _decreaseRateLimit(getSellRateLimitKey(marketId), assetsReceived);
-
-        // Restores entry capacity by the assets returned; skipped when no buy limit is set.
-        _tryIncreaseRateLimit(getBuyRateLimitKey(marketId), assetsReceived);
 
         emit MidnightSell(marketId, units, assetsReceived);
     }

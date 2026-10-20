@@ -100,7 +100,7 @@ interface IMidnightFacet is IFacet {
      *         fee, and clear `minBuyYield` once the settlement fee and the continuous fee for the
      *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
      *         exceeds the configured tolerances, or if the market has never been touched on
-     *         Midnight. The rate limit is decreased by the loan token actually spent.
+     *         Midnight. The buy rate limit is decreased by the loan token actually spent.
      * @param  marketId     Identifier of the Midnight market.
      * @param  offer        Maker's sell offer to take.
      * @param  ratifierData Opaque data forwarded to the maker's ratifier.
@@ -123,9 +123,8 @@ interface IMidnightFacet is IFacet {
      * @notice Redeems credit units at par out of the market's repayments.
      * @dev    Units are capped at both the proxy's live credit and the market's withdrawable
      *         amount, so passing `type(uint256).max` redeems everything currently available.
-     *         The market is resolved from the id on the configured Midnight venue. The rate limit
-     *         is decreased by the loan token actually received, and the same amount is restored on
-     *         the buy limit when one is configured.
+     *         The market is resolved from the id on the configured Midnight venue. The redeem
+     *         rate limit is decreased by the loan token actually received; nothing is restored.
      * @param  marketId        Identifier of the Midnight market.
      * @param  units           Credit units to redeem before capping.
      * @param  minAssetsOut    Lower bound on loan token received.
@@ -141,8 +140,8 @@ interface IMidnightFacet is IFacet {
      *         offer, price at or above the configured `minSellTick` plus the current settlement
      *         fee, and give up no more than `maxSellYield` measured on the proceeds net of that
      *         fee. Units are capped at the proxy's live credit, and a position with none left to
-     *         sell reverts. The rate limit is decreased by the loan token actually received, and
-     *         the same amount is restored on the buy limit when one is configured.
+     *         sell reverts. The sell rate limit is decreased by the loan token actually received;
+     *         nothing is restored.
      * @param  marketId       Identifier of the Midnight market.
      * @param  offer          Maker's buy offer to take.
      * @param  ratifierData   Opaque data forwarded to the maker's ratifier.

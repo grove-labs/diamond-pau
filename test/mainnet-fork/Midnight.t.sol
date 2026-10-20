@@ -1216,20 +1216,25 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _sell(offer, seedUnits, 1);
     }
 
-    // Restoring entry capacity after an exit must not lift the buy limit above its ceiling.
-    function test_sellMidnight_usdc_buyLimitRestoreCappedAtMaxAmount() external {
-        uint256 cap = seedUnits / 10;
+    // An exit must not reopen entry room, so a rate limited buy stays rate limited after one.
+    function test_sellMidnight_usdc_exitCannotReopenSpentBuyLimit() external {
+        uint256 limit = _buyerAssets(seedUnits, TICK_98);
 
         vm.prank(Ethereum.SPARK_PROXY);
-        rateLimits.setRateLimitData(buyKey, cap, cap / 1 days);
+        rateLimits.setRateLimitData(buyKey, limit, 0);
 
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), cap);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
 
-        uint256 received = _sell(_offer(true, TICK_99, seedUnits), seedUnits, 1);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), 0);
 
-        assertGt(received, cap);
+        assertGt(_sell(_offer(true, TICK_99, seedUnits), seedUnits, 1), limit);
 
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), cap);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), 0);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _buy(offer, seedUnits, type(uint256).max);
     }
 
     function test_sellMidnight_usdc_minAssetsOutBoundary() external {
@@ -1416,7 +1421,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertEq(_credit(),                                        seedUnits - units);
         assertEq(midnight.debt(marketId, address(almProxy)),       0);
         assertEq(midnight.consumed(maker, offer.group),            units);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent + expected);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit - expected);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
     }
@@ -1429,7 +1434,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         assertEq(_sell(_offer(true, TICK_99, seedUnits), seedUnits, expected), expected);
 
-        // The restore is skipped when no buy limit is set, never blocking the exit.
+        // The exit never touches the buy key, so an unset one cannot block it or gain from it.
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  0);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
     }
@@ -1624,7 +1629,7 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         assertEq(_credit(),                                  seedUnits - units);
         assertEq(midnight.debt(marketId, address(almProxy)), 0);
         assertEq(midnight.withdrawable(marketId),            0);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent + units);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit - units);
     }
@@ -1637,7 +1642,7 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
 
         assertEq(_redeem(seedUnits, seedUnits), seedUnits);
 
-        // The restore is skipped when no buy limit is set, never blocking the exit.
+        // The exit never touches the buy key, so an unset one cannot block it or gain from it.
         assertEq(rateLimits.getCurrentRateLimit(buyKey),    0);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit - seedUnits);
     }
@@ -1685,6 +1690,51 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
         assertEq(_credit(),                                  0);
         assertEq(midnight.debt(marketId, address(almProxy)), 0);
         assertEq(midnight.debt(marketId, maker),             0);
+    }
+
+    // Every key is drawn below its ceiling first, so a leg that touched another's key could not
+    // hide the write behind `maxAmount`.
+    function test_midnight_usdc_eachLegSpendsOnlyItsOwnKey() external {
+        uint256 units = seedUnits / 4;
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey,    rateLimit, 0);
+        rateLimits.setRateLimitData(sellKey,   rateLimit, 0);
+        rateLimits.setRateLimitData(redeemKey, rateLimit, 0);
+        vm.stopPrank();
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _sell(_offer(true, TICK_99, units), units, 1);
+        _repay(units);
+        _redeem(units, 1);
+
+        uint256 buyRoom    = rateLimits.getCurrentRateLimit(buyKey);
+        uint256 sellRoom   = rateLimits.getCurrentRateLimit(sellKey);
+        uint256 redeemRoom = rateLimits.getCurrentRateLimit(redeemKey);
+
+        assertLt(buyRoom,    rateLimit);
+        assertLt(sellRoom,   rateLimit);
+        assertLt(redeemRoom, rateLimit);
+
+        uint256 spent = _buy(_offer(false, TICK_98, units), units, type(uint256).max);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),    buyRoom - spent);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),   sellRoom);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), redeemRoom);
+
+        uint256 received = _sell(_offer(true, TICK_99, units), units, 1);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),    buyRoom - spent);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),   sellRoom - received);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), redeemRoom);
+
+        _repay(units);
+
+        uint256 withdrawn = _redeem(units, 1);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),    buyRoom - spent);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),   sellRoom - received);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), redeemRoom - withdrawn);
     }
 
 }
@@ -1810,7 +1860,7 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         assertEq(_credit(),                                        seedUnits - units);
         assertEq(midnight.debt(marketId, address(almProxy)),       0);
         assertEq(midnight.consumed(maker, offer.group),            units);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent + expected);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit - expected);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
     }
@@ -1865,7 +1915,7 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         assertEq(_credit(),                                  seedUnits - units);
         assertEq(midnight.debt(marketId, address(almProxy)), 0);
         assertEq(midnight.withdrawable(marketId),            0);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent + units);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit - units);
     }
