@@ -338,6 +338,42 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         assertLe(harness.minSellPrice(yieldBp, timeToMaturity, credit, pendingFee), 1e18);
     }
 
+    // The lien is truncated per unit, which overstates what the position still owes and so can
+    // only raise the floor. Credit is bounded here so the cross multiplication cannot overflow.
+    function testFuzz_minSellPrice_lienRoundsAgainstTheSeller(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        credit         = bound(credit, 1, 1e30);
+        pendingFee     = bound(pendingFee, 0, credit);
+
+        uint256 price = harness.minSellPrice(yieldBp, timeToMaturity, credit, pendingFee);
+
+        uint256 denominator = MidnightUtils.YEAR * MidnightUtils.WAD
+            + yieldBp * MidnightUtils.YIELD_BP_RATE * timeToMaturity;
+
+        uint256 exact = (credit - pendingFee)
+            * MidnightUtils.WAD * MidnightUtils.YEAR * MidnightUtils.WAD;
+
+        assertGe(price * credit * denominator, exact);
+
+        if (price > 1) assertLt((price - 2) * credit * denominator, exact);
+    }
+
+    // A lien that does not divide evenly into the position is where the truncation shows.
+    function test_minSellPrice_lienDoesNotDivideEvenly() external view {
+        assertEq(harness.minSellPrice(4_00,  180 days, 3, 1), 653770374350707506);
+        assertEq(harness.minSellPrice(4_00,  180 days, 7, 2), 700468258232900899);
+        assertEq(harness.minSellPrice(10_00,  30 days, 3, 1), 661231884057971015);
+    }
+
     // Upstream caps maturity a hundred years out and the continuous fee at one percent a year, so
     // even at both ceilings the payoff stays above zero and the arithmetic does not overflow.
     function test_yieldPrice_extremeInputs() external view {
@@ -412,6 +448,7 @@ contract MidnightUtils_ContinuousFee_Tests is MidnightUtilsTestBase {
     // The config ceiling is the annual form of Midnight's own per second cap, so the top of the
     // range has to land on it exactly and the next value up has to overshoot it.
     function test_continuousFeePerSecond_matchesUpstreamCeiling() external view {
+        assertEq(MidnightUtils.MAX_CONTINUOUS_FEE,        317_097_919);
         assertEq(harness.continuousFeePerSecond(1_00_00), MidnightUtils.MAX_CONTINUOUS_FEE);
         assertGt(harness.continuousFeePerSecond(1_00_01), MidnightUtils.MAX_CONTINUOUS_FEE);
     }
@@ -486,7 +523,35 @@ contract MidnightUtils_ToId_Tests is MidnightUtilsTestBase {
         assertNotEq(harness.toId(m), baseId);
 
         m = _market(address(0xA1), address(0xB1));
+        m.rcfThreshold -= 1;
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.enterGate = address(0xE1);
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.liquidatorGate = address(0xE2);
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
         m.collateralParams[0].lltv += 1;
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.collateralParams[0].token = address(0xC1);
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.collateralParams[0].liquidationCursor += 1;
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.collateralParams[0].oracle = address(0x02);
+        assertNotEq(harness.toId(m), baseId);
+
+        m = _market(address(0xA1), address(0xB1));
+        m.collateralParams = new CollateralParams[](0);
         assertNotEq(harness.toId(m), baseId);
     }
 

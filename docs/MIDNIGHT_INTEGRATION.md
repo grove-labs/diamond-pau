@@ -19,7 +19,7 @@ Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a
 
 In **taker mode**, the subject of this document, the `MidnightFacet` is a **lender-only** integration: the ALMProxy buys units from makers' sell offers, sells them back into makers' buy offers before maturity, and redeems them at par once repayments land. In **maker mode** it also rests its own offers on both sides, still lender-only, with every maker exit required to leave the position debt-free (see `specs/midnight.md`). In neither mode does it supply collateral, borrow, liquidate or hold debt. Every external call is pinned to a single immutable Midnight singleton.
 
-Structs and the tick math are vendored verbatim into `MidnightUtils.sol` because the market id is a hash over the struct layout: any drift would silently change every id. The mainnet-fork suite pins parity by recomputing three live market ids.
+Structs and the tick math are vendored verbatim into `MidnightUtils.sol` (from `src/interfaces/IMidnight.sol` and `src/libraries/{TickLib,IdLib,ConstantsLib}.sol` at the pinned commit) because the market id is a hash over the struct layout: any drift would silently change every id. The protocol repo is not importable as a Foundry library and only these few definitions are needed, so there is no `lib/` submodule, and the vendored `unchecked` blocks are kept exactly as upstream wrote them for the same parity reason. The mainnet-fork suite pins parity by recomputing three live market ids.
 
 ## Token Flow
 
@@ -36,6 +36,8 @@ Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
          credit -= units
 ```
 
+Only one path moves loan tokens out of the ALMProxy: the `take` inside `buy`, which pays the offer price to the maker's `receiverIfMakerIsSeller` (never the proxy) and leaves the settlement fee in the venue. It is bounded by `maxAssetsIn`, used as both the allowance and the post-check, and metered against `LIMIT_MIDNIGHT_BUY`. `sell` and `redeem` only move loan tokens in. Credit is not a token and cannot leave the proxy's position except through those two paths, both of which name the proxy as receiver.
+
 ---
 
 ## Operations
@@ -50,8 +52,8 @@ Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
 2. Require `offer.market.midnight == midnight` (`MidnightFacet/invalid-midnight`) and `toId(offer.market) == marketId` (`MidnightFacet/market-mismatch`). Every subsequent read and call goes to the immutable singleton, so the market from calldata is only usable once it names that venue, and binding it to the id here keeps a fabricated maturity out of the bound arithmetic in step 4. Snapshot the proxy's live credit (`updatePositionView`) and loan-token balance.
 3. Require the market's `continuousFee`, a per-second rate, to be within `maxContinuousFee` converted out of its annual form (`MidnightFacet/continuous-fee-too-high`) and `lossFactor <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`). Entering crystallizes the continuous fee over the remaining term and buys into whatever loss has already been socialized, so both are entry-only gates.
 4. Resolve two price ceilings and apply both. The tick ceiling is `tickToPrice(maxBuyTick)`. The yield-implied price ceiling is `maxBuyPrice(minBuyYield, timeToMaturity, continuousFee)`: the highest all-in price that still earns `minBuyYield` basis points a year at simple interest over ACT/365, measured on what a unit returns (par less the continuous fee crystallized for the remaining term). Both are ceilings on the all-in price the proxy pays, the settlement fee is added to each offer's price before either comparison, and the stricter ceiling binds.
-5. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`.
-6. Require `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) + settlementFee <= tickCeiling` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldCeiling` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)). Then `doCall` `midnight.take(offer, ratifierData, units, proxy, 0, 0, "")`.
+5. Require `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) + settlementFee <= tickCeiling` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldCeiling` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)).
+6. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`, then `doCall` `midnight.take(offer, ratifierData, units, proxy, 0, 0, "")`. Every check above runs before the allowance exists.
 7. Reset the approval to zero in case Midnight did not pull the full amount.
 8. Measure `assetsSpent` as the ALMProxy balance delta rather than trusting the take return values, and require `assetsSpent <= maxAssetsIn` (`MidnightFacet/max-assets-in-exceeded`).
 9. Require the live credit to have grown by exactly the units taken (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`). Anything a maker callback did to market state during the fill surfaces here.
@@ -69,7 +71,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 
 **Untouched market:** `settlementFee` reverts (`MarketNotCreated()`) on a market that has never been created on the singleton. Anyone can create one with a single permissionless `touchMarket(market)` call; the facet does not do it.
 
-**Post-maturity:** Midnight refuses to let a maker take on new debt after maturity (`CannotIncreaseDebtPostMaturity()`), but a maker that already holds credit can still sell it, so a `buy` from such a maker succeeds after maturity. The facet does not check maturity; closing entry means zeroing `maxBuyTick`.
+**Post-maturity:** Midnight refuses to let a maker take on new debt after maturity (`CannotIncreaseDebtPostMaturity()`), but a maker that already holds credit can still sell it, so a `buy` from such a maker succeeds after maturity. With no term left the yield-implied ceiling is par whatever `minBuyYield` is set to, so only `maxBuyTick` still binds on an offer's price. The facet does not check maturity; closing entry means zeroing `maxBuyTick`.
 
 ### Sell (exit early, take makers' buy offers)
 
@@ -133,6 +135,7 @@ together in a single slot:
 - `minSellTick` is an exit floor and has to stay reachable: below par net of the settlement fee, or every sell reverts on price. `setMarketConfig` rejects a zero `minSellTick` outright, so a market once onboarded cannot be un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving the exits configured.
 - Each leg carries a tick bound and a yield bound, and the stricter binds. Ticks are absolute prices and go stale as the term shortens: a tick that is a fair entry at 180 days is a giveaway at 5. The yield bounds are denominated in rate, so they track the term on their own and need no spell as maturity approaches. Both fees are inside the comparison, so a fee change does not need a reconfiguration either.
 - Yield granularity is one basis point a year, worth about `1.0` basis points of price at a 360 day term, `0.5` at 180 days and `0.02` at 7 days. Set `maxSellYield` well above the market rate: it is a gross-mispricing rail, not a spread control, and it tightens towards par on its own as maturity approaches.
+- The yield bounds cannot overflow or underflow. Midnight refuses a maturity more than 100 years out (`MaturityTooFar()`) and caps the continuous fee at one percent a year, so the fee crystallized over any reachable term stays below par. That holds only because the market from calldata is bound to `marketId` before any bound is computed; a fabricated maturity would otherwise reach the arithmetic.
 - `maxContinuousFee` is an annual rate, while Midnight stores the fee itself per second. The facet converts the ceiling as `cbps * 1e12 / 365 days` and floors, so the effective ceiling never sits above the rate named; `1_00_00` maps exactly onto Midnight's own `0.01e18 / 365 days` cap. Reading the venue's `continuousFee(id)` against the configured value therefore needs that conversion.
 - Write the value grouped as `percent_bp_cbp`, so the digits carry their own units: `1_00_00` is one percent a year, `50_00` is 50 basis points, `1` is one centi-basis point.
 - The fee and loss guards apply to entry only. Exits are bounded by `minSellTick`, `maxSellYield`, `minAssetsOut` and the rate limits.
@@ -351,7 +354,7 @@ An offer may name a `callback` contract with opaque `callbackData`; Midnight cal
 
 ### Ratifier Data Is Opaque
 
-`ratifierData` is forwarded as-is to the **maker's** ratifier, which decides whether the offer is live. The facet validates outcomes (price bound, direction, id, deltas), not the offer's provenance; an offer that fails ratification reverts inside Midnight.
+`ratifierData` is forwarded as-is to the **maker's** ratifier, which decides whether the offer is live. The facet validates outcomes (price bound, direction, id, deltas), not the offer's provenance; an offer that fails ratification reverts inside Midnight. Makers on mainnet point at Morpho's deployed `SetterRatifier` (`0xb72c416382c8A6399D0765CebfB032F040B00B3c`), which treats `ratifierData` as a Merkle proof of the offer against the maker's committed root; the mainnet-fork tests ratify through that contract rather than a test double.
 
 ### Self-Paying Offers
 
@@ -363,7 +366,7 @@ If a sell offer named the ALMProxy as `receiverIfMakerIsSeller`, the proxy would
 
 ### Mutable Reads Feed Guards, Not Keys
 
-`continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `withdrawable` and `toMarket` are all read from the singleton at call time and can change between calls. Each one feeds a guard that fails closed (a tighter bound, a smaller cap, a revert), and none of them is used to derive a rate-limit key. The only key salt is the governance-supplied `marketId`.
+`continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `withdrawable` and `toMarket` are all read from the singleton at call time and can change between calls. Each one feeds a guard that fails closed (a tighter bound, a smaller cap, a revert), and none of them is used to derive a rate-limit key. The only key salt is the governance-supplied `marketId`. The facet reads no oracle: Midnight's collateral oracles are a protocol-side solvency assumption, not a pricing input here. Loan tokens are standard non-rebasing ERC-20s (USDC and USDS, 6 and 18 decimals), so a measured balance delta is exact.
 
 ### Measured Deltas, Not Return Values
 
@@ -443,6 +446,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MarketNotCreated()`                     | Midnight    | market never touched on the singleton                                                     |
 | `RatifierUnauthorized()`                 | Midnight    | maker has not authorized its ratifier                                                     |
 | `NotRatified()`                          | ratifier    | the maker's `SetterRatifier` does not recognize the offer (bubbles through Midnight)      |
+| `InvalidProof()`                         | ratifier    | the `ratifierData` Merkle proof does not place the offer under the maker's root           |
 | `ConsumedUnits()`, `ConsumedAssets()`    | Midnight    | offer already filled past its cap, including by someone else in the same block            |
 | `OfferExpired()`, `OfferNotStarted()`    | Midnight    | offer outside its validity window                                                         |
 | `CannotIncreaseDebtPostMaturity()`       | Midnight    | `buy` after maturity from a maker that would have to incur debt to fill it                |
@@ -524,6 +528,7 @@ The facet makes no liquidity claims. At the time of writing every live mainnet m
 - **Fee changes** (`continuousFee`, settlement fee schedule): raised fees widen the spread on every trade and can lift every offer's all-in cost over `maxBuyTick` (`MidnightFacet/buy-price-too-high`) or push the `minSellTick` floor over par, wedging that side until governance reconfigures. Both fees sit inside the yield bounds, so a fee rise re-prices those rather than leaving them stale, with one exception: close to maturity the sell floor is already near par, and adding the fee on top can push it above par, so `sell` reverts (`MidnightFacet/sell-yield-too-high`) until the fee falls or governance widens `maxSellYield`. With the schedule at the protocol ceiling that window is roughly the last hour at a `maxSellYield` of `10_00` and the last six at `2_00`, and it scales with the fee: a 50 bp fee landing in the shortest bucket would widen it to 18 and 92 days respectively. Past maturity the floor is exactly par, so any live settlement fee closes the sell path and `redeem` is the only exit, which costs nothing because a post-maturity sell can never beat redemption anyway (see `sell` above). At the time of writing every fee on every live market is zero and no `feeSetter` has been appointed, so the whole schedule can go from zero to the protocol ceilings on one configurator action with no notice.
 - **Role and tier changes** by the singleton's `configurator` (`feeSetter`, `feeClaimer`, `tickSpacingSetter`, tiers, the configurator itself): the privileged levers on the venue. Fee claims reduce `withdrawable`, so they show up as slower redemption.
 - **`withdrawable` vs. credit** around maturity: redemption is first come first served out of repayments. Slow repayment after maturity means slow redemption, not loss, unless liquidations fall short.
+- **Time to maturity per market**: the yield bounds tighten towards par on their own, but they stop binding at maturity. With no term left the buy ceiling is par whatever `minBuyYield` says, so `maxBuyTick` is the only value still pricing an entry (see `buy` above); a market being wound down wants it zeroed rather than left at the level that opened the term.
 - **Oracle health** of every collateral tier in the market: a stale or manipulated oracle is what turns a borrower's default into a lender's loss.
 - **Maker concentration**: the position's exit before maturity depends on makers willing to buy. A single maker on both sides of the book is a liquidity risk, not a solvency one.
 - **Buy key headroom per market**: entry draws it down and nothing but its own slope puts it back, so a market that is rotated frequently will run out of entry room while both exits stay open. That is the intended failure direction, but it is a liveness event worth seeing before the allocator does.
@@ -539,4 +544,5 @@ When maker mode is enabled, additionally:
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md): overall facet architecture and Controller dispatch.
 - [RATE_LIMITS.md](./RATE_LIMITS.md): rate-limit key construction, try-increase and gate-check patterns.
+- [SECURITY.md](./SECURITY.md): venue trust assumptions and the external protocol's audit status.
 - [THREAT_MODEL.md](./THREAT_MODEL.md): protocol trust matrix and external risk surface.

@@ -205,7 +205,7 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Buys credit units by taking one maker's sell offer on a Midnight market.
      * @dev    The offer must name the configured Midnight venue, hash to `marketId`, be a sell
-     *         offer, price at or below the configured `maxBuyTick` net of the current settlement
+     *         offer, price at or below the configured `maxBuyTick` minus the current settlement
      *         fee, and clear `minBuyYield` once the settlement fee and the continuous fee for the
      *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
      *         exceeds the configured tolerances, or if the market has never been touched on

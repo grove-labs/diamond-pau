@@ -660,7 +660,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /**********************************************************************************************/
-    /*** Internal Functions                                                                     ***/
+    /*** Internal Interactive Functions                                                         ***/
     /**********************************************************************************************/
 
     function _take(
@@ -689,6 +689,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
             )
         );
     }
+
+    /**********************************************************************************************/
+    /*** Internal View/Pure Functions                                                           ***/
+    /**********************************************************************************************/
 
     function _takeContext(bytes32 marketId, Market calldata market)
         internal
