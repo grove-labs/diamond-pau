@@ -78,6 +78,8 @@ See [Liquidity Operations](./LIQUIDITY_OPERATIONS.md) for OTC mechanics.
 
 **Maximum Loss:** The credit outstanding in a market, if its collateral tiers fail and liquidations fall short of the debt. Entry is bounded per market by `LIMIT_MIDNIGHT_BUY`, which no exit restores.
 
+**Maker Mode:** Resting the proxy's own offers moves two things outside this repository's reach. Authorizing a ratifier on the singleton is a blanket grant: the same `isAuthorized` entry also permits `withdraw`, `repay`, `supplyCollateral`, `withdrawCollateral`, `setConsumed` and `setIsAuthorized` on the proxy's behalf, so only a reviewed, non-upgradeable contract whose deployed runtime emits no external call at all should ever be authorized; that opcode scan is a precondition on the authorizing spell, not an assertion this suite can make. A maker exit then settles in a third party's transaction, so credit can leave the position with no code of ours in the stack: the ratifier's receiver invariant, `fundFill`'s price floor and zero-debt post-condition, and the per-direction meters are what bound it. Both periphery contracts ship, and are audited, from the periphery repository.
+
 **External Audits:** Eleven reports under `morpho-org/midnight/audits/` at the pinned commit `70607569ac348e9880b512ffd3b574be55405932` (Spearbit, Cantina competition, Blackthorn, TrustSec, Stermi; 2026-04 through 2026-09), which is the code deployed as the mainnet singleton.
 
 See [Midnight Integration](./MIDNIGHT_INTEGRATION.md) for the facet's controls, price and fee rails, and failure modes.

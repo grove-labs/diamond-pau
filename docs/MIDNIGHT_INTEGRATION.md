@@ -34,9 +34,21 @@ Sell:    midnight.take(buy offer) per offer → loanToken (ALMProxy), net of set
 
 Redeem:  midnight.withdraw(units) → loanToken (ALMProxy), at par
          credit -= units
+
+Maker:   see Maker Mode below; both legs reach the facet through a strategy's callback
 ```
 
-Only one path moves loan tokens out of the ALMProxy: the `take` inside `buy`, which pays the offer price to the maker's `receiverIfMakerIsSeller` (never the proxy) and leaves the settlement fee in the venue. It is bounded by `maxAssetsIn`, used as both the allowance and the post-check, and metered against `LIMIT_MIDNIGHT_BUY`. `sell` and `redeem` only move loan tokens in. Credit is not a token and cannot leave the proxy's position except through those two paths, both of which name the proxy as receiver.
+Three paths move value out of the ALMProxy's control, and every other leg only moves loan tokens in:
+
+| # | Path | Destination | Bounded by |
+| - | ---- | ----------- | ---------- |
+| 1 | `doCall` `midnight.take` inside `buy` (taker entry) | the maker's `receiverIfMakerIsSeller`, which must not be the proxy, plus the settlement fee left in the venue | `LIMIT_MIDNIGHT_BUY` per `marketId`; `maxAssetsIn` as both the allowance and the post-check |
+| 2 | `doCall` `loanToken.transfer` inside `fundFill` (maker entry) | the calling funding strategy, which approves the exact amount to the singleton and is drained by it inside the same `take` | the per-market callback whitelist as the authorization; `LIMIT_MIDNIGHT_BUY`, debited by `assets` before the transfer; `assets * WAD <= units * maxFillPrice`; live `lossFactor` and live `continuousFee` |
+| 3 | a third party's `take` against a resting proxy sell offer (maker exit) | `offer.receiverIfMakerIsSeller`, which the ratifier requires to be the proxy | the ratifier at fill time (parties, group, expiry, window, receiver, signature, callback whitelist); the offer's own `maxUnits` against its group's consumed counter; `fundFill` through `onSell`, which enforces the exit floor on the clamped fee basis, requires zero debt afterwards, and debits `LIMIT_MIDNIGHT_SELL` |
+
+Path 3 is the integration's one asymmetry: **credit units can leave the proxy's position without any transaction of ours**, and whether a fill happens at all is decided by the ratifier's view call. Path 2 is the only path here that sends loan tokens to a contract that is not the proxy; the containment is that the strategy is reviewed, non-upgradeable, holds no balance between settlements, and is drained inside the same `take` that funded it.
+
+`sell`, `redeem` and path 3 all move loan tokens into the proxy. Credit is not a token: it cannot leave the proxy's position except through `sell`, `redeem` or path 3, and all three name the proxy as receiver.
 
 ---
 
