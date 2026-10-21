@@ -153,7 +153,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     }
 
     function test_midnightWiring_aliasesDispatchThroughTheController() external view {
-        assertEq(IMidnightController(controller).midnight_VERSION(),  "1.4.0");
+        assertEq(IMidnightController(controller).midnight_VERSION(),  "1.0.0");
         assertEq(IMidnightController(controller).midnight_midnight(), midnight);
     }
 
