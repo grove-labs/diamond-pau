@@ -91,6 +91,7 @@ Additionally, some core contracts use Solidity custom errors (not string-prefix 
 | `ERC4626Facet/`       | ERC-4626 vault operations           |
 | `LayerZeroFacet/`     | LayerZero V2 bridging operations    |
 | `MapleFacet/`         | Maple redemption operations         |
+| `MidnightFacet/`      | Midnight credit trading operations  |
 | `OTCFacet/`           | OTC swap operations                 |
 | `PendleFacet/`        | Pendle PT redemption operations     |
 | `TransferAssetFacet/` | Generic asset transfer operations   |
