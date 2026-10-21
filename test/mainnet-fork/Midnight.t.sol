@@ -920,8 +920,9 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
 
-        assertEq(_credit(),                              seedUnits);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), type(uint256).max);
+        assertEq(_credit(),                                 seedUnits);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),   rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit);
     }
 
 }
@@ -1449,9 +1450,8 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         assertEq(_sell(_offer(true, TICK_99, seedUnits), seedUnits, expected), expected);
 
-        assertEq(_credit(),                               0);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),  type(uint256).max);
-        assertEq(rateLimits.getCurrentRateLimit(sellKey), type(uint256).max);
+        assertEq(_credit(),                                 0);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit);
     }
 
 }
@@ -1657,9 +1657,8 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
 
         assertEq(_redeem(seedUnits, seedUnits), seedUnits);
 
-        assertEq(_credit(),                                 0);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),    type(uint256).max);
-        assertEq(rateLimits.getCurrentRateLimit(redeemKey), type(uint256).max);
+        assertEq(_credit(),                               0);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),  rateLimit);
     }
 
 }
@@ -1735,6 +1734,28 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(buyKey),    buyRoom - spent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),   sellRoom - received);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey), redeemRoom - withdrawn);
+    }
+
+    // Zeroing `maxBuyTick` is how entry is closed, and the exits have to stay open: both are gated
+    // on `minSellTick`, which is left set.
+    function test_midnight_usdc_zeroMaxBuyTickClosesEntryOnly() external {
+        uint256 units = seedUnits / 4;
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+
+        _setConfig(0, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        Offer memory blocked = _offer(false, TICK_98, units);
+
+        vm.expectRevert("MidnightFacet/buy-not-enabled");
+        _buy(blocked, units, type(uint256).max);
+
+        assertEq(_sell(_offer(true, TICK_99, units), units, 1), _sellerAssets(units, TICK_99));
+
+        _repay(units);
+
+        assertEq(_redeem(units, 1), units);
+        assertEq(_credit(),         seedUnits - 2 * units);
     }
 
 }

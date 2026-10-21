@@ -746,6 +746,38 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         });
     }
 
+    // The victim repays part of its debt so there is something in the redeemable pool.
+    function _victimRepays() internal {
+        deal(address(loanToken), victim, attackUnits);
+
+        vm.startPrank(victim);
+        loanToken.approve(MIDNIGHT, attackUnits);
+        midnight.repay(market, attackUnits, victim, address(0), "");
+        vm.stopPrank();
+    }
+
+    function _positionCall() internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            midnight.updatePositionView.selector, market, marketId, address(almProxy)
+        );
+    }
+
+    function _position(uint256 credit, uint256 pendingFee) internal pure returns (bytes memory) {
+        return abi.encode(uint128(credit), uint128(pendingFee), uint128(0));
+    }
+
+    function _mockProxyBalances(uint256 balanceBefore, uint256 balanceAfter) internal {
+        bytes[] memory balances = new bytes[](2);
+        balances[0] = abi.encode(balanceBefore);
+        balances[1] = abi.encode(balanceAfter);
+
+        vm.mockCalls(
+            address(loanToken),
+            abi.encodeWithSignature("balanceOf(address)", address(almProxy)),
+            balances
+        );
+    }
+
     function test_attack_hostileMakerCallback_buyMidnight() external {
         uint256 expected     = _buyerAssets(attackUnits, TICK_98);
         uint256 creditBefore = _credit();
@@ -801,6 +833,34 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         _sell(offer, units, 1);
     }
 
+    // The delta is an equality, so a fill that credits more than the units taken is refused too.
+    // Mocked because Midnight credits a take exactly.
+    function test_attack_overcreditedFill_buyMidnight() external {
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+
+        bytes[] memory positions = new bytes[](2);
+        positions[0] = _position(_credit(),                    _pendingFee());
+        positions[1] = _position(_credit() + attackUnits + 1,  _pendingFee());
+
+        vm.mockCalls(MIDNIGHT, _positionCall(), positions);
+
+        vm.expectRevert("MidnightFacet/credit-delta-mismatch");
+        _buy(offer, attackUnits, type(uint256).max);
+    }
+
+    function test_attack_undercreditedFill_sellMidnight() external {
+        Offer memory offer = _offer(true, TICK_99, attackUnits);
+
+        bytes[] memory positions = new bytes[](2);
+        positions[0] = _position(_credit(),                   _pendingFee());
+        positions[1] = _position(_credit() - attackUnits + 1, _pendingFee());
+
+        vm.mockCalls(MIDNIGHT, _positionCall(), positions);
+
+        vm.expectRevert("MidnightFacet/credit-delta-mismatch");
+        _sell(offer, attackUnits, 1);
+    }
+
     // The approval bounds what Midnight can pull, so the spend can only overshoot the bound if the
     // loan token itself moves more than Midnight asked for. Mocked because no live token does.
     function test_attack_loanTokenOvercharges_buyMidnight() external {
@@ -809,15 +869,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, attackUnits);
 
-        bytes[] memory balances = new bytes[](2);
-        balances[0] = abi.encode(balance);
-        balances[1] = abi.encode(balance - maxAssetsIn - 1);
-
-        vm.mockCalls(
-            address(loanToken),
-            abi.encodeWithSignature("balanceOf(address)", address(almProxy)),
-            balances
-        );
+        _mockProxyBalances(balance, balance - maxAssetsIn - 1);
 
         vm.expectRevert("MidnightFacet/max-assets-in-exceeded");
         _buy(offer, attackUnits, maxAssetsIn);
@@ -852,13 +904,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     }
 
     function test_attack_debtReported_redeemMidnight() external {
-        // The victim repays part of its debt so there is something in the redeemable pool.
-        deal(address(loanToken), victim, attackUnits);
-
-        vm.startPrank(victim);
-        loanToken.approve(MIDNIGHT, attackUnits);
-        midnight.repay(market, attackUnits, victim, address(0), "");
-        vm.stopPrank();
+        _victimRepays();
 
         vm.mockCall(
             MIDNIGHT,
@@ -868,6 +914,35 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/debt-not-zero");
         _redeem(attackUnits, 1);
+    }
+
+    // Redemption meters the loan token actually received, not the units asked for. Mocked because
+    // a live withdraw pays the units exactly.
+    function test_attack_loanTokenUnderpays_redeemMidnight() external {
+        _victimRepays();
+
+        uint256 balance    = loanToken.balanceOf(address(almProxy));
+        uint256 redeemRoom = rateLimits.getCurrentRateLimit(redeemKey);
+
+        _mockProxyBalances(balance, balance + attackUnits - 1);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightRedeem(marketId, attackUnits, attackUnits - 1);
+
+        assertEq(_redeem(attackUnits, attackUnits - 1), attackUnits - 1);
+
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), redeemRoom - attackUnits + 1);
+    }
+
+    function test_attack_loanTokenUnderpays_redeemMidnight_minAssetsOut() external {
+        _victimRepays();
+
+        uint256 balance = loanToken.balanceOf(address(almProxy));
+
+        _mockProxyBalances(balance, balance + attackUnits - 1);
+
+        vm.expectRevert("MidnightFacet/min-assets-out-not-met");
+        _redeem(attackUnits, attackUnits);
     }
 
 }
