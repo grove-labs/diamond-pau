@@ -699,6 +699,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
             )
         );
 
+        // NOTE: Midnight is immutable, and the buy only lets this raise the metered spend above
+        //       the balance delta, never lower it.
         ( buyerAssets, ) = abi.decode(result, (uint256, uint256));
     }
 
