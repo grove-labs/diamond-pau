@@ -697,6 +697,34 @@ contract MidnightSlashingMaker {
 
 }
 
+// A maker callback that sends loan token to the proxy mid-fill, shrinking the balance delta the
+// buy would otherwise meter.
+contract MidnightDonatingMaker {
+
+    bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    // Maker is the seller: runs after the transfers of the proxy's buy.
+    function onSell(
+        bytes32,
+        Market  memory market,
+        uint256,
+        uint256,
+        uint256,
+        address,
+        address,
+        bytes   memory data
+    )
+        external returns (bytes32)
+    {
+        ( address proxy, uint256 amount ) = abi.decode(data, (address, uint256));
+
+        IERC20(market.loanToken).transfer(proxy, amount);
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
 contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
     address internal victim = makeAddr("victim");
@@ -705,6 +733,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
     MidnightHostileMaker  internal hostile;
     MidnightSlashingMaker internal slasher;
+    MidnightDonatingMaker internal donator;
 
     function setUp() public override {
         super.setUp();
@@ -715,6 +744,10 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         deal(address(loanToken), address(hostile), proxyBalance);
         hostile.approveMidnight(address(loanToken));
+
+        donator = new MidnightDonatingMaker();
+
+        deal(address(loanToken), address(donator), proxyBalance);
 
         // A second borrower whose debt backs part of the proxy's credit and can be written off
         // mid-fill. Thinly collateralized so a price crash leaves most of its debt as a loss.
@@ -888,6 +921,34 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/max-assets-in-exceeded");
         _buy(offer, attackUnits, maxAssetsIn);
+    }
+
+    // Loan token arriving inside the take shrinks the balance delta, so the buy meters the higher
+    // of that delta and the assets Midnight reports the buyer paid.
+    function test_attack_donatedMidFill_buyMidnight() external {
+        // A live fee separates what the buyer pays from what the maker receives, pinning which
+        // half of the take return the facet meters.
+        _setSettlementFee(SETTLEMENT_FEE);
+
+        uint256 expected = _buyerAssets(attackUnits, TICK_98);
+        uint256 donation = expected / 2;
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+        uint256 buyRoom       = rateLimits.getCurrentRateLimit(buyKey);
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+        offer.callback     = address(donator);
+        offer.callbackData = abi.encode(address(almProxy), donation);
+        _ratify(offer);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightBuy(marketId, attackUnits, expected);
+
+        assertEq(_buy(offer, attackUnits, expected), expected);
+
+        // The balance delta understates the spend by the donation; the rate limit does not.
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - expected + donation);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyRoom - expected);
     }
 
     // Every take is capped at the proxy's credit, so debt can only appear if the venue reports it

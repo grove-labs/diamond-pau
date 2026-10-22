@@ -209,7 +209,8 @@ interface IMidnightFacet is IFacet {
      *         fee, and clear `minBuyYield` once the settlement fee and the continuous fee for the
      *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
      *         exceeds the configured tolerances, or if the market has never been touched on
-     *         Midnight. The buy rate limit is decreased by the loan token actually spent.
+     *         Midnight. The buy rate limit is decreased by the higher of the proxy's balance
+     *         delta and the assets Midnight reports the buyer paid.
      * @param  marketId     Identifier of the Midnight market.
      * @param  offer        Maker's sell offer to take.
      * @param  ratifierData Opaque data forwarded to the maker's ratifier.
