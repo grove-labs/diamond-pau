@@ -39,7 +39,7 @@ struct Offer {
     address ratifier;
     bool    reduceOnly;
     uint128 maxUnits;
-    uint128 maxAssets;  // buyerAssets if offer.buy else sellerAssets
+    uint128 maxAssets;
     uint256 continuousFeeCap;
 }
 
