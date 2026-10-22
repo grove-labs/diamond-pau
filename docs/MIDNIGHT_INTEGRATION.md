@@ -53,7 +53,7 @@ Only one path moves loan tokens out of the ALMProxy: the `take` inside `buy`, wh
 5. Require `offer.buy == false` (`MidnightFacet/invalid-offer-direction`), `units != 0` (`MidnightFacet/zero-units`), `tickToPrice(offer.tick) + settlementFee <= tickCeiling` (`MidnightFacet/buy-price-too-high`), `tickToPrice(offer.tick) + settlementFee <= yieldCeiling` (`MidnightFacet/buy-yield-too-low`) and `offer.receiverIfMakerIsSeller != proxy` (`MidnightFacet/invalid-offer-receiver`, see [Security Considerations](#self-paying-offers)).
 6. Approve `loanToken` from the ALMProxy to Midnight for exactly `maxAssetsIn`, then `doCall` `midnight.take(offer, ratifierData, units, proxy, 0, 0, "")`. Every check above runs before the allowance exists.
 7. Reset the approval to zero in case Midnight did not pull the full amount.
-8. Measure `assetsSpent` as the ALMProxy balance delta rather than trusting the take return values, and require `assetsSpent <= maxAssetsIn` (`MidnightFacet/max-assets-in-exceeded`).
+8. Size `assetsSpent` as the higher of the ALMProxy balance delta and the `buyerAssets` the take reports, and require `assetsSpent <= maxAssetsIn` (`MidnightFacet/max-assets-in-exceeded`). Loan token arriving at the proxy inside the take shrinks the delta, so the venue's own figure floors what the meter sees (see [Measured Deltas and the Venue's Figure](#measured-deltas-and-the-venues-figure)).
 9. Require the live credit to have grown by exactly the units taken (`MidnightFacet/credit-delta-mismatch`) and the proxy's debt to be zero (`MidnightFacet/debt-not-zero`). Anything a maker callback did to market state during the fill surfaces here.
 10. Decrement `LIMIT_MIDNIGHT_BUY` keyed `marketId` by `assetsSpent`.
 
@@ -61,7 +61,7 @@ Only one path moves loan tokens out of the ALMProxy: the `take` inside `buy`, wh
 
 The key is salted with the governance-supplied `marketId` only. Nothing read from the protocol feeds a key: the id is itself a commitment to the full market config (venue, loan token, maturity, collateral tiers, gates), so there is nothing a counterparty can remap.
 
-**Event:** `MidnightBuy(marketId, units, assetsSpent)`, where `assetsSpent` is the measured balance delta, fees included.
+**Event:** `MidnightBuy(marketId, units, assetsSpent)`, where `assetsSpent` is the metered spend, fees included.
 
 **Taking more than one offer:** a call takes exactly one offer. A relayer sweeping several offers issues several calls in one transaction. Each call carries its own price bound, grants and clears its own allowance, and decrements the same meter, so the aggregate matches what a single batched call used to do, while a bad offer only costs that one call.
 
@@ -162,7 +162,7 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 | `LIMIT_MIDNIGHT_SELL`    | `(marketId)` | `makeBytes32Key` |
 | `LIMIT_MIDNIGHT_REDEEM`  | `(marketId)` | `makeBytes32Key` |
 
-All three are denominated in the market's loan token and sized by measured balance deltas. Every leg only ever decrements, and only the key for its own direction: a buy spends the buy key, a sell the sell key, a redemption the redeem key. No leg restores another, so entry headroom comes back only from the buy key's own slope, and governance sizes that slope to the pace of entry it wants rather than to the pace of exits.
+All three are denominated in the market's loan token and sized by what moved, the buy taking the higher of its balance delta and the spend the venue reports. Every leg only ever decrements, and only the key for its own direction: a buy spends the buy key, a sell the sell key, a redemption the redeem key. No leg restores another, so entry headroom comes back only from the buy key's own slope, and governance sizes that slope to the pace of entry it wants rather than to the pace of exits.
 
 That is a deliberate trade for a smaller blast radius. A refilling buy key makes the cumulative entry bound unbounded in the number of round trips, because each exit buys back the room the next entry spends. Without it the bound over any window is the buy key's `maxAmount` plus its slope, independent of how much is rotated. The cost is that a genuine rotation now waits on the slope, and that an operator who wants a faster re-entry has to raise the buy limit rather than rely on the exit to fund it.
 
@@ -190,7 +190,7 @@ An offer may name a `callback` contract with opaque `callbackData`; Midnight cal
 
 ### Self-Paying Offers
 
-If a sell offer named the ALMProxy as `receiverIfMakerIsSeller`, the proxy would pay the maker's proceeds to itself, netting the balance delta to the fee alone and under-reporting the spend to the rate limit. The facet rejects such offers (`MidnightFacet/invalid-offer-receiver`). On the sell side the proxy is the seller and always names itself as receiver.
+If a sell offer named the ALMProxy as `receiverIfMakerIsSeller`, the proxy would pay the maker's proceeds to itself, netting the balance delta to the fee alone. The metered spend would not follow the delta down, since the take still reports the gross, but the facet rejects such offers outright (`MidnightFacet/invalid-offer-receiver`). On the sell side the proxy is the seller and always names itself as receiver.
 
 ### Socialized Loss Is a Ratchet
 
@@ -200,9 +200,11 @@ If a sell offer named the ALMProxy as `receiverIfMakerIsSeller`, the proxy would
 
 `continuousFee`, `lossFactor`, `settlementFee`, `updatePositionView`, `withdrawable` and `toMarket` are all read from the singleton at call time and can change between calls. Each one feeds a guard that fails closed (a tighter bound, a smaller cap, a revert), and none of them is used to derive a rate-limit key. The only key salt is the governance-supplied `marketId`. The facet reads no oracle: Midnight's collateral oracles are a protocol-side solvency assumption, not a pricing input here. Loan tokens are standard non-rebasing ERC-20s (USDC and USDS, 6 and 18 decimals), so a measured balance delta is exact.
 
-### Measured Deltas, Not Return Values
+### Measured Deltas and the Venue's Figure
 
-All three operations size their rate-limit accounting from observed balance changes on the ALMProxy, and the two take paths additionally reconcile the credit delta against the units requested, so neither the venue's return values nor a maker's callback can skew accounting.
+All three operations size their rate-limit accounting from observed balance changes on the ALMProxy rather than from the caller's arguments, and the two take paths additionally reconcile the credit delta against the units requested.
+
+On the buy the delta alone is not enough. Anything that moves loan token into the proxy while the take is in flight, a maker callback or a bridge delivery bundled ahead of it, shrinks the delta and would under-charge `LIMIT_MIDNIGHT_BUY` by that amount, since the approval is cleared and the fill still settles. The buy therefore charges the higher of the delta and the `buyerAssets` the take returns: an inbound transfer can no longer hide part of the spend, and a venue that over-reported would only over-charge our own meter. The exits need no such reconciliation, because an inbound transfer inflates a measured receipt, which over-charges the exit key, and the credit delta still has to match the units sold.
 
 ### No Standing Approvals
 
@@ -235,7 +237,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/buy-yield-too-low`        | facet       | an all-in offer price whose implied yield is under `minBuyYield` for the remaining term   |
 | `MidnightFacet/sell-yield-too-high`      | facet       | an offer whose net proceeds give up more than `maxSellYield` for the remaining term       |
 | `MidnightFacet/invalid-offer-receiver`   | facet       | a sell offer paying its proceeds to the ALMProxy                                          |
-| `MidnightFacet/max-assets-in-exceeded`   | facet       | measured spend above `maxAssetsIn`                                                        |
+| `MidnightFacet/max-assets-in-exceeded`   | facet       | metered spend above `maxAssetsIn`                                                         |
 | `MidnightFacet/min-assets-out-not-met`   | facet       | measured proceeds below `minAssetsOut`                                                    |
 | `MidnightFacet/credit-delta-mismatch`    | facet       | live credit did not move by exactly the units taken                                       |
 | `MidnightFacet/debt-not-zero`            | facet       | the venue reports debt against the ALMProxy after a trade                                 |
