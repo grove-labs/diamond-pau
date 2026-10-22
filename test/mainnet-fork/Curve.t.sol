@@ -19,6 +19,8 @@ interface IERC20Like {
 
 interface ICurvePoolLike {
 
+    function balances(uint256 index) external view returns (uint256);
+
     function calc_token_amount(uint256[] memory amounts, bool is_deposit) external view returns (uint256);
 
     function get_virtual_price() external view returns (uint256);
@@ -406,6 +408,41 @@ contract MainnetController_Curve_AddLiquidity_Tests is Curve_TestBase {
         // An imbalance requiring a swapping in of USDC should have reduced the swap rate limit.
         assertEq(rateLimits.getCurrentRateLimit(curveSwapUSDCKey), 1_000_000e6 - usdcSwappedIn);
         assertEq(rateLimits.getCurrentRateLimit(curveSwapUSDTKey), 1_000_000e6);
+    }
+
+    function test_addLiquidityCurve_zeroResultingBalance() external {
+        vm.startPrank(SPARK_PROXY);
+        rateLimits.setRateLimitData(curveAggregateDepositKey, 3_000_000e18, uint256(2_000_000e18) / 1 days);
+        rateLimits.setRateLimitData(curveDepositUSDCKey,      2_000_000e6,  uint256(2_000_000e6) / 1 days);
+        rateLimits.setRateLimitData(curveDepositUSDTKey,      2_000_000e6,  uint256(2_000_000e6) / 1 days);
+        rateLimits.setRateLimitData(curveSwapUSDCKey,         2_000_000e6,  uint256(2_000_000e6) / 1 days);
+        rateLimits.setRateLimitData(curveSwapUSDTKey,         2_000_000e6,  uint256(2_000_000e6) / 1 days);
+        vm.stopPrank();
+
+        // An empty USDC reserve makes the shares worth no USDC, so none of the input was deposited.
+        vm.mockCall(
+            CURVE_POOL,
+            abi.encodeWithSelector(ICurvePoolLike.balances.selector, 0),
+            abi.encode(0)
+        );
+
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = 1_000_000e6;
+        amounts[1] = 1_000_000e6;
+
+        vm.prank(allocator);
+        mainnetController.curve_addLiquidity(CURVE_POOL, amounts, 1_950_000e18);
+
+        uint256 usdtSwappedOut = 535_013.847298e6;
+        uint256 usdtDeposited  = 1_000_000e6 + usdtSwappedOut;
+
+        assertEq(rateLimits.getCurrentRateLimit(curveAggregateDepositKey), 3_000_000e18 - usdtDeposited * 1e12);
+
+        assertEq(rateLimits.getCurrentRateLimit(curveDepositUSDCKey), 2_000_000e6);
+        assertEq(rateLimits.getCurrentRateLimit(curveDepositUSDTKey), 2_000_000e6 - usdtDeposited);
+
+        assertEq(rateLimits.getCurrentRateLimit(curveSwapUSDCKey), 2_000_000e6 - 1_000_000e6);
+        assertEq(rateLimits.getCurrentRateLimit(curveSwapUSDTKey), 2_000_000e6);
     }
 
     function testFuzz_addLiquidityCurve_swapRateLimit(uint256 usdcAmount, uint256 usdtAmount) external {
