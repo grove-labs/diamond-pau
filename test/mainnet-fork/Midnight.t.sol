@@ -73,6 +73,7 @@ interface IMidnightLike {
     function debt(bytes32 id, address user) external view returns (uint128);
     function withdrawable(bytes32 id) external view returns (uint128);
     function lossFactor(bytes32 id) external view returns (uint128);
+    function tickSpacing(bytes32 id) external view returns (uint8);
     function continuousFee(bytes32 id) external view returns (uint32);
     function settlementFee(bytes32 id, uint256 timeToMaturity) external view returns (uint256);
 
@@ -1696,6 +1697,26 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
         assertEq(midnight.debt(marketId, maker),             0);
     }
 
+    // The taker path never names an operator on the venue, so nothing outside the proxy can move
+    // the position it holds, and no approval outlives a fill.
+    function test_midnight_usdc_proxyAuthorizesNobody() external {
+        uint256 sold = seedUnits / 2;
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _sell(_offer(true, TICK_99, sold), sold, 1);
+        _repay(sold);
+        _redeem(sold, 1);
+
+        assertFalse(midnight.isAuthorized(address(almProxy), address(mainnetController)));
+        assertFalse(midnight.isAuthorized(address(almProxy), allocator));
+        assertFalse(midnight.isAuthorized(address(almProxy), Ethereum.SPARK_PROXY));
+        assertFalse(midnight.isAuthorized(address(almProxy), maker));
+        assertFalse(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
+        assertFalse(midnight.isAuthorized(address(almProxy), MIDNIGHT));
+
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+    }
+
     // Every key is drawn below its ceiling first, so a leg that touched another's key could not
     // hide the write behind `maxAmount`.
     function test_midnight_usdc_eachLegSpendsOnlyItsOwnKey() external {
@@ -1944,6 +1965,130 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit - units);
+    }
+
+}
+
+// The same flow against a market the live singleton already holds, so the term, tick spacing and
+// fees the facet is bounded by are the market's own rather than the fixture's.
+contract MainnetController_Midnight_LiveMarket_Tests is Midnight_TestBase {
+
+    uint256 internal liveUnits;
+
+    function setUp() public override {
+        super.setUp();
+
+        Market memory live = midnight.toMarket(LIVE_MARKET_ID_3);
+
+        assertEq(MidnightIdLib.toId(live), LIVE_MARKET_ID_3);
+        assertEq(live.loanToken,           address(loanToken));
+        assertGt(live.maturity,            block.timestamp);
+
+        // Assigned field by field because solc cannot copy an array of structs into storage.
+        delete market.collateralParams;
+
+        market.chainId        = live.chainId;
+        market.midnight       = live.midnight;
+        market.loanToken      = live.loanToken;
+        market.maturity       = live.maturity;
+        market.rcfThreshold   = live.rcfThreshold;
+        market.enterGate      = live.enterGate;
+        market.liquidatorGate = live.liquidatorGate;
+
+        for (uint256 i; i < live.collateralParams.length; i++) {
+            market.collateralParams.push(live.collateralParams[i]);
+        }
+
+        marketId  = LIVE_MARKET_ID_3;
+        liveUnits = 100_000 * loanUnit;
+
+        // The maker collateralizes in the live market's own first tier so it can sell units into it.
+        IERC20 collateral = IERC20(live.collateralParams[0].token);
+
+        uint256 collateralSupply = 1_000_000 * 10 ** collateral.decimals();
+
+        deal(address(collateral), maker, collateralSupply);
+
+        vm.startPrank(maker);
+        collateral.approve(MIDNIGHT, type(uint256).max);
+        midnight.supplyCollateral(market, 0, collateralSupply, maker);
+        vm.stopPrank();
+
+        // This market's first collateral tier is the loan token itself, so supplying it drew the
+        // maker's trading balance down.
+        deal(address(loanToken), maker, 100_000_000 * loanUnit);
+
+        buyKey    = mainnetController.midnight_getBuyRateLimitKey(marketId);
+        sellKey   = mainnetController.midnight_getSellRateLimitKey(marketId);
+        redeemKey = mainnetController.midnight_getRedeemRateLimitKey(marketId);
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+
+        rateLimits.setRateLimitData(buyKey,    rateLimit, rateLimit / 1 days);
+        rateLimits.setRateLimitData(sellKey,   rateLimit, rateLimit / 1 days);
+        rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
+
+        mainnetController.midnight_setMarketConfig(
+            marketId,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0
+        );
+
+        vm.stopPrank();
+    }
+
+    function test_midnight_liveMarket_boundToTheVenue() external view {
+        assertEq(uint256(midnight.tickSpacing(marketId)), 4);  // the fixture's ticks divide by it
+        assertEq(midnight.lossFactor(marketId),           0);
+        assertEq(market.midnight,                         MIDNIGHT);
+        assertEq(market.chainId,                          1);
+    }
+
+    function test_midnight_liveMarket_roundTrip() external {
+        uint256 spent         = _buyerAssets(liveUnits, TICK_98);
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+        uint256 creditBefore  = _credit();
+
+        assertEq(_buy(_offer(false, TICK_98, liveUnits), liveUnits, spent), spent);
+
+        assertEq(_credit(),                              creditBefore + liveUnits);
+        assertEq(midnight.debt(marketId, maker),         liveUnits);
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - spent);
+        assertLt(spent,                                  liveUnits);
+
+        // This market matures twelve days out, so the exit yield ceiling is what binds rather than
+        // the tick floor: the first tick that clears it is well above the one the fixture sells at.
+        uint256 floor = _sellFloor(MAX_SELL_YIELD) + _settlementFee();
+        uint16  tick  = TICK_99;
+
+        while (MidnightTickLib.tickToPrice(tick) < floor) tick += midnight.tickSpacing(marketId);
+
+        assertGt(tick, TICK_99);
+
+        uint256 sold     = liveUnits / 2;
+        uint256 proceeds = _sellerAssets(sold, tick);
+
+        assertEq(_sell(_offer(true, tick, sold), sold, proceeds), proceeds);
+
+        assertEq(_credit(), creditBefore + liveUnits - sold);
+
+        uint256 withdrawableBefore = midnight.withdrawable(marketId);
+
+        _repay(liveUnits - sold);
+
+        assertEq(midnight.withdrawable(marketId), withdrawableBefore + liveUnits - sold);
+        assertEq(_redeem(liveUnits - sold, liveUnits - sold), liveUnits - sold);
+
+        assertEq(_credit(),                                  creditBefore);
+        assertEq(midnight.debt(marketId, address(almProxy)), 0);
+        assertEq(
+            loanToken.balanceOf(address(almProxy)),
+            balanceBefore - spent + proceeds + liveUnits - sold
+        );
     }
 
 }
