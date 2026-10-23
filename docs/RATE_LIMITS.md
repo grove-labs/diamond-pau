@@ -125,11 +125,13 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 
 **Decision:** No Midnight operation restores (increases) a Midnight rate limit.
 
-| Operation | Rate Limit Behavior                                   |
-| --------- | ----------------------------------------------------- |
-| `buy`     | Decreases `LIMIT_MIDNIGHT_BUY` by assets spent        |
-| `sell`    | Decreases `LIMIT_MIDNIGHT_SELL` by assets received    |
-| `redeem`  | Decreases `LIMIT_MIDNIGHT_REDEEM` by assets withdrawn |
+| Operation              | Rate Limit Behavior                                           |
+| ---------------------- | ------------------------------------------------------------- |
+| `buy`                  | Decreases `LIMIT_MIDNIGHT_BUY` by assets spent                |
+| `sell`                 | Decreases `LIMIT_MIDNIGHT_SELL` by assets received            |
+| `redeem`               | Decreases `LIMIT_MIDNIGHT_REDEEM` by assets withdrawn         |
+| `fundFill`, buying     | Decreases `LIMIT_MIDNIGHT_BUY` by assets paid to the strategy |
+| `fundFill`, not buying | Decreases `LIMIT_MIDNIGHT_SELL` by assets the fill reports    |
 
 **Rationale:**
 
@@ -137,6 +139,8 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 - Credit is a fixed-term claim, and selling or redeeming it returns assets the buy limit already accounted for; restoring that room would let a single approved budget be recycled repeatedly within one refill period
 - Entry room returns only from the buy key's refill slope, which bounds exposure per period however often positions are cycled
 - Keys are per-market (`keccak256(abi.encode(LIMIT_MIDNIGHT_BUY, marketId))`), so each market is budgeted separately and a drained market cannot borrow room from another
+- Maker fills share the taker keys rather than carrying a budget of their own, so one per-market budget per direction bounds both: a maker entry spends entry room, and a maker exit burns exit room without returning any
+- A maker exit settles in a third party's transaction, so an exit key sized too tightly reverts the taker's fill rather than a call of ours; `cancelOfferGroup` retires the book instead of leaving it failing
 
 ## Gate-Check Pattern
 
