@@ -5,7 +5,7 @@ import { IERC20 } from "../../lib/openzeppelin-contracts/contracts/token/ERC20/I
 
 import { IMidnightController } from "../../src/facets/midnight/IMidnightController.sol";
 
-import { Market } from "../../src/facets/midnight/MidnightUtils.sol";
+import { Market } from "../../src/facets/midnight/MidnightInterfaces.sol";
 
 // Stub for the audited funding strategy, which lives outside this repo. It holds none of that
 // contract's guards, so it proves only that the facet's own fundFill ladder holds.

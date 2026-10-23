@@ -2,9 +2,7 @@
 pragma solidity ^0.8.34;
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
-import { Offer } from "./MidnightUtils.sol";
-
-import { Market } from "./MidnightUtils.sol";
+import { Market, Offer } from "./MidnightInterfaces.sol";
 
 interface IMidnightController {
 

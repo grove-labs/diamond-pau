@@ -3,29 +3,35 @@ pragma solidity ^0.8.34;
 
 import { Test } from "../../lib/forge-std/src/Test.sol";
 
+import { CollateralParams, Market } from "../../src/facets/midnight/MidnightInterfaces.sol";
+
+import { MidnightIdLib } from "../../src/facets/midnight/MidnightIdLib.sol";
+
 import {
-    CollateralParams,
-    Market,
-    MidnightUtils
-} from "../../src/facets/midnight/MidnightUtils.sol";
+    MAX_TICK,
+    MidnightTickLib,
+    PRICE_ROUNDING_STEP
+} from "../../src/facets/midnight/MidnightTickLib.sol";
+
+import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
 // Wrapper contract to expose library internals for testing
 contract MidnightUtilsHarness {
 
     function toId(Market memory market) external pure returns (bytes32) {
-        return MidnightUtils.toId(market);
+        return MidnightIdLib.toId(market);
     }
 
     function tickToPrice(uint256 tick) external pure returns (uint256) {
-        return MidnightUtils.tickToPrice(tick);
+        return MidnightTickLib.tickToPrice(tick);
     }
 
     function wExp(int256 x) external pure returns (uint256) {
-        return MidnightUtils.wExp(x);
+        return MidnightTickLib.wExp(x);
     }
 
     function divHalfDownUnchecked(uint256 x, uint256 d) external pure returns (uint256) {
-        return MidnightUtils.divHalfDownUnchecked(x, d);
+        return MidnightTickLib.divHalfDownUnchecked(x, d);
     }
 
     function maxBuyPrice(uint256 minYield, uint256 timeToMaturity, uint256 continuousFee)
@@ -70,8 +76,8 @@ contract MidnightUtils_TickToPrice_Tests is MidnightUtilsTestBase {
     // The grid is centered on a price of one half at the middle tick and capped at par.
     function test_tickToPrice_anchors() external view {
         assertEq(harness.tickToPrice(0),                      0);
-        assertEq(harness.tickToPrice(MidnightUtils.MAX_TICK / 2), 0.5e18);
-        assertEq(harness.tickToPrice(MidnightUtils.MAX_TICK),     1e18);
+        assertEq(harness.tickToPrice(MAX_TICK / 2), 0.5e18);
+        assertEq(harness.tickToPrice(MAX_TICK),     1e18);
     }
 
     // Pinned against an independent model of upstream's algorithm: every 250th tick, the midpoint,
@@ -123,26 +129,26 @@ contract MidnightUtils_TickToPrice_Tests is MidnightUtilsTestBase {
     }
 
     function test_tickToPrice_outOfRange() external {
-        vm.expectRevert("MidnightFacet/tick-out-of-range");
-        harness.tickToPrice(MidnightUtils.MAX_TICK + 1);
+        vm.expectRevert("MidnightTickLib/tick-out-of-range");
+        harness.tickToPrice(MAX_TICK + 1);
     }
 
     function test_tickToPrice_roundedToStep() external view {
-        for (uint256 tick = 0; tick <= MidnightUtils.MAX_TICK; tick += 97) {
-            assertEq(harness.tickToPrice(tick) % MidnightUtils.PRICE_ROUNDING_STEP, 0);
+        for (uint256 tick = 0; tick <= MAX_TICK; tick += 97) {
+            assertEq(harness.tickToPrice(tick) % PRICE_ROUNDING_STEP, 0);
         }
     }
 
     // Tick bounds are enforced in price space, which only works if the conversion never
     // reverses order: a higher tick must never map to a lower price.
     function testFuzz_tickToPrice_monotonic(uint256 tick) external view {
-        tick = bound(tick, 1, MidnightUtils.MAX_TICK);
+        tick = bound(tick, 1, MAX_TICK);
 
         assertGe(harness.tickToPrice(tick), harness.tickToPrice(tick - 1));
     }
 
     function testFuzz_tickToPrice_atMostPar(uint256 tick) external view {
-        tick = bound(tick, 0, MidnightUtils.MAX_TICK);
+        tick = bound(tick, 0, MAX_TICK);
 
         assertLe(harness.tickToPrice(tick), 1e18);
     }
@@ -498,7 +504,7 @@ contract MidnightUtils_ToId_Tests is MidnightUtilsTestBase {
             uint8(0xff),
             market.midnight,
             uint256(0),
-            keccak256(abi.encodePacked(MidnightUtils.SSTORE2_PREFIX, abi.encode(market)))
+            keccak256(abi.encodePacked(MidnightIdLib.SSTORE2_PREFIX, abi.encode(market)))
         ));
 
         assertEq(harness.toId(market), expected);

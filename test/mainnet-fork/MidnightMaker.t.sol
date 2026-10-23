@@ -3,7 +3,9 @@ pragma solidity ^0.8.34;
 
 import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
-import { Market, MidnightUtils, Offer } from "../../src/facets/midnight/MidnightUtils.sol";
+import { Market, Offer } from "../../src/facets/midnight/MidnightInterfaces.sol";
+
+import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
 import { MockFundingStrategy } from "../mocks/MockFundingStrategy.sol";
 

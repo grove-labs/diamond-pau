@@ -3,7 +3,7 @@ pragma solidity ^0.8.34;
 
 import { IFacet } from "../IFacet.sol";
 
-import { Market, Offer } from "./MidnightUtils.sol";
+import { Market, Offer } from "./MidnightInterfaces.sol";
 
 /**
  * @title  IMidnightFacet

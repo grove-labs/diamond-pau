@@ -11,9 +11,15 @@ import { IRateLimits }             from "../../../src/interfaces/IRateLimits.sol
 import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
+import { MidnightIdLib } from "../../../src/facets/midnight/MidnightIdLib.sol";
+import { MAX_TICK, MidnightTickLib } from "../../../src/facets/midnight/MidnightTickLib.sol";
 import { MidnightUtils } from "../../../src/facets/midnight/MidnightUtils.sol";
 
-import { CollateralParams, Market, Offer } from "../../../src/facets/midnight/MidnightUtils.sol";
+import {
+    CollateralParams,
+    Market,
+    Offer
+} from "../../../src/facets/midnight/MidnightInterfaces.sol";
 
 import { MockERC20Decimals } from "../../mocks/Mocks.sol";
 
@@ -385,7 +391,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function _marketId() internal view returns (bytes32) {
-        return MidnightUtils.toId(_market());
+        return MidnightIdLib.toId(_market());
     }
 
     function _mockMarketExists() internal {
@@ -476,7 +482,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
     // Mirrors fundFill's bound from config alone, so a live market rate cannot satisfy it.
     function _maxFillPrice() internal view returns (uint256 bound) {
-        bound = MidnightUtils.tickToPrice(TICK_99);
+        bound = MidnightTickLib.tickToPrice(TICK_99);
 
         uint256 yieldBound = MidnightUtils.maxBuyPrice(
             MIN_BUY_YIELD,
@@ -493,7 +499,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
     // Same shape on the exit side, and on the unencumbered basis a ratifier can commit to.
     function _minFillPrice() internal view returns (uint256 bound) {
-        bound = MidnightUtils.tickToPrice(TICK_98);
+        bound = MidnightTickLib.tickToPrice(TICK_98);
 
         uint256 yieldBound = MidnightUtils.minSellPrice(
             MAX_SELL_YIELD,
@@ -567,7 +573,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function test_setMarketConfig_maxBuyTickOutOfBoundsBoundary() external {
-        uint16 maxTick = uint16(MidnightUtils.MAX_TICK);
+        uint16 maxTick = uint16(MAX_TICK);
 
         vm.expectRevert("MidnightFacet/max-buy-tick-oob");
         vm.prank(admin);
@@ -584,7 +590,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function test_setMarketConfig_minSellTickOutOfBoundsBoundary() external {
-        uint16 maxTick = uint16(MidnightUtils.MAX_TICK);
+        uint16 maxTick = uint16(MAX_TICK);
 
         vm.expectRevert("MidnightFacet/min-sell-tick-oob");
         vm.prank(admin);
@@ -1188,7 +1194,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             0
         );
 
-        assertGt(floorPrice, MidnightUtils.tickToPrice(1));
+        assertGt(floorPrice, MidnightTickLib.tickToPrice(1));
 
         uint256 honest =
             (FILL_UNITS * floorPrice + MidnightUtils.WAD - 1) / MidnightUtils.WAD;
@@ -1613,7 +1619,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.warp(marketMaturity + 1 days);
 
-        uint256 ceiling = FILL_UNITS * MidnightUtils.tickToPrice(TICK_99) / MidnightUtils.WAD;
+        uint256 ceiling = FILL_UNITS * MidnightTickLib.tickToPrice(TICK_99) / MidnightUtils.WAD;
 
         vm.expectRevert("MidnightFacet/fill-price-too-high");
         vm.prank(strategy);
