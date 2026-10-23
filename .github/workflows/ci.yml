@@ -71,14 +71,16 @@ jobs:
             # to include coverage in all directories, comment out this step. Note that because this
             # filtering applies to the lcov file, the summary table generated in the previous step will
             # still include all files and directories.
-            # The `--rc lcov_branch_coverage=1` part keeps branch info in the filtered report, since lcov
-            # defaults to removing branch info.
-            # The `--ignore-errors inconsistent` part is needed because `forge coverage` records only the
-            # taken side of a one-sided branch, which lcov 2.4+ rejects when that side is never taken.
+            # The `--rc branch_coverage=1` part keeps branch info in the filtered report, since lcov
+            # defaults to removing branch info. Its old name warns in lcov 2.4 and errors in 2.6.
+            # The `--ignore-errors inconsistent` part covers `forge coverage` recording only the taken
+            # side of a one-sided branch, which lcov 2.4+ rejects when no test takes it.
             - name: Filter directories
               run: |
                   sudo apt update && sudo apt install -y lcov
-                  lcov --remove lcov.info 'test/*' --output-file lcov.info --rc lcov_branch_coverage=1 --ignore-errors inconsistent
+                  lcov --remove lcov.info 'test/*' --output-file lcov.info --rc branch_coverage=1 --ignore-errors inconsistent
+                  # The report action runs genhtml itself and accepts no flags, so relax the check globally.
+                  printf 'check_data_consistency = 0\n' >> ~/.lcovrc
 
             # This step posts a detailed coverage report as a comment and deletes previous comments on
             # each push. The below step is used to fail coverage if the specified coverage threshold is
