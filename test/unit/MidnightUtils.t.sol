@@ -471,6 +471,16 @@ contract MidnightUtils_ContinuousFee_Tests is MidnightUtilsTestBase {
         assertLt(named - charged, MidnightUtils.YEAR);
     }
 
+    // Flooring must not make a higher named rate buy a lower ceiling.
+    function testFuzz_continuousFeePerSecond_nonDecreasing(uint16 cbpsPerYear) external view {
+        cbpsPerYear = uint16(bound(cbpsPerYear, 1, type(uint16).max));
+
+        assertGe(
+            harness.continuousFeePerSecond(cbpsPerYear),
+            harness.continuousFeePerSecond(cbpsPerYear - 1)
+        );
+    }
+
 }
 
 contract MidnightUtils_ToId_Tests is MidnightUtilsTestBase {
