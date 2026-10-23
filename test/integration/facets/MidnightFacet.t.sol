@@ -9,7 +9,7 @@ import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableInte
 import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
-import { MidnightUtils } from "../../../src/facets/midnight/MidnightUtils.sol";
+import { MAX_TICK } from "../../../src/facets/midnight/MidnightTickLib.sol";
 
 import { Integration_TestBase } from "../TestBase.t.sol";
 
@@ -190,7 +190,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function test_setMarketConfig_maxBuyTickOutOfBoundsBoundary() external {
-        uint16 maxTick = uint16(MidnightUtils.MAX_TICK);
+        uint16 maxTick = uint16(MAX_TICK);
 
         vm.expectRevert("MidnightFacet/max-buy-tick-oob");
         vm.prank(admin);
@@ -207,7 +207,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     function test_setMarketConfig_minSellTickOutOfBoundsBoundary() external {
-        uint16 maxTick = uint16(MidnightUtils.MAX_TICK);
+        uint16 maxTick = uint16(MAX_TICK);
 
         vm.expectRevert("MidnightFacet/min-sell-tick-oob");
         vm.prank(admin);

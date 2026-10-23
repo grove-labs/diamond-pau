@@ -6,7 +6,7 @@ Protocol behavior described here was checked against the Morpho Midnight codebas
 
 ## Overview
 
-Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a `Market` struct (loan token, maturity, collateral tiers with oracle and LLTV, optional gates) and is identified by its `id`: the full 32-byte CREATE2 hash `keccak256(0xff ‖ market.midnight ‖ 0 ‖ keccak256(SSTORE2_PREFIX ‖ abi.encode(market)))`, whose low 20 bytes are the address the singleton stores the encoded config at. `MidnightUtils.toId` computes it; an address-derivation helper would return only the truncated 20 bytes and never match. Inside a market every position is denominated in **units**: one unit is a claim on one loan token at maturity.
+Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a `Market` struct (loan token, maturity, collateral tiers with oracle and LLTV, optional gates) and is identified by its `id`: the full 32-byte CREATE2 hash `keccak256(0xff ‖ market.midnight ‖ 0 ‖ keccak256(SSTORE2_PREFIX ‖ abi.encode(market)))`, whose low 20 bytes are the address the singleton stores the encoded config at. `MidnightIdLib.toId` computes it; an address-derivation helper would return only the truncated 20 bytes and never match. Inside a market every position is denominated in **units**: one unit is a claim on one loan token at maturity.
 
 - A **borrower** supplies collateral and **sells** units: it receives the discounted price now and owes one loan token per unit at maturity (debt).
 - A **lender** **buys** units at a discount and holds credit. At or after maturity, once borrowers have repaid, credit is **redeemed** at par.
@@ -17,7 +17,7 @@ Midnight is a **singleton, fixed-term, fixed-rate credit market**. A market is a
 
 The `MidnightFacet` is a **taker-only, lender-only** integration: the ALMProxy buys units from makers' sell offers, sells them back into makers' buy offers before maturity, and redeems them at par once repayments land. It never makes offers, never supplies collateral, never borrows, never liquidates, and never holds debt. Every external call is pinned to a single immutable Midnight singleton.
 
-Structs and the tick math are vendored verbatim into `MidnightUtils.sol` (from `src/interfaces/IMidnight.sol` and `src/libraries/{TickLib,IdLib,ConstantsLib}.sol` at the pinned commit) because the market id is a hash over the struct layout: any drift would silently change every id. The protocol repo is not importable as a Foundry library and only these few definitions are needed, so there is no `lib/` submodule, and the vendored `unchecked` blocks are kept exactly as upstream wrote them for the same parity reason. The mainnet-fork suite pins parity by recomputing three live market ids.
+Structs and the tick and id math are vendored verbatim, one file per upstream source: `MidnightInterfaces.sol` from `src/interfaces/IMidnight.sol`, `MidnightTickLib.sol` from `src/libraries/TickLib.sol`, and `MidnightIdLib.sol` from `src/libraries/IdLib.sol`, each naming its upstream file and the pinned commit in a header. They are vendored because the market id is a hash over the struct layout: any drift would silently change every id. The protocol repo is not importable as a Foundry library and only these few definitions are needed, so there is no `lib/` submodule, and the vendored `unchecked` blocks are kept exactly as upstream wrote them for the same parity reason. `MidnightUtils.sol` holds the facet's own yield math, which has no upstream counterpart, alongside a mirror of Midnight's continuous-fee ceiling. The mainnet-fork suite pins parity by recomputing three live market ids.
 
 ## Token Flow
 
@@ -245,7 +245,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/min-sell-tick-oob`        | facet       | `setMarketConfig` with `minSellTick` zero or `> 6744`                                     |
 | `MidnightFacet/max-continuous-fee-oob`   | facet       | `setMarketConfig` with `maxContinuousFee` above Midnight's ceiling                        |
 | `MidnightFacet/max-sell-yield-not-set`   | facet       | `setMarketConfig` with a zero `maxSellYield`                                               |
-| `MidnightFacet/tick-out-of-range`        | facet       | an offer tick above `6744`                                                                |
+| `MidnightTickLib/tick-out-of-range`      | facet       | an offer tick above `6744`                                                                |
 | `MidnightFacet/zero-midnight`            | facet       | constructor with a zero singleton address                                                 |
 | `RateLimits/rate-limit-exceeded`         | rate limits | trade exceeding the configured limit                                                      |
 | `RateLimits/zero-maxAmount`              | rate limits | key unconfigured                                                                          |

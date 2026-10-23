@@ -12,9 +12,14 @@ import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
 import {
     CollateralParams,
     Market,
-    MidnightUtils,
     Offer
-} from "../../src/facets/midnight/MidnightUtils.sol";
+} from "../../src/facets/midnight/MidnightInterfaces.sol";
+
+import { MidnightIdLib } from "../../src/facets/midnight/MidnightIdLib.sol";
+
+import { MAX_TICK, MidnightTickLib } from "../../src/facets/midnight/MidnightTickLib.sol";
+
+import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
 import { ForkTestBase } from "./ForkTestBase.t.sol";
 
@@ -502,19 +507,19 @@ abstract contract Midnight_TestBase is ForkTestBase {
     // the taker receives the tick price less the fee rounded down and the maker pays the tick
     // price rounded down. The fee is the difference and stays in the singleton.
     function _buyerAssets(uint256 units, uint256 tick) internal view returns (uint256) {
-        return _divUp(units * (MidnightUtils.tickToPrice(tick) + _settlementFee()), 1e18);
+        return _divUp(units * (MidnightTickLib.tickToPrice(tick) + _settlementFee()), 1e18);
     }
 
     function _makerSellerAssets(uint256 units, uint256 tick) internal pure returns (uint256) {
-        return _divUp(units * MidnightUtils.tickToPrice(tick), 1e18);
+        return _divUp(units * MidnightTickLib.tickToPrice(tick), 1e18);
     }
 
     function _sellerAssets(uint256 units, uint256 tick) internal view returns (uint256) {
-        return units * (MidnightUtils.tickToPrice(tick) - _settlementFee()) / 1e18;
+        return units * (MidnightTickLib.tickToPrice(tick) - _settlementFee()) / 1e18;
     }
 
     function _makerBuyerAssets(uint256 units, uint256 tick) internal pure returns (uint256) {
-        return units * MidnightUtils.tickToPrice(tick) / 1e18;
+        return units * MidnightTickLib.tickToPrice(tick) / 1e18;
     }
 
     function _divUp(uint256 x, uint256 y) internal pure returns (uint256) {
@@ -528,9 +533,9 @@ contract MainnetController_Midnight_Utils_Tests is Midnight_TestBase {
     // The vendored structs must hash to the same id the singleton derives, or every market
     // check in the facet is silently wrong. The live ids are the oracle for the struct layout.
     function test_toId_matchesLiveMarkets() public view {
-        assertEq(MidnightUtils.toId(midnight.toMarket(LIVE_MARKET_ID_1)), LIVE_MARKET_ID_1);
-        assertEq(MidnightUtils.toId(midnight.toMarket(LIVE_MARKET_ID_2)), LIVE_MARKET_ID_2);
-        assertEq(MidnightUtils.toId(midnight.toMarket(LIVE_MARKET_ID_3)), LIVE_MARKET_ID_3);
+        assertEq(MidnightIdLib.toId(midnight.toMarket(LIVE_MARKET_ID_1)), LIVE_MARKET_ID_1);
+        assertEq(MidnightIdLib.toId(midnight.toMarket(LIVE_MARKET_ID_2)), LIVE_MARKET_ID_2);
+        assertEq(MidnightIdLib.toId(midnight.toMarket(LIVE_MARKET_ID_3)), LIVE_MARKET_ID_3);
     }
 
     function test_toId_liveMarketsBindToVenue() public view {
@@ -539,7 +544,7 @@ contract MainnetController_Midnight_Utils_Tests is Midnight_TestBase {
     }
 
     function test_toId_matchesTestMarket() public view {
-        assertEq(MidnightUtils.toId(market), marketId);
+        assertEq(MidnightIdLib.toId(market), marketId);
     }
 
     function test_midnight() public view {
@@ -651,7 +656,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         Offer memory offer = _offer(false, TICK_98, seedUnits);
         offer.market.maturity += 1 days;
 
-        marketId = MidnightUtils.toId(offer.market);
+        marketId = MidnightIdLib.toId(offer.market);
 
         _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
@@ -764,7 +769,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _setSettlementFee(SETTLEMENT_FEE);
 
         uint16 tick = 0;
-        while (MidnightUtils.tickToPrice(tick) < SETTLEMENT_FEE) tick++;
+        while (MidnightTickLib.tickToPrice(tick) < SETTLEMENT_FEE) tick++;
 
         _setConfig(tick - 1, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
@@ -783,10 +788,10 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
     function test_buyMidnight_usdc_buyPriceTooHighBoundary() external {
         _setSettlementFee(SETTLEMENT_FEE);
 
-        uint256 bound = MidnightUtils.tickToPrice(TICK_99) - SETTLEMENT_FEE;
+        uint256 bound = MidnightTickLib.tickToPrice(TICK_99) - SETTLEMENT_FEE;
 
         uint256 tick = TICK_99;
-        while (MidnightUtils.tickToPrice(tick) > bound) tick -= 4;
+        while (MidnightTickLib.tickToPrice(tick) > bound) tick -= 4;
 
         Offer memory offer = _offer(false, tick + 4, seedUnits);
 
@@ -806,7 +811,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
             MidnightUtils.maxBuyPrice(4_00, _timeToMaturity(), 0) - SETTLEMENT_FEE;
 
         uint256 tick = TICK_99;
-        while (MidnightUtils.tickToPrice(tick) > bound) tick -= 4;
+        while (MidnightTickLib.tickToPrice(tick) > bound) tick -= 4;
 
         Offer memory offer = _offer(false, tick + 4, seedUnits);
 
@@ -1048,10 +1053,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_usdc_sellPriceTooLowBoundary() external {
         _setSettlementFee(SETTLEMENT_FEE);
 
-        uint256 bound = MidnightUtils.tickToPrice(TICK_98) + SETTLEMENT_FEE;
+        uint256 bound = MidnightTickLib.tickToPrice(TICK_98) + SETTLEMENT_FEE;
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < bound) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < bound) tick += 4;
 
         Offer memory offer = _offer(true, tick - 4, seedUnits);
 
@@ -1070,7 +1075,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         uint256 bound = _sellFloor(2_00) + SETTLEMENT_FEE;
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < bound) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < bound) tick += 4;
 
         Offer memory offer = _offer(true, tick - 4, seedUnits);
 
@@ -1102,10 +1107,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertLt(marketRateFloor, positionFloor);
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < marketRateFloor) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < marketRateFloor) tick += 4;
 
         // Clears the market-rate floor but not the position's own, so only the latter rejects it.
-        assertLt(MidnightUtils.tickToPrice(tick), positionFloor);
+        assertLt(MidnightTickLib.tickToPrice(tick), positionFloor);
 
         Offer memory offer = _offer(true, tick, seedUnits);
 
@@ -1141,10 +1146,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertLt(positionFloor, unencumberedFloor);
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < positionFloor) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < positionFloor) tick += 4;
 
         // A floor tracking the market's new rate of zero would have refused this price.
-        assertLt(MidnightUtils.tickToPrice(tick), unencumberedFloor);
+        assertLt(MidnightTickLib.tickToPrice(tick), unencumberedFloor);
 
         uint256 units = _credit();
 
@@ -1173,10 +1178,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertLt(positionFloor, unencumberedFloor);
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < positionFloor) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < positionFloor) tick += 4;
 
         // A floor tracking the market's new rate of zero would have refused this price.
-        assertLt(MidnightUtils.tickToPrice(tick), unencumberedFloor);
+        assertLt(MidnightTickLib.tickToPrice(tick), unencumberedFloor);
 
         uint256 units = _credit();
 
@@ -1206,10 +1211,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertLt(blendedFloor,    unencumberedFloor);
 
         uint256 tick = TICK_98;
-        while (MidnightUtils.tickToPrice(tick) < marketRateFloor) tick += 4;
+        while (MidnightTickLib.tickToPrice(tick) < marketRateFloor) tick += 4;
 
         // Clears the floor the market's live rate would set, but not the blended one.
-        assertLt(MidnightUtils.tickToPrice(tick), blendedFloor);
+        assertLt(MidnightTickLib.tickToPrice(tick), blendedFloor);
 
         Offer memory offer = _offer(true, tick, seedUnits);
 
@@ -1258,7 +1263,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         vm.warp(market.maturity + 1);
 
-        Offer memory atPar = _offer(true, MidnightUtils.MAX_TICK, seedUnits);
+        Offer memory atPar = _offer(true, MAX_TICK, seedUnits);
 
         vm.expectRevert("MidnightFacet/sell-yield-too-high");
         _sell(atPar, seedUnits, 1);
@@ -1301,10 +1306,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/sell-yield-too-high");
         _sell(discounted, seedUnits, 1);
 
-        uint256 expected = _sellerAssets(seedUnits, MidnightUtils.MAX_TICK);
+        uint256 expected = _sellerAssets(seedUnits, MAX_TICK);
 
         assertEq(
-            _sell(_offer(true, MidnightUtils.MAX_TICK, seedUnits), seedUnits, expected),
+            _sell(_offer(true, MAX_TICK, seedUnits), seedUnits, expected),
             expected
         );
 
@@ -1329,7 +1334,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertLt(_credit(), held);
 
         // Ask with the pre-decay figure; only what is left may be filled.
-        _sell(_offer(true, MidnightUtils.MAX_TICK, held), held, 1);
+        _sell(_offer(true, MAX_TICK, held), held, 1);
 
         assertEq(_credit(),                                  0);
         assertEq(midnight.debt(marketId, address(almProxy)), 0);

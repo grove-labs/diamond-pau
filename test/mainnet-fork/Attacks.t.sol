@@ -33,7 +33,7 @@ import { WEETH_TestBase }                    from "./WEETH.t.sol";
 
 import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
 
-import { Market, Offer } from "../../src/facets/midnight/MidnightUtils.sol";
+import { Market, Offer } from "../../src/facets/midnight/MidnightInterfaces.sol";
 
 import { IUniswapV3Facet } from "../../src/facets/uniswap-v3/IUniswapV3Facet.sol";
 

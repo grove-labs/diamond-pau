@@ -13,7 +13,13 @@ import { Facet } from "../Facet.sol";
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
 
-import { Market, MidnightUtils, Offer } from "./MidnightUtils.sol";
+import { Market, Offer } from "./MidnightInterfaces.sol";
+
+import { MidnightIdLib } from "./MidnightIdLib.sol";
+
+import { MAX_TICK, MidnightTickLib } from "./MidnightTickLib.sol";
+
+import { MidnightUtils } from "./MidnightUtils.sol";
 
 interface IMidnightLike {
 
@@ -141,11 +147,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         // Zero is meaningful: no maxBuyTick kills entries, no minSellTick means not onboarded.
-        require(maxBuyTick <= MidnightUtils.MAX_TICK, "MidnightFacet/max-buy-tick-oob");
-        require(
-            minSellTick != 0 && minSellTick <= MidnightUtils.MAX_TICK,
-            "MidnightFacet/min-sell-tick-oob"
-        );
+        require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
+        require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
         require(
             MidnightUtils.continuousFeePerSecond(maxContinuousFee)
                 <= MidnightUtils.MAX_CONTINUOUS_FEE,
@@ -218,11 +221,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // Scoped to free the price locals before the take; buy is at the stack limit.
         {
-            uint256 price = MidnightUtils.tickToPrice(offer.tick);
+            uint256 price = MidnightTickLib.tickToPrice(offer.tick);
 
             // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
             require(
-                price + ctx.settlementFee <= MidnightUtils.tickToPrice(config.maxBuyTick),
+                price + ctx.settlementFee <= MidnightTickLib.tickToPrice(config.maxBuyTick),
                 "MidnightFacet/buy-price-too-high"
             );
             require(
@@ -348,11 +351,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(units != 0, "MidnightFacet/no-credit-to-sell");
 
-        uint256 price = MidnightUtils.tickToPrice(offer.tick);
+        uint256 price = MidnightTickLib.tickToPrice(offer.tick);
 
         // The fee is taken out of the proceeds, so both floors bind on the gross price.
         require(
-            price >= MidnightUtils.tickToPrice(config.minSellTick) + ctx.settlementFee,
+            price >= MidnightTickLib.tickToPrice(config.minSellTick) + ctx.settlementFee,
             "MidnightFacet/sell-price-too-low"
         );
         require(
@@ -463,7 +466,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // This market comes from calldata and its maturity feeds the caller's price bounds, so both
         // the venue and the id are bound here, before anything is derived from it.
         require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
-        require(MidnightUtils.toId(market) == marketId, "MidnightFacet/market-mismatch");
+        require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
 
         ctx.proxy          = _getSharedControllerStorage().proxy;
         ctx.market         = market;
