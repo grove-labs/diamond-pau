@@ -70,6 +70,18 @@ See [Liquidity Operations](./LIQUIDITY_OPERATIONS.md) for OTC mechanics.
 
 **Security Node:** If a cancel key is set but its matching claim-cancel key is not, `cancel*Request` will succeed and `claimCancel*Request` will then revert. Because Centrifuge requests use `REQUEST_ID = 0`, no new deposit or redeem request can be submitted while a cancellation is pending, so the integration stays stuck until governance configures the missing claim-cancel key.
 
+### Midnight Integration
+
+**Trust Assumption:** The Midnight singleton is immutable and has no owner over positions or funds. Its `configurator` can enable collateral tiers, replace itself and appoint a `feeSetter`, a `feeClaimer` and a `tickSpacingSetter`; none of them can touch a lender's position or move its loan tokens. The facet is pinned to one singleton at construction, so repointing it takes a new facet and a spell.
+
+**Risk:** Lender losses are socialized. A liquidation that cannot cover a borrower's debt writes the shortfall down across every lender in that market through a monotone `lossFactor`, so an oracle failure on any collateral tier is a lender loss. `maxLossFactor` gates entry only; a position already held cannot be shielded from it.
+
+**Maximum Loss:** The credit outstanding in a market, if its collateral tiers fail and liquidations fall short of the debt. Entry is bounded per market by `LIMIT_MIDNIGHT_BUY`, which no exit restores.
+
+**External Audits:** Eleven reports under `morpho-org/midnight/audits/` at the pinned commit `70607569ac348e9880b512ffd3b574be55405932` (Spearbit, Cantina competition, Blackthorn, TrustSec, Stermi; 2026-04 through 2026-09), which is the code deployed as the mainnet singleton.
+
+See [Midnight Integration](./MIDNIGHT_INTEGRATION.md) for the facet's controls, price and fee rails, and failure modes.
+
 ---
 
 ## Governance and Emergency Controls

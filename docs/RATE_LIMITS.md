@@ -121,6 +121,23 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 - Pool dynamics are slower-moving compared to DEX liquidity
 - Lower risk of rapid value extraction
 
+#### Midnight Integration (No Restoration)
+
+**Decision:** No Midnight operation restores (increases) a Midnight rate limit.
+
+| Operation | Rate Limit Behavior                                   |
+| --------- | ----------------------------------------------------- |
+| `buy`     | Decreases `LIMIT_MIDNIGHT_BUY` by assets spent        |
+| `sell`    | Decreases `LIMIT_MIDNIGHT_SELL` by assets received    |
+| `redeem`  | Decreases `LIMIT_MIDNIGHT_REDEEM` by assets withdrawn |
+
+**Rationale:**
+
+- Each leg spends only its own key, so exiting a position never reopens room to enter a new one
+- Credit is a fixed-term claim, and selling or redeeming it returns assets the buy limit already accounted for; restoring that room would let a single approved budget be recycled repeatedly within one refill period
+- Entry room returns only from the buy key's refill slope, which bounds exposure per period however often positions are cycled
+- Keys are per-market (`keccak256(abi.encode(LIMIT_MIDNIGHT_BUY, marketId))`), so each market is budgeted separately and a drained market cannot borrow room from another
+
 ## Gate-Check Pattern
 
 Some operations verify a rate limit is configured (`maxAmount > 0`) without decreasing it. This serves as an implicit whitelist: if the rate limit key was never set by governance, the operation reverts. Examples:
