@@ -100,6 +100,15 @@ contract MockOracle {
 
 }
 
+// Authorized by the maker but refusing every offer; Midnight staticcalls it, so it cannot write.
+contract FailingRatifier {
+
+    function isRatified(Offer memory, bytes memory, address) external pure returns (bytes32) {
+        return bytes32(0);
+    }
+
+}
+
 // Test-local port of Midnight's ratifier HashLib, needed to ratify an offer on the deployed
 // SetterRatifier: a single-offer tree has the offer hash as its root and an empty proof.
 // https://github.com/morpho-org/midnight/blob/70607569ac348e9880b512ffd3b574be55405932/src/ratifiers/libraries/HashLib.sol
@@ -187,8 +196,9 @@ abstract contract Midnight_TestBase is ForkTestBase {
 
     // Offer ticks have to be multiples of the market's tick spacing (4 by default). The price
     // curve is logistic in the tick: tickToPrice(3372) == 0.5e18 and it rises towards par.
-    uint16 internal constant TICK_98 = 4152;  // ~0.98
-    uint16 internal constant TICK_99 = 4384;  // ~0.99
+    uint16 internal constant TICK_SPACING = 4;
+    uint16 internal constant TICK_98       = 4152;  // ~0.98
+    uint16 internal constant TICK_99       = 4384;  // ~0.99
 
     // Midnight stores the continuous fee per second and caps it at one percent a year, which the
     // config names as an annual rate in centi-basis points.
@@ -652,6 +662,21 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(offer, seedUnits, type(uint256).max);
     }
 
+    // The ratifier is consulted after the maker's authorization of it, so a ratifier that is
+    // authorized and still refuses has to surface from the take rather than be swallowed.
+    function test_buyMidnight_ratifierFailed() external {
+        address failing = address(new FailingRatifier());
+
+        vm.prank(maker);
+        midnight.setIsAuthorized(failing, true, maker);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+        offer.ratifier     = failing;
+
+        vm.expectRevert(abi.encodeWithSignature("RatifierFailed()"));
+        _buy(offer, seedUnits, type(uint256).max);
+    }
+
     // A brand new market has to be touched once on Midnight, by anyone, before its fee resolves.
     function test_buyMidnight_untouchedMarket() external {
         Offer memory offer = _offer(false, TICK_98, seedUnits);
@@ -991,6 +1016,18 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_marketMismatch() external {
         Offer memory offer = _offer(true, TICK_99, seedUnits);
         offer.market.maturity += 1 days;
+
+        vm.expectRevert("MidnightFacet/market-mismatch");
+        _sell(offer, seedUnits, 1);
+    }
+
+    // The exit leg derives its floor from the same fabricated term, so it has to bind the market
+    // to the id just as early as the entry leg does.
+    function test_sellMidnight_marketMismatchBeyondFeeHorizon() external {
+        _setContinuousFee(MAX_CONTINUOUS_FEE);
+
+        Offer memory offer = _offer(true, TICK_99, seedUnits);
+        offer.market.maturity = block.timestamp + 1e18 / MAX_CONTINUOUS_FEE + 1;
 
         vm.expectRevert("MidnightFacet/market-mismatch");
         _sell(offer, seedUnits, 1);
@@ -1443,6 +1480,34 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         // The exit never touches the buy key, so an unset one cannot block it or gain from it.
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  0);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
+    }
+
+    function test_sellMidnight_usdc_twoSequentialTakes() external {
+        uint256 units1 = seedUnits / 2;
+        uint256 units2 = seedUnits - units1;
+
+        uint256 assets1  = _sellerAssets(units1, TICK_99);
+        uint256 assets2  = _sellerAssets(units2, TICK_99 + TICK_SPACING);
+        uint256 expected = assets1 + assets2;
+
+        Offer memory offer1 = _offer(true, TICK_99, units1);
+        Offer memory offer2 = _offer(true, TICK_99 + TICK_SPACING, units2);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightSell(marketId, units1, assets1);
+
+        assertEq(_sell(offer1, units1, assets1), assets1);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightSell(marketId, units2, assets2);
+
+        assertEq(_sell(offer2, units2, assets2), assets2);
+
+        assertEq(loanToken.balanceOf(address(almProxy)),  proxyBalance - seedSpent + expected);
+        assertEq(_credit(),                               0);
+        assertEq(midnight.consumed(maker, offer1.group),  units1);
+        assertEq(midnight.consumed(maker, offer2.group),  units2);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - expected);
     }
 

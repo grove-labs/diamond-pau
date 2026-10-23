@@ -947,6 +947,45 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         assertFalse(midnight.isAuthorized(address(almProxy), address(hostile)));
     }
 
+    // The entry leg runs the callback after its transfers, still inside the controller's call, so
+    // the guard has to reject a nested entry point there too.
+    function test_attack_controllerReentry_buyMidnight() external {
+        _victimRepays();
+
+        vm.prank(allocatorAdmin);
+        accessControls.grantRole(ALLOCATOR_ROLE, address(hostile));
+
+        hostile.setControllerReentry(
+            address(mainnetController),
+            abi.encodeWithSignature(
+                "midnight_redeem(bytes32,uint256,uint256)", marketId, attackUnits, 1
+            )
+        );
+
+        uint256 expected     = _buyerAssets(attackUnits, TICK_98);
+        uint256 creditBefore = _credit();
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+        offer.callback     = address(hostile);
+        offer.callbackData = abi.encode(
+            address(almProxy), _proxyAsMakerOffer(attackUnits), new bytes(0), attackUnits
+        );
+        _ratify(offer);
+
+        assertEq(_buy(offer, attackUnits, type(uint256).max), expected);
+
+        assertFalse(hostile.reenteredController());
+
+        assertEq(
+            hostile.reentryRevertData(),
+            abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
+
+        // Only the buy moved the position, and the redeem rate limit was never touched.
+        assertEq(_credit(),                                 creditBefore + attackUnits);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit);
+    }
+
     // The maker's callback runs inside the controller's own entry point, so the guard rejects a
     // reentry even from a caller holding the allocator role. The victim repays first so the nested
     // redeem reaches the venue rather than failing earlier on withdrawable liquidity.
