@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Morpho Association
 pragma solidity ^0.8.34;
 
 // Modified from src/libraries/TickLib.sol in
