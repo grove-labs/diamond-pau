@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { IERC20 } from "../../lib/forge-std/src/interfaces/IERC20.sol";
+
 import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
+import { IMidnightController } from "../../src/facets/midnight/IMidnightController.sol";
+
 import { Market, Offer } from "../../src/facets/midnight/MidnightInterfaces.sol";
+
+import { MAX_TICK, MidnightTickLib } from "../../src/facets/midnight/MidnightTickLib.sol";
 
 import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
@@ -164,6 +170,28 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
             address(0),
             new bytes(0)
         );
+    }
+
+    // Lowest accessible tick whose price is at least `price`; the curve is monotone in the tick.
+    function _tickAtOrAbove(uint256 price) internal pure returns (uint256) {
+        uint256 low  = 0;
+        uint256 high = MAX_TICK / TICK_SPACING;
+
+        while (low < high) {
+            uint256 mid = (low + high) / 2;
+
+            if (MidnightTickLib.tickToPrice(mid * TICK_SPACING) >= price) high = mid;
+            else low = mid + 1;
+        }
+
+        return low * TICK_SPACING;
+    }
+
+    // Highest accessible tick whose price is strictly below `price`, stepping over flat runs.
+    function _tickBelow(uint256 price) internal pure returns (uint256 tick) {
+        tick = _tickAtOrAbove(price);
+
+        while (MidnightTickLib.tickToPrice(tick) >= price) tick -= TICK_SPACING;
     }
 
     function _takeExpectRevert(Offer memory offer, uint256 units, bytes memory reason) internal {
@@ -783,6 +811,289 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
         assertEq(loanToken.balanceOf(address(strategy)), 0);
 
         _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
+    }
+}
+
+// Reports every exit's lien at a multiple of what the fill actually shed.
+contract MidnightInflatingStrategy {
+
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    uint256 public constant FACTOR = 10;
+
+    address public immutable controller;
+
+    constructor(address controller_) {
+        controller = controller_;
+    }
+
+    function onSell(
+        bytes32       marketId,
+        Market memory,
+        uint256       sellerAssets,
+        uint256       units,
+        uint256       pendingFeeDecrease,
+        address,
+        address,
+        bytes  memory
+    )
+        external
+        returns (bytes32)
+    {
+        IMidnightController(controller).midnight_fundFill({
+            marketId   : marketId,
+            buy        : false,
+            assets     : sellerAssets,
+            units      : units,
+            pendingFee : pendingFeeDecrease * FACTOR
+        });
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+// Buys credit off one of the proxy's sell offers and, from inside that fill, sells it straight
+// into one of the proxy's buy offers before the exit has been reported.
+contract MidnightNestedMakerTaker {
+
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    address public immutable midnight;
+
+    constructor(address midnight_) {
+        midnight = midnight_;
+    }
+
+    function approve(address token) external {
+        IERC20(token).approve(midnight, type(uint256).max);
+    }
+
+    function take(Offer memory offer, bytes memory ratifierData, uint256 units, bytes memory data)
+        external
+    {
+        ITakeLike(midnight).take(
+            offer, ratifierData, units, address(this), address(0), address(this), data
+        );
+    }
+
+    function onBuy(bytes32, Market memory, uint256, uint256, uint256, address, bytes memory data)
+        external
+        returns (bytes32)
+    {
+        ( Offer memory offer, bytes memory ratifierData, uint256 units ) =
+            abi.decode(data, (Offer, bytes, uint256));
+
+        ITakeLike(midnight).take(
+            offer, ratifierData, units, address(this), address(this), address(0), ""
+        );
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+abstract contract Midnight_Maker_PendingFee_TestBase is Midnight_Maker_TestBase {
+
+    // Tight enough that the yield-implied floor sits well above every tick floor in play.
+    uint16 internal constant EXIT_YIELD = 2_00;
+
+    // Moves the tick floor out of the way, so the fee-dependent yield floor is the one that binds.
+    function _openExitTickFloor() internal {
+        _setConfig(TICK_99, TICK_SPACING, MIN_BUY_YIELD, EXIT_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0);
+    }
+
+    function _exitFloor(uint256 feePerUnit) internal view returns (uint256) {
+        return MidnightUtils.minSellPrice(
+            EXIT_YIELD, _timeToMaturity(), MidnightUtils.WAD, feePerUnit
+        );
+    }
+
+}
+
+contract MainnetController_MidnightMaker_PendingFee_Tests is Midnight_Maker_PendingFee_TestBase {
+
+    function setUp() public override {
+        super.setUp();
+
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        _seedCredit();
+
+        _openExitTickFloor();
+    }
+
+    // Midnight hands the shed lien to onSell, and the honest number lowers the floor below where
+    // a lien-free position would sit, so this fill clears only because the fee was reported.
+    function test_makerSell_pendingFee_partialExit() external {
+        uint256 credit     = _credit();
+        uint256 pendingFee = _pendingFee();
+
+        assertGt(pendingFee, 0);
+
+        uint256 heldFloor = _exitFloor(_lienPerUnit());
+        uint256 zeroFloor = _exitFloor(0);
+
+        uint256 tick = _tickAtOrAbove((heldFloor + zeroFloor) / 2);
+
+        assertLt(MidnightTickLib.tickToPrice(tick), zeroFloor);
+
+        uint256 units = credit / 2;
+        uint256 shed  = _divUp(pendingFee * units, credit);
+
+        Offer memory sell = _makerOffer(false, tick, units);
+
+        vm.expectCall(
+            address(strategy),
+            abi.encodeCall(
+                IOnSellLike.onSell,
+                (
+                    marketId,
+                    market,
+                    _makerSellerAssets(units, tick),
+                    units,
+                    shed,
+                    address(almProxy),
+                    address(almProxy),
+                    new bytes(0)
+                )
+            )
+        );
+
+        ( , uint256 sellerAssets ) = _take(sell, units);
+
+        assertEq(_credit(),     credit - units);
+        assertEq(_pendingFee(), pendingFee - shed);
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - sellerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - sellerAssets);
+    }
+
+    // A full exit leaves no position to read the lien back from, so it prices lien-free: the
+    // price a partial exit clears at is refused, and the lien-free floor itself clears.
+    function test_makerSell_pendingFee_fullExit() external {
+        uint256 credit = _credit();
+
+        uint256 zeroFloor = _exitFloor(0);
+
+        uint256 below = _tickAtOrAbove((_exitFloor(_lienPerUnit()) + zeroFloor) / 2);
+
+        assertLt(MidnightTickLib.tickToPrice(below), zeroFloor);
+
+        _takeExpectRevert(
+            _makerOffer(false, below, credit), credit, "MidnightFacet/fill-price-too-low"
+        );
+
+        uint256 tick = _tickAtOrAbove(zeroFloor);
+
+        _take(_makerOffer(false, tick, credit), credit);
+
+        assertEq(_credit(),     0);
+        assertEq(_pendingFee(), 0);
+
+        assertEq(midnight.debt(marketId, address(almProxy)), 0);
+    }
+
+    // The reported lien is clamped to what the position still carries, so overstating it cannot
+    // buy a lower floor: a price the inflated report would justify is still refused.
+    function test_makerSell_inflatedPendingFeeHasNoEffect() external {
+        MidnightInflatingStrategy inflating =
+            new MidnightInflatingStrategy(address(mainnetController));
+
+        _onboardStrategy(address(inflating));
+
+        uint256 lien = _lienPerUnit();
+
+        uint256 heldFloor     = _exitFloor(lien);
+        uint256 inflatedFloor = _exitFloor(lien * inflating.FACTOR());
+
+        uint256 cheap = _tickAtOrAbove((inflatedFloor + heldFloor) / 2);
+
+        assertLt(MidnightTickLib.tickToPrice(cheap), heldFloor);
+
+        uint256 units = _credit() / 2;
+
+        _takeExpectRevert(
+            _makerOffer(market, address(inflating), false, cheap, units, SELL_GROUP),
+            units,
+            "MidnightFacet/fill-price-too-low"
+        );
+
+        uint256 fair = _tickAtOrAbove((heldFloor + _exitFloor(0)) / 2);
+
+        _take(_makerOffer(market, address(inflating), false, fair, units, SELL_GROUP), units);
+
+        assertEq(_credit(), seedUnits - units);
+    }
+
+}
+
+contract MainnetController_MidnightMaker_NestedFill_Tests is Midnight_Maker_PendingFee_TestBase {
+
+    MidnightNestedMakerTaker internal taker;
+
+    function setUp() public override {
+        super.setUp();
+
+        // Bought lien-free, then the market's fee rises: new credit now carries a lien the
+        // position's own units do not.
+        _seedCredit();
+
+        _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
+
+        _openExitTickFloor();
+
+        taker = new MidnightNestedMakerTaker(MIDNIGHT);
+
+        deal(address(loanToken), address(taker), proxyBalance);
+
+        taker.approve(address(loanToken));
+    }
+
+    function _nestedExit(uint256 sellTick) internal returns (Offer memory sell, bytes memory data) {
+        uint256 units = seedUnits / 2;
+
+        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, units);
+
+        sell = _makerOffer(false, sellTick, units);
+        data = abi.encode(buy, _ratifierData(buy), units);
+    }
+
+    // Selling into our buy offer from inside our sell fill raises the lien per unit the
+    // position carries once the exit is reported. The floor still prices the exit off the lien
+    // the fill itself shed, here none, so the exit cannot buy itself a lower floor.
+    function test_makerSell_nestedMakerBuyDoesNotLowerTheFloor() external {
+        uint256 zeroFloor = _exitFloor(0);
+
+        uint256 tick = _tickBelow(zeroFloor);
+
+        // What the floor would fall to if it priced the position as it stands after the nested
+        // buy: half the credit then carries the full lien for the remaining term.
+        uint256 nestedLien =
+            seedUnits / 2 * MidnightUtils.MAX_CONTINUOUS_FEE * _timeToMaturity() / seedUnits;
+
+        assertGt(MidnightTickLib.tickToPrice(tick), _exitFloor(nestedLien));
+
+        ( Offer memory sell, bytes memory data ) = _nestedExit(tick);
+
+        bytes memory ratifierData = _ratifierData(sell);
+
+        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        taker.take(sell, ratifierData, seedUnits / 2, data);
+    }
+
+    // Control: at the lien-free floor the same nested exit settles, so the revert above is the
+    // floor and not the nesting.
+    function test_makerSell_nestedMakerBuySettlesAtTheFloor() external {
+        ( Offer memory sell, bytes memory data ) = _nestedExit(_tickAtOrAbove(_exitFloor(0)));
+
+        taker.take(sell, _ratifierData(sell), seedUnits / 2, data);
+
+        assertEq(_credit(), seedUnits);
+        assertGt(_pendingFee(), 0);
+
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP),  seedUnits / 2);
+        assertEq(midnight.consumed(address(almProxy), SELL_GROUP), seedUnits / 2);
     }
 
 }
