@@ -141,6 +141,8 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 - Keys are per-market (`keccak256(abi.encode(LIMIT_MIDNIGHT_BUY, marketId))`), so each market is budgeted separately and a drained market cannot borrow room from another
 - Maker fills share the taker keys and additionally spend a per-strategy key for their direction (`keccak256(abi.encode(LIMIT_MIDNIGHT_STRATEGY_BUY, strategy, marketId))`, likewise for sells). The strategy keys are the strategy whitelist: a non-zero `maxAmount` onboards a strategy for one market and one direction, and zeroing it offboards it. One per-market budget per direction bounds taker and maker flow together, and each strategy is bounded on its own within it
 - A maker exit settles in a third party's transaction, so an exit key sized too tightly reverts the taker's fill rather than a call of ours; `cancelOfferGroup` retires the book instead of leaving it failing
+- A strategy key at `type(uint256).max` is unlimited by design: it is never debited and still counts as set, so the strategy stays onboarded and only `maxOfferSize` per fill and the market key bound it
+- A strategy holding `ALLOCATOR_ROLE` spends the keys of every venue its sourcing touches, the same keys human allocators spend, at a time the taker chooses
 
 ## Gate-Check Pattern
 
