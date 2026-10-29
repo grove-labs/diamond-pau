@@ -76,7 +76,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
     function setUp() public virtual override {
         super.setUp();
 
-        strategy = new MockFundingStrategy(address(mainnetController));
+        strategy = new MockFundingStrategy(MIDNIGHT, address(almProxy), address(mainnetController));
 
         maxOfferSize = 2 * seedUnits;
 
@@ -317,6 +317,29 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         _take(buy, seedUnits);
 
         _takeExpectRevert(buy, 1, abi.encodeWithSignature("ConsumedUnits()"));
+    }
+
+    // The stand-in strategy refuses what the audited one refuses, so no test here leans on a
+    // looser callback than production would run.
+    function test_mockStrategy_mirrorsTheCallerAndPartyChecks() external {
+        vm.expectRevert("MockFundingStrategy/not-midnight");
+        strategy.onBuy(marketId, market, 1, 1, 0, address(almProxy), "");
+
+        vm.expectRevert("MockFundingStrategy/not-midnight");
+        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), address(almProxy), "");
+
+        vm.startPrank(MIDNIGHT);
+
+        vm.expectRevert("MockFundingStrategy/buyer-not-proxy");
+        strategy.onBuy(marketId, market, 1, 1, 0, maker, "");
+
+        vm.expectRevert("MockFundingStrategy/seller-not-proxy");
+        strategy.onSell(marketId, market, 1, 1, 0, maker, address(almProxy), "");
+
+        vm.expectRevert("MockFundingStrategy/receiver-not-proxy");
+        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), maker, "");
+
+        vm.stopPrank();
     }
 
     function test_makerSell_reduceOnlyStopsNakedShort() external {

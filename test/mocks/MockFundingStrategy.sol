@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { IERC20 } from "../../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { IERC20 }    from "../../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "../../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { IMidnightController } from "../../src/facets/midnight/IMidnightController.sol";
 
 import { Market } from "../../src/facets/midnight/MidnightInterfaces.sol";
 
-// Stub for the audited funding strategy, which lives outside this repo. It holds none of that
-// contract's guards, so it proves only that the facet's own fundFill ladder holds.
+// Stand-in for the audited funding strategy, which lives outside this repo. It mirrors that
+// contract's caller and party checks, so a fill it settles is one the real strategy would settle.
 contract MockFundingStrategy {
 
     bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
 
+    address public immutable midnight;
+    address public immutable proxy;
     address public immutable controller;
 
-    constructor(address controller_) {
+    constructor(address midnight_, address proxy_, address controller_) {
+        midnight   = midnight_;
+        proxy      = proxy_;
         controller = controller_;
     }
 
@@ -25,13 +30,16 @@ contract MockFundingStrategy {
         uint256         buyerAssets,
         uint256         units,
         uint256         pendingFeeIncrease,
-        address,
+        address         buyer,
         bytes    memory
     )
         external
         returns (bytes32)
     {
-        // Midnight pokes a consumed offer at zero, which fundFill rejects outright.
+        require(msg.sender == midnight, "MockFundingStrategy/not-midnight");
+        require(buyer      == proxy,    "MockFundingStrategy/buyer-not-proxy");
+
+        // A zero-unit take or a dust fill rounds the price to nothing, which fundFill rejects.
         if (buyerAssets == 0) return CALLBACK_SUCCESS;
 
         IMidnightController(controller).midnight_fundFill({
@@ -42,7 +50,7 @@ contract MockFundingStrategy {
             pendingFee : pendingFeeIncrease
         });
 
-        IERC20(market.loanToken).approve(msg.sender, buyerAssets);
+        SafeERC20.forceApprove(IERC20(market.loanToken), midnight, buyerAssets);
 
         return CALLBACK_SUCCESS;
     }
@@ -53,13 +61,17 @@ contract MockFundingStrategy {
         uint256       sellerAssets,
         uint256       units,
         uint256       pendingFeeDecrease,
-        address,
-        address,
+        address       seller,
+        address       receiver,
         bytes  memory
     )
         external
         returns (bytes32)
     {
+        require(msg.sender == midnight, "MockFundingStrategy/not-midnight");
+        require(seller     == proxy,    "MockFundingStrategy/seller-not-proxy");
+        require(receiver   == proxy,    "MockFundingStrategy/receiver-not-proxy");
+
         if (units == 0) return CALLBACK_SUCCESS;
 
         // Midnight has already paid the proxy, so this only reports the fill for metering.
