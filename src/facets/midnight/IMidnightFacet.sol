@@ -87,46 +87,42 @@ interface IMidnightFacet is IFacet {
     event MidnightBuy(bytes32 indexed marketId, uint256 units, uint256 assetsSpent);
 
     /**
-     * @notice Emitted when the designated offer groups for a Midnight market are updated.
-     * @param  marketId  Identifier of the Midnight market.
-     * @param  buyGroup  Group every resting buy offer must name.
-     * @param  sellGroup Group every resting sell offer must name.
-     */
-    event MidnightDesignatedGroupsSet(
-        bytes32 indexed marketId,
-        bytes32         buyGroup,
-        bytes32         sellGroup
-    );
-
-    /**
      * @notice Emitted when a fill of one of the proxy's resting offers is settled.
      * @param  marketId Identifier of the Midnight market.
-     * @param  callback Offer callback that reported the fill.
+     * @param  strategy Funding strategy, named as the offer's callback, that reported the fill.
      * @param  buy      True when the proxy was the buyer, in which case the loan token was sent.
-     * @param  assets   Loan token sent to the callback on a buy, or received by the proxy on a
+     * @param  assets   Loan token sent to the strategy on a buy, or received by the proxy on a
      *                  sell.
      * @param  units    Credit units the fill moves for the proxy.
      */
     event MidnightFillFunded(
         bytes32 indexed marketId,
-        address indexed callback,
+        address indexed strategy,
         bool            buy,
         uint256         assets,
         uint256         units
     );
 
     /**
+     * @notice Emitted when the designated offer groups for a Midnight market are updated.
+     * @param  marketId  Identifier of the Midnight market.
+     * @param  buyGroup  Group every resting buy offer must name.
+     * @param  sellGroup Group every resting sell offer must name.
+     */
+    event MidnightGroupsSet(bytes32 indexed marketId, bytes32 buyGroup, bytes32 sellGroup);
+
+    /**
      * @notice Emitted when the make-side limits for a Midnight market are updated.
      * @param  marketId     Identifier of the Midnight market.
-     * @param  maxOfferSize Largest loan token amount a single fill may move.
-     * @param  maturity     Market maturity, as committed to by the market id.
      * @param  loanToken    Market loan token, as committed to by the market id.
+     * @param  maturity     Market maturity, as committed to by the market id.
+     * @param  maxOfferSize Largest loan token amount a single fill may move.
      */
     event MidnightMakeConfigSet(
         bytes32 indexed marketId,
-        uint256         maxOfferSize,
-        uint64          maturity,
-        address         loanToken
+        address         loanToken,
+        uint256         maturity,
+        uint256         maxOfferSize
     );
 
     /**

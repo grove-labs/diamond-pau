@@ -908,9 +908,9 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.expectEmit(address(controller));
         emit IMidnightFacet.MidnightMakeConfigSet(
             _marketId(),
-            MAX_OFFER_SIZE,
-            uint64(marketMaturity),
-            loanToken
+            loanToken,
+            marketMaturity,
+            MAX_OFFER_SIZE
         );
 
         vm.prank(admin);
@@ -976,7 +976,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.record();
 
         vm.expectEmit(address(controller));
-        emit IMidnightFacet.MidnightDesignatedGroupsSet(MARKET_ID, BUY_GROUP, SELL_GROUP);
+        emit IMidnightFacet.MidnightGroupsSet(MARKET_ID, BUY_GROUP, SELL_GROUP);
 
         vm.prank(admin);
         controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);

@@ -253,7 +253,7 @@ Both price comparisons are cross-multiplied rather than divided, so neither boun
 
 **Exits can be metered to a stop.** The exit key gates a maker sell, and a fill that exceeds it reverts the *taker's* transaction, not ours. Sizing that key too tightly therefore makes a resting sell offer look broken to the outside. `cancelOfferGroup` on the sell group is the control to use when the exit budget is nearly spent, since it retires the book instead of leaving it failing.
 
-**Event:** `MidnightFillFunded(marketId, callback, buy, assets, units)`
+**Event:** `MidnightFillFunded(marketId, strategy, buy, assets, units)`
 
 **Maker entry is bounded more tightly than `buy`.** `fundFill` prices the continuous fee at the *configured cap*, while `buy` prices the market's *live* rate, because an offer is signed before the rate it will settle at is known and the ratifier has to agree with `fundFill` at signing time. At a 180 day term with the 1%/year cap the two bounds differ by about 48 basis points, so a tick that taker entry accepts can still be refused for a maker buy. Verify an intended `maxBuyTick` against the capped-fee bound before publishing.
 
@@ -280,7 +280,7 @@ Takes the full `Market` struct, not an id, because `MakeConfig` caches the matur
 
 `maxOfferSize` is two things. It is the make-enabled flag (`!= 0`) and the per-market kill switch, and it is the cap on the loan token a **single fill** may move, in either direction: `fundFill` refuses `assets > maxOfferSize` (`MidnightFacet/offer-size-too-large`). It is a per-fill cap, not a cap on an offer's total size: an offer can be filled many times, each fill bounded by `maxOfferSize` and all of them together bounded by the strategy and direction keys. Size the keys accordingly. Zeroing it is not a graceful stop: a zeroed market still ratifies and the fill then fails inside `fundFill` with `make-not-enabled`, reverting the taker. `cancelOfferGroup` is the cleaner stop, since it retires the book instead of leaving it failing.
 
-**Event:** `MidnightMakeConfigSet(marketId, maxOfferSize, maturity, loanToken)`
+**Event:** `MidnightMakeConfigSet(marketId, loanToken, maturity, maxOfferSize)`
 
 ### Set Designated Groups (admin)
 
@@ -288,7 +288,7 @@ Takes the full `Market` struct, not an id, because `MakeConfig` caches the matur
 
 Midnight tracks consumed size per `offer.group`. These two values are the only groups the ratifier will ratify an offer into, and therefore the only groups `cancelOfferGroup` needs to be able to retire. Both groups must be non-zero and distinct (`MidnightFacet/invalid-groups`): zero is the ratifier's "not designated" sentinel, and a shared group would make neither book cancellable on its own. Both zero is the unset default and designates nothing; a zero group is not a wildcard, since the ratifier refuses an undesignated direction outright. A market meant to trade in one direction only gets both groups and leaves the other direction's rate limit keys unset. Reusing a group across markets is an operational rule, not a code check: do not, since cancelling it retires every market's book that names it.
 
-**Event:** `MidnightDesignatedGroupsSet(marketId, buyGroup, sellGroup)`
+**Event:** `MidnightGroupsSet(marketId, buyGroup, sellGroup)`
 
 ### Set Callback Allowed (admin)
 

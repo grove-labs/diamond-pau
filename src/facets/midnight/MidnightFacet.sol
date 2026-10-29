@@ -158,7 +158,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         _getFacetStorage().designatedGroups[marketId] =
             DesignatedGroups({ buyGroup: buyGroup, sellGroup: sellGroup });
 
-        emit MidnightDesignatedGroupsSet(marketId, buyGroup, sellGroup);
+        emit MidnightGroupsSet(marketId, buyGroup, sellGroup);
     }
 
     /// @inheritdoc IMidnightFacet
@@ -194,12 +194,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             loanToken    : market.loanToken
         });
 
-        emit MidnightMakeConfigSet(
-            marketId,
-            maxOfferSize,
-            uint64(market.maturity),
-            market.loanToken
-        );
+        emit MidnightMakeConfigSet(marketId, market.loanToken, market.maturity, maxOfferSize);
     }
 
     /// @inheritdoc IMidnightFacet
