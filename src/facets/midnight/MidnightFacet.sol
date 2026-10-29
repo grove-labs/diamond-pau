@@ -176,7 +176,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
 
-        // An offer's own size fields are uint128, so a larger cap could never bind.
+        // Midnight moves at most uint128 assets in one fill, so a larger cap could never bind.
         require(maxOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
 
         // Reverts unless the market exists on Midnight; the equality holds by construction.
@@ -523,6 +523,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(makeConfig.maxOfferSize != 0, "MidnightFacet/make-not-enabled");
         require(assets != 0,                  "MidnightFacet/zero-assets");
         require(units  != 0,                  "MidnightFacet/zero-units");
+
+        require(assets <= makeConfig.maxOfferSize, "MidnightFacet/offer-size-too-large");
 
         // Midnight pays the proxy before calling back on an exit, so this branch moves nothing.
         if (!buying) {

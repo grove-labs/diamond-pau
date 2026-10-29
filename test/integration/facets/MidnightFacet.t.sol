@@ -1241,6 +1241,35 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), 0, 0);
     }
 
+    // The cap is on what one fill moves, so the units only need to price the assets in.
+    function test_fundFill_offerSizeTooLargeBoundary() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        uint256 units = 2 * MAX_OFFER_SIZE;
+
+        vm.expectRevert("MidnightFacet/offer-size-too-large");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, MAX_OFFER_SIZE + 1, units, 0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, MAX_OFFER_SIZE, units, 0);
+    }
+
+    function test_fundFill_sell_offerSizeTooLargeBoundary() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+
+        vm.expectRevert("MidnightFacet/offer-size-too-large");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, MAX_OFFER_SIZE + 1, MAX_OFFER_SIZE, 0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, MAX_OFFER_SIZE, MAX_OFFER_SIZE, 0);
+    }
+
     function test_fundFill_lossFactorTooHighBoundary() external {
         _onboardAndEnableMake(1);
         _onboardStrategy(MAX_OFFER_SIZE);

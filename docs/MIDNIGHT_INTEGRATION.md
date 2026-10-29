@@ -226,7 +226,7 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 **Flow, both directions:**
 
 1. Require `isCallbackAllowed(marketId, msg.sender)` (`MidnightFacet/callback-not-allowed`).
-2. Require `makeConfig.maxOfferSize != 0` (`MidnightFacet/make-not-enabled`), `assets != 0` (`MidnightFacet/zero-assets`), `units != 0` (`MidnightFacet/zero-units`).
+2. Require `makeConfig.maxOfferSize != 0` (`MidnightFacet/make-not-enabled`), `assets != 0` (`MidnightFacet/zero-assets`), `units != 0` (`MidnightFacet/zero-units`), and `assets <= makeConfig.maxOfferSize` (`MidnightFacet/offer-size-too-large`).
 
 **Then, when `buying` is true (an entry):**
 
@@ -276,9 +276,9 @@ One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstr
 
 **Function:** `setMakeConfig(market, maxOfferSize)` (`DEFAULT_ADMIN_ROLE`)
 
-Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since an offer's own size fields are `uint128` and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
+Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since Midnight moves at most that much in one fill and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
 
-`maxOfferSize` is *intended* as the cap on a single resting offer, in units or assets whichever the offer sets, rather than on the size of the book. Be aware that **nothing on chain currently enforces it as a cap.** The facet stores it and reads it only as `!= 0`, and the deployed ratifier does not read it at all, so today it is an enable flag and a per-market kill switch. What actually bounds a single fill is the direction limit for that side, shared with taker traffic. Size the limits accordingly, and treat a per-offer bound as a property the periphery would have to add. Because the ratifier does not read it, zeroing it is not a graceful stop either: a zeroed market still ratifies and the fill then fails inside `fundFill` with `make-not-enabled`, reverting the taker. `cancelOfferGroup` is the cleaner stop, since it retires the book instead of leaving it failing.
+`maxOfferSize` is two things. It is the make-enabled flag (`!= 0`) and the per-market kill switch, and it is the cap on the loan token a **single fill** may move, in either direction: `fundFill` refuses `assets > maxOfferSize` (`MidnightFacet/offer-size-too-large`). It is a per-fill cap, not a cap on an offer's total size: an offer can be filled many times, each fill bounded by `maxOfferSize` and all of them together bounded by the strategy and direction keys. Size the keys accordingly. Zeroing it is not a graceful stop: a zeroed market still ratifies and the fill then fails inside `fundFill` with `make-not-enabled`, reverting the taker. `cancelOfferGroup` is the cleaner stop, since it retires the book instead of leaving it failing.
 
 **Event:** `MidnightMakeConfigSet(marketId, maxOfferSize, maturity, loanToken)`
 
@@ -451,6 +451,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/zero-ratifier`            | facet       | `setRatifierAuthorization` with a zero address                                            |
 | `MidnightFacet/callback-not-allowed`     | facet       | `fundFill` from a caller not whitelisted there, or `removeCallback` with nothing to clear |
 | `MidnightFacet/make-not-enabled`         | facet       | `fundFill` on a market whose `maxOfferSize` is zero                                       |
+| `MidnightFacet/offer-size-too-large`     | facet       | `fundFill` moving more than the market's `maxOfferSize` in one fill                       |
 | `MidnightFacet/zero-assets`              | facet       | `fundFill` with zero assets                                                               |
 | `MidnightFacet/fill-price-too-high`      | facet       | `fundFill` paying above the lesser of the tick and capped-fee yield bounds                 |
 | `MidnightFacet/fill-price-too-low`       | facet       | `fundFill` on an exit realizing below the greater of the tick and yield floors             |
@@ -477,6 +478,7 @@ Reverts raised by the ratifier and the funding strategy are theirs to document, 
 | --------------------------------------------- | -------- | ---------------------------------------------------------------------------------- |
 | `MidnightFacet/callback-not-allowed`          | facet    | `fundFill` from an address not whitelisted for that market                         |
 | `MidnightFacet/make-not-enabled`              | facet    | `fundFill` on a market whose `maxOfferSize` is zero                                |
+| `MidnightFacet/offer-size-too-large`          | facet    | `fundFill` moving more than the market's `maxOfferSize` in one fill                |
 | `MidnightFacet/fill-price-too-high`           | facet    | `fundFill` above the configured entry bound, fee priced at the cap                 |
 | `MidnightFacet/fill-price-too-low`            | facet    | `fundFill` below the configured exit floor, on the clamped fee basis                |
 | `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` entry on a market whose lenders have already been slashed               |
@@ -551,7 +553,7 @@ When maker mode is enabled, additionally:
 
 - **`isAuthorized[proxy][x]` on the singleton**: must hold for the ratifier and no other address. Any other entry is a blanket grant over the proxy's position. Alert on the `SetIsAuthorized` event with `onBehalf` equal to the proxy rather than only sampling the mapping: the grant permits `setIsAuthorized`, so an authorized contract can add an entry of its own, and revoking the ratifier does not clear it.
 - **The quoter key's custody**: it is the only thing that can create a fillable offer. Revoking its role on the ratifier is the fastest way to void everything signed so far, since the role is checked at ratification rather than at signing.
-- **Published offers** against the designated groups' consumed counters, which is what bounds how much of a signed offer can still be filled, and against `maxOfferSize` as an off-chain check, since nothing on chain compares an offer's size to it.
+- **Published offers** against the designated groups' consumed counters, which is what bounds how much of a signed offer can still be filled, and against `maxOfferSize` as an off-chain check, since on chain it only caps each fill, never an offer's total size.
 - **Buy and sell key drawdown** as the maker turnover rate, since maker flow shares those keys with taker traffic and no leg on either side restores anything. A market whose key for a direction is near zero has a book that will start reverting takers' fills on that side; retire the groups rather than leaving it there.
 
 ## Related Documentation

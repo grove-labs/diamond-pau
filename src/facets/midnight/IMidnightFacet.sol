@@ -38,11 +38,12 @@ interface IMidnightFacet is IFacet {
 
     /**
      * @notice Make-side limits for one Midnight market. Fits in two storage slots.
-     * @dev    `maxOfferSize == 0` disables making, independently of take onboarding. Maturity and
+     * @dev    `maxOfferSize` caps the loan token a single fill may move, in either direction, and
+     *         `maxOfferSize == 0` disables making, independently of take onboarding. Maturity and
      *         loan token are copied from the `Market` that produced the id, and `toId` commits to
      *         every field, so neither can disagree with the market they describe. They are stored
      *         rather than read per fill because `toMarket` resolves the config from contract code.
-     * @param  maxOfferSize Largest size a single resting offer may carry.
+     * @param  maxOfferSize Largest loan token amount a single fill may move.
      * @param  maturity     Market maturity, used to price the remaining term on a fill.
      * @param  loanToken    Market loan token, the asset a fill is funded in.
      */
@@ -117,7 +118,7 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Emitted when the make-side limits for a Midnight market are updated.
      * @param  marketId     Identifier of the Midnight market.
-     * @param  maxOfferSize Largest size a single resting offer may carry.
+     * @param  maxOfferSize Largest loan token amount a single fill may move.
      * @param  maturity     Market maturity, as committed to by the market id.
      * @param  loanToken    Market loan token, as committed to by the market id.
      */
@@ -235,6 +236,8 @@ interface IMidnightFacet is IFacet {
      *         the proxy, so nothing moves here; the fill must price at or above the stricter of the
      *         configured exit tick and exit yield, and must leave the proxy free of debt on the
      *         market, which is what stops an exit from opening a short.
+     * @dev    In both directions `assets` must not exceed the market's `maxOfferSize`, which caps
+     *         each fill rather than an offer's total size.
      * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
      *         position actually carries, read back from the venue, so a caller cannot widen its own
      *         floor by overstating the lien it sheds.
@@ -312,10 +315,10 @@ interface IMidnightFacet is IFacet {
      *         unless the market names the configured venue, is already take-onboarded, and exists
      *         on Midnight, so a mistyped or uncreated market fails in the spell instead of
      *         silently resting an unfillable book. A cap above `type(uint128).max` is rejected,
-     *         since an offer's own size fields are `uint128` and a larger cap could never bind.
-     *         Setting `maxOfferSize` to zero disables making.
+     *         since Midnight moves at most that much in one fill and a larger cap could never
+     *         bind. Setting `maxOfferSize` to zero disables making.
      * @param  market       Full market config; its id is derived here.
-     * @param  maxOfferSize Largest size a single resting offer may carry.
+     * @param  maxOfferSize Largest loan token amount a single fill may move.
      */
     function setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
 
