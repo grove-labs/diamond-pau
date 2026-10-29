@@ -1749,6 +1749,65 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(IERC20Mock(loanToken).balanceOf(address(controller)), 0);
     }
 
+    function test_fundFill_transferFailed() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        uint256 assets = _honestAssets(FILL_UNITS);
+
+        bytes memory transferCall = abi.encodeCall(IERC20Mock.transfer, (strategy, assets));
+
+        vm.mockCall(loanToken, transferCall, abi.encode(false));
+
+        vm.expectRevert("MidnightFacet/transfer-failed");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        vm.mockCall(loanToken, transferCall, abi.encode(true, true));
+
+        vm.expectRevert("MidnightFacet/transfer-failed");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+    }
+
+    // Tokens that return nothing from transfer are still accepted.
+    function test_fundFill_transferReturnsNothing() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        uint256 assets = _honestAssets(FILL_UNITS);
+
+        vm.mockCall(loanToken, abi.encodeCall(IERC20Mock.transfer, (strategy, assets)), "");
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+    }
+
+    // The proxy's balance is the only source, so an under-funded proxy reverts the fill outright.
+    function test_fundFill_insufficientBalance() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        uint256 assets = _honestAssets(FILL_UNITS);
+
+        deal(loanToken, proxy, assets - 1);
+
+        vm.expectRevert();
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        deal(loanToken, proxy, assets);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        assertEq(IERC20Mock(loanToken).balanceOf(proxy),    0);
+        assertEq(IERC20Mock(loanToken).balanceOf(strategy), assets);
+    }
+
     // Midnight pays the proxy before calling back, so settling an exit moves nothing here.
     function test_fundFill_sell() external {
         _onboardAndEnableMake(0);

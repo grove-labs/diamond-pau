@@ -572,9 +572,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
         _decreaseRateLimit(getBuyRateLimitKey(marketId),                     assets);
 
         // Last step, so every gate and both meters have already passed.
-        IALMProxy(_getSharedControllerStorage().proxy).doCall(
+        bytes memory returnData = IALMProxy(_getSharedControllerStorage().proxy).doCall(
             makeConfig.loanToken,
             abi.encodeCall(IERC20Like.transfer, (msg.sender, assets))
+        );
+
+        require(
+            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
+            "MidnightFacet/transfer-failed"
         );
 
         emit MidnightFillFunded(marketId, msg.sender, true, assets, units);

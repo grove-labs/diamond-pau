@@ -234,7 +234,7 @@ Called by a whitelisted funding strategy from inside Midnight's `onBuy` or `onSe
 4. Require `lossFactor(marketId) <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`), read live, so a market whose lenders have already been slashed stops funding fills.
 5. Require `assets * WAD <= units * maxFillPrice` (`MidnightFacet/fill-price-too-high`), where `maxFillPrice` is the lesser of `tickToPrice(maxBuyTick)` and `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))`.
 6. Decrement `LIMIT_MIDNIGHT_BUY` keyed `marketId` by `assets`, the same key a taker `buy` spends.
-7. `doCall` `loanToken.transfer(msg.sender, assets)` as the last step, so every gate and the meter have already passed. The loan token comes from stored `MakeConfig`, never from the caller.
+7. `doCall` `loanToken.transfer(msg.sender, assets)` as the last step, so every gate and the meters have already passed, and require it to return nothing or `true` (`MidnightFacet/transfer-failed`). The loan token comes from stored `MakeConfig`, never from the caller.
 
 **Then, when `buying` is false (an exit):**
 
@@ -479,6 +479,7 @@ Reverts raised by the ratifier and the funding strategy are theirs to document, 
 | `MidnightFacet/callback-not-allowed`          | facet    | `fundFill` from an address not whitelisted for that market                         |
 | `MidnightFacet/make-not-enabled`              | facet    | `fundFill` on a market whose `maxOfferSize` is zero                                |
 | `MidnightFacet/offer-size-too-large`          | facet    | `fundFill` moving more than the market's `maxOfferSize` in one fill                |
+| `MidnightFacet/transfer-failed`               | facet    | `fundFill` entry whose loan token transfer returned `false` or malformed data       |
 | `MidnightFacet/fill-price-too-high`           | facet    | `fundFill` above the configured entry bound, fee priced at the cap                 |
 | `MidnightFacet/fill-price-too-low`            | facet    | `fundFill` below the configured exit floor, on the clamped fee basis                |
 | `MidnightFacet/loss-factor-too-high`          | facet    | `fundFill` entry on a market whose lenders have already been slashed               |
