@@ -112,15 +112,31 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         internal
         returns (Offer memory offer)
     {
+        return _makerOffer(
+            market, address(strategy), buy, tick, maxUnits, buy ? BUY_GROUP : SELL_GROUP
+        );
+    }
+
+    function _makerOffer(
+        Market  memory market_,
+        address        callback,
+        bool           buy,
+        uint256        tick,
+        uint256        maxUnits,
+        bytes32        group
+    )
+        internal
+        returns (Offer memory offer)
+    {
         offer = Offer({
-            market                  : market,
+            market                  : market_,
             buy                     : buy,
             maker                   : address(almProxy),
             start                   : block.timestamp,
             expiry                  : block.timestamp + MAX_OFFER_WINDOW,
             tick                    : tick,
-            group                   : buy ? BUY_GROUP : SELL_GROUP,
-            callback                : address(strategy),
+            group                   : group,
+            callback                : callback,
             callbackData            : new bytes(0),
             receiverIfMakerIsSeller : buy ? address(0) : address(almProxy),
             ratifier                : SETTER_RATIFIER,
@@ -567,4 +583,181 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         assertEq(_credit(), creditBefore + seedUnits);
     }
 
+}
+
+contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestBase {
+
+    uint256 internal constant BUY        = 0;
+    uint256 internal constant SELL       = 1;
+    uint256 internal constant REDEEM     = 2;
+    uint256 internal constant STRAT_BUY  = 3;
+    uint256 internal constant STRAT_SELL = 4;
+
+    function setUp() public override {
+        super.setUp();
+
+        // No slope, so every key only ever moves by what a leg spends.
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey,          rateLimit, 0);
+        rateLimits.setRateLimitData(sellKey,         rateLimit, 0);
+        rateLimits.setRateLimitData(redeemKey,       rateLimit, 0);
+        rateLimits.setRateLimitData(strategyBuyKey,  rateLimit, 0);
+        rateLimits.setRateLimitData(strategySellKey, rateLimit, 0);
+        vm.stopPrank();
+    }
+
+    function _limits() internal view returns (uint256[5] memory limits) {
+        limits[BUY]        = rateLimits.getCurrentRateLimit(buyKey);
+        limits[SELL]       = rateLimits.getCurrentRateLimit(sellKey);
+        limits[REDEEM]     = rateLimits.getCurrentRateLimit(redeemKey);
+        limits[STRAT_BUY]  = rateLimits.getCurrentRateLimit(strategyBuyKey);
+        limits[STRAT_SELL] = rateLimits.getCurrentRateLimit(strategySellKey);
+    }
+
+    function _assertSpent(uint256[5] memory before, uint256[5] memory spent) internal view {
+        uint256[5] memory limits = _limits();
+
+        for (uint256 i; i < 5; ++i) {
+            assertEq(limits[i], before[i] - spent[i]);
+        }
+    }
+
+    // Runs every leg once. The first round drains each key below its ceiling, where a stray
+    // restore would be invisible, so only the second round's deltas are asserted.
+    function _everyLeg(Offer memory makerBuy, Offer memory makerSell, bool check) internal {
+        uint256 units = seedUnits / 16;
+
+        uint256[5] memory before = _limits();
+        uint256[5] memory spent;
+
+        spent[BUY] = _buy(_offer(false, TICK_98, units), units, type(uint256).max);
+        if (check) _assertSpent(before, spent);
+
+        before = _limits();
+        spent  = [uint256(0), 0, 0, 0, 0];
+
+        spent[SELL] = _sell(_offer(true, TICK_99, units), units, 1);
+        if (check) _assertSpent(before, spent);
+
+        before = _limits();
+        spent  = [uint256(0), 0, 0, 0, 0];
+
+        _repay(units);
+        spent[REDEEM] = _redeem(units, 1);
+        if (check) _assertSpent(before, spent);
+
+        before = _limits();
+        spent  = [uint256(0), 0, 0, 0, 0];
+
+        ( uint256 buyerAssets, ) = _take(makerBuy, units);
+        spent[BUY]       = buyerAssets;
+        spent[STRAT_BUY] = buyerAssets;
+        if (check) _assertSpent(before, spent);
+
+        before = _limits();
+        spent  = [uint256(0), 0, 0, 0, 0];
+
+        ( , uint256 sellerAssets ) = _take(makerSell, units);
+        spent[SELL]       = sellerAssets;
+        spent[STRAT_SELL] = sellerAssets;
+        if (check) _assertSpent(before, spent);
+    }
+
+    // Takes and maker fills draw on one market budget per direction; only a maker fill also
+    // draws on its strategy's key, and no leg touches a key of another direction or kind.
+    function test_rateLimits_eachLegSpendsOnlyItsOwnKeys() external {
+        _seedCredit();
+
+        Offer memory makerBuy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory makerSell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        _everyLeg(makerBuy, makerSell, false);
+
+        uint256[5] memory limits = _limits();
+
+        for (uint256 i; i < 5; ++i) {
+            assertLt(limits[i], rateLimit);
+        }
+
+        _everyLeg(makerBuy, makerSell, true);
+    }
+
+    function test_rateLimits_twoStrategiesOnOneMarketAreMeteredIndependently() external {
+        MockFundingStrategy other =
+            new MockFundingStrategy(MIDNIGHT, address(almProxy), address(mainnetController));
+
+        ( bytes32 otherBuyKey, bytes32 otherSellKey ) = _onboardStrategy(address(other));
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(otherBuyKey,  rateLimit, 0);
+        rateLimits.setRateLimitData(otherSellKey, rateLimit, 0);
+        vm.stopPrank();
+
+        Offer memory ours = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+        Offer memory theirs =
+            _makerOffer(market, address(other), true, MAKER_BUY_TICK, 2 * seedUnits, BUY_GROUP);
+
+        ( uint256 oursAssets,   ) = _take(ours,   seedUnits / 8);
+        ( uint256 theirsAssets, ) = _take(theirs, seedUnits / 4);
+
+        assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey), rateLimit - oursAssets);
+        assertEq(rateLimits.getCurrentRateLimit(otherBuyKey),    rateLimit - theirsAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - oursAssets - theirsAssets);
+
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(otherSellKey),    rateLimit);
+
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), 3 * seedUnits / 8);
+    }
+
+    // The strategy key is salted with the market, so onboarding on one market funds nothing on
+    // another, even one sharing the loan token and every other piece of configuration.
+    function test_rateLimits_strategyKeyCannotFundAnotherMarket() external {
+        Market memory other = market;
+        other.maturity += 30 days;
+
+        bytes32 otherId = midnight.touchMarket(other);
+
+        deal(address(weth), maker, COLLATERAL_SUPPLY);
+
+        vm.prank(maker);
+        midnight.supplyCollateral(other, 0, COLLATERAL_SUPPLY, maker);
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMarketConfig(
+            otherId, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0
+        );
+        mainnetController.midnight_setMakeConfig(other, maxOfferSize);
+        mainnetController.midnight_setDesignatedGroups(
+            otherId, keccak256("other.buy"), keccak256("other.sell")
+        );
+        rateLimits.setRateLimitData(
+            mainnetController.midnight_getBuyRateLimitKey(otherId), rateLimit, 0
+        );
+        vm.stopPrank();
+
+        assertFalse(mainnetController.midnight_isCallbackAllowed(otherId, address(strategy), true));
+
+        Offer memory buy = _makerOffer(
+            other, address(strategy), true, MAKER_BUY_TICK, seedUnits, keccak256("other.buy")
+        );
+
+        _takeExpectRevert(buy, seedUnits / 4, "RateLimits/zero-maxAmount");
+
+        bytes32 otherStrategyBuyKey =
+            mainnetController.midnight_getStrategyBuyRateLimitKey(address(strategy), otherId);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(otherStrategyBuyKey, rateLimit, 0);
+
+        assertTrue(mainnetController.midnight_isCallbackAllowed(otherId, address(strategy), true));
+
+        ( uint256 buyerAssets, ) = _take(buy, seedUnits / 4);
+
+        assertEq(rateLimits.getCurrentRateLimit(otherStrategyBuyKey), rateLimit - buyerAssets);
+
+        // The first market's keys paid for none of it.
+        assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey), rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),         rateLimit);
+    }
 }
