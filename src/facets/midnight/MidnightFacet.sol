@@ -149,7 +149,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // Zero is the ratifier's "not designated" sentinel, and one shared group cancels both sides.
+        // Zero is the ratifier's "not designated" sentinel; one shared group cancels both sides.
         require(
             buyGroup != 0 && sellGroup != 0 && buyGroup != sellGroup,
             "MidnightFacet/invalid-groups"
