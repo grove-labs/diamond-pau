@@ -850,6 +850,47 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
 
         _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
     }
+
+    // Midnight calls back on a zero-unit take, and the strategy returns without calling fundFill,
+    // so nothing is metered or moved. A cancelled group sits above every cap, so it refuses even
+    // a zero-unit take.
+    function test_makerSell_zeroUnitTakeIsUnmetered() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        uint256 creditBefore  = _credit();
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+        uint256[5] memory before = _limits();
+
+        vm.expectCall(
+            address(strategy),
+            abi.encodeWithSelector(IOnSellLike.onSell.selector),
+            1
+        );
+
+        vm.expectCall(
+            address(mainnetController),
+            abi.encodeWithSelector(IMidnightController.midnight_fundFill.selector),
+            0
+        );
+
+        ( uint256 buyerAssets, uint256 sellerAssets ) = _take(sell, 0);
+
+        assertEq(buyerAssets,  0);
+        assertEq(sellerAssets, 0);
+
+        vm.prank(allocator);
+        mainnetController.midnight_cancelOfferGroup(SELL_GROUP);
+
+        _takeExpectRevert(sell, 0, abi.encodeWithSignature("ConsumedUnits()"));
+
+        assertEq(_credit(),                              creditBefore);
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
+        assertEq(loanToken.balanceOf(address(strategy)), 0);
+
+        _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
+    }
 }
 
 // Reports every exit's lien at a multiple of what the fill actually shed.
