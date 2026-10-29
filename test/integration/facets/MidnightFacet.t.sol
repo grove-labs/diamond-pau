@@ -1637,6 +1637,25 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), true, 1, FILL_UNITS, 0);
     }
 
+    // Any non-zero bound would clear a one-wei fill this many units wide.
+    function test_fundFill_entriesClosedAtAnyPrice() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, 1, 1e30, 0);
+
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _marketId(), 0, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
+        );
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, 1, 1e30, 0);
+    }
+
     function test_fundFill_buyRateLimitBoundary() external {
         _onboardAndEnableMake(0);
         _onboardStrategy(MAX_OFFER_SIZE);
@@ -1747,6 +1766,50 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(IERC20Mock(loanToken).balanceOf(proxy),               PROXY_BALANCE - assets);
         assertEq(IERC20Mock(loanToken).balanceOf(strategy),            assets);
         assertEq(IERC20Mock(loanToken).balanceOf(address(controller)), 0);
+    }
+
+    function test_fundFill_unlimitedStrategyRateLimit() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        _setStrategyBuyLimit(strategy, type(uint256).max);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, true), true);
+
+        bytes32 buyKey         = controller.getBuyRateLimitKey(_marketId());
+        bytes32 strategyBuyKey = controller.getStrategyBuyRateLimitKey(strategy, _marketId());
+
+        uint256 assets = _honestAssets(FILL_UNITS);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey), type(uint256).max);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),         MAX_OFFER_SIZE - assets);
+
+        assertEq(IERC20Mock(loanToken).balanceOf(strategy), assets);
+    }
+
+    function test_fundFill_sell_unlimitedStrategyRateLimit() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+
+        _setStrategySellLimit(strategy, type(uint256).max);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, false), true);
+
+        bytes32 sellKey         = controller.getSellRateLimitKey(_marketId());
+        bytes32 strategySellKey = controller.getStrategySellRateLimitKey(strategy, _marketId());
+
+        uint256 assets = _honestSellAssets(FILL_UNITS);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), type(uint256).max);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         MAX_OFFER_SIZE - assets);
     }
 
     function test_fundFill_transferFailed() external {
