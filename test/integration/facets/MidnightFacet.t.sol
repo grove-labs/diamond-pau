@@ -952,14 +952,24 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
     }
 
-    function test_setDesignatedGroups_groupsNotDistinct() external {
-        vm.expectRevert("MidnightFacet/groups-not-distinct");
-        vm.prank(admin);
+    function test_setDesignatedGroups_invalidGroups() external {
+        vm.startPrank(admin);
+
+        vm.expectRevert("MidnightFacet/invalid-groups");
         controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, BUY_GROUP);
 
-        // Both zero is the uninitialised state, not a collision.
-        vm.prank(admin);
+        vm.expectRevert("MidnightFacet/invalid-groups");
+        controller.setDesignatedGroups(MARKET_ID, 0, SELL_GROUP);
+
+        vm.expectRevert("MidnightFacet/invalid-groups");
+        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, 0);
+
+        vm.expectRevert("MidnightFacet/invalid-groups");
         controller.setDesignatedGroups(MARKET_ID, 0, 0);
+
+        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
+
+        vm.stopPrank();
     }
 
     function test_setDesignatedGroups() external {

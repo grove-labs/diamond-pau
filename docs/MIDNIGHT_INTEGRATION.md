@@ -286,7 +286,7 @@ Takes the full `Market` struct, not an id, because `MakeConfig` caches the matur
 
 **Function:** `setDesignatedGroups(marketId, buyGroup, sellGroup)` (`DEFAULT_ADMIN_ROLE`)
 
-Midnight tracks consumed size per `offer.group`. These two values are the only groups the ratifier will ratify an offer into, and therefore the only groups `cancelOfferGroup` needs to be able to retire. `buyGroup != sellGroup` unless both are zero (`MidnightFacet/groups-not-distinct`): a shared group would make neither book cancellable on its own. Both zero is the default and designates nothing; a zero group is not a wildcard, since the ratifier refuses an undesignated direction outright. Designating one side only makes the market one-directional.
+Midnight tracks consumed size per `offer.group`. These two values are the only groups the ratifier will ratify an offer into, and therefore the only groups `cancelOfferGroup` needs to be able to retire. Both groups must be non-zero and distinct (`MidnightFacet/invalid-groups`): zero is the ratifier's "not designated" sentinel, and a shared group would make neither book cancellable on its own. Both zero is the unset default and designates nothing; a zero group is not a wildcard, since the ratifier refuses an undesignated direction outright. A market meant to trade in one direction only gets both groups and leaves the other direction's rate limit keys unset. Reusing a group across markets is an operational rule, not a code check: do not, since cancelling it retires every market's book that names it.
 
 **Event:** `MidnightDesignatedGroupsSet(marketId, buyGroup, sellGroup)`
 
@@ -445,7 +445,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/max-sell-yield-not-set`   | facet       | `setMarketConfig` with a zero `maxSellYield`                                               |
 | `MidnightTickLib/tick-out-of-range`      | facet       | an offer tick above `6744`                                                                |
 | `MidnightFacet/zero-midnight`            | facet       | constructor with a zero singleton address                                                 |
-| `MidnightFacet/groups-not-distinct`      | facet       | `setDesignatedGroups` with one group used for both directions                              |
+| `MidnightFacet/invalid-groups`           | facet       | `setDesignatedGroups` with a zero group or one group used for both directions             |
 | `MidnightFacet/maturity-oob`             | facet       | `setMakeConfig` with a maturity above `type(uint64).max`                                  |
 | `MidnightFacet/max-offer-size-oob`       | facet       | `setMakeConfig` with a cap above `type(uint128).max`                                      |
 | `MidnightFacet/zero-ratifier`            | facet       | `setRatifierAuthorization` with a zero address                                            |

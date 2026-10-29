@@ -26,8 +26,8 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Offer groups the proxy's resting offers must sit in, one per direction.
      * @dev    Separate groups let the entry and exit books be cancelled independently, since
-     *         cancelling consumes a whole group. Zero means no group is designated, which bars
-     *         that direction.
+     *         cancelling consumes a whole group. Zero is the unset state, which bars both
+     *         directions; once set, both groups are non-zero and distinct.
      * @param  buyGroup  Group every resting buy (entry) offer must name.
      * @param  sellGroup Group every resting sell (exit) offer must name.
      */
@@ -302,6 +302,8 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Sets the offer groups the proxy's resting offers must sit in on one market.
      * @dev    One group per direction, so cancelling the entry book leaves the exit book alive.
+     *         Reverts unless both groups are non-zero and distinct. A market meant to trade in
+     *         one direction only leaves the other direction's rate limit keys unset.
      * @param  marketId  Identifier of the Midnight market.
      * @param  buyGroup  Group every resting buy offer must name.
      * @param  sellGroup Group every resting sell offer must name.

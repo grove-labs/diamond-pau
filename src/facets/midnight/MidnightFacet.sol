@@ -149,8 +149,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // Sharing a group across directions would make either book uncancellable on its own.
-        require(buyGroup != sellGroup || buyGroup == 0, "MidnightFacet/groups-not-distinct");
+        // Zero is the ratifier's "not designated" sentinel, and one shared group cancels both sides.
+        require(
+            buyGroup != 0 && sellGroup != 0 && buyGroup != sellGroup,
+            "MidnightFacet/invalid-groups"
+        );
 
         _getFacetStorage().designatedGroups[marketId] =
             DesignatedGroups({ buyGroup: buyGroup, sellGroup: sellGroup });
