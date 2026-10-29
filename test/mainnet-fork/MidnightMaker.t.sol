@@ -760,4 +760,29 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
         assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey), rateLimit);
         assertEq(rateLimits.getCurrentRateLimit(buyKey),         rateLimit);
     }
+
+    // A fill small enough to price at zero reaches the strategy with nothing to fund. It
+    // short-circuits, so the proxy gains the dust credit without drawing on any key.
+    function test_makerBuy_dustFillIsUnmetered() external {
+        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        assertEq(_makerBuyerAssets(1, MAKER_BUY_TICK), 0);
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+        uint256[5] memory before = _limits();
+
+        ( uint256 buyerAssets, uint256 sellerAssets ) = _take(buy, 1);
+
+        assertEq(buyerAssets,  0);
+        assertEq(sellerAssets, 0);
+
+        assertEq(_credit(), 1);
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), 1);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
+        assertEq(loanToken.balanceOf(address(strategy)), 0);
+
+        _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
+    }
+
 }
