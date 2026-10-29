@@ -1097,3 +1097,141 @@ contract MainnetController_MidnightMaker_NestedFill_Tests is Midnight_Maker_Pend
     }
 
 }
+
+interface IJITControllerLike {
+
+    function psm_swapUSDSToUSDC(uint256 usdcAmount) external;
+
+    function psm_usdsToUSDCSwapRateLimitKey() external pure returns (bytes32);
+
+}
+
+// Sources each entry just in time: converts the proxy's USDS through the existing allocator PSM
+// path, then draws exactly the fill from the proxy. It holds ALLOCATOR_ROLE to do the first step.
+contract MidnightJITFundingStrategy {
+
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    address public immutable midnight;
+    address public immutable proxy;
+    address public immutable controller;
+
+    constructor(address midnight_, address proxy_, address controller_) {
+        midnight   = midnight_;
+        proxy      = proxy_;
+        controller = controller_;
+    }
+
+    function onBuy(
+        bytes32         marketId,
+        Market   memory market,
+        uint256         buyerAssets,
+        uint256         units,
+        uint256         pendingFeeIncrease,
+        address         buyer,
+        bytes    memory
+    )
+        external
+        returns (bytes32)
+    {
+        require(msg.sender == midnight, "MidnightJITFundingStrategy/not-midnight");
+        require(buyer      == proxy,    "MidnightJITFundingStrategy/buyer-not-proxy");
+
+        if (buyerAssets == 0) return CALLBACK_SUCCESS;
+
+        IJITControllerLike(controller).psm_swapUSDSToUSDC(buyerAssets);
+
+        IMidnightController(controller).midnight_fundFill({
+            marketId   : marketId,
+            buy        : true,
+            assets     : buyerAssets,
+            units      : units,
+            pendingFee : pendingFeeIncrease
+        });
+
+        IERC20(market.loanToken).approve(midnight, buyerAssets);
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+// A sourcing strategy needs only deployment and configuration: a role grant through the
+// allocator admin, its rate-limit keys, and offers naming it.
+contract MainnetController_MidnightMaker_JustInTime_Tests is Midnight_Maker_TestBase {
+
+    MidnightJITFundingStrategy internal jit;
+
+    bytes32 internal jitBuyKey;
+    bytes32 internal psmKey;
+
+    uint256 internal usdsBalance;
+
+    function setUp() public override {
+        super.setUp();
+
+        jit = new MidnightJITFundingStrategy(
+            MIDNIGHT,
+            address(almProxy),
+            address(mainnetController)
+        );
+
+        ( jitBuyKey, ) = _onboardStrategy(address(jit));
+
+        psmKey = IJITControllerLike(address(mainnetController))
+            .psm_usdsToUSDCSwapRateLimitKey();
+
+        usdsBalance = 1_000_000e18;
+
+        // Nothing to draw on but USDS, so every loan token the fill uses is sourced in the fill.
+        deal(address(loanToken), address(almProxy), 0);
+        deal(address(usds),      address(almProxy), usdsBalance);
+    }
+
+    function test_makerBuy_justInTimeSourcingWithoutTheRole() external {
+        Offer memory buy =
+            _makerOffer(market, address(jit), true, MAKER_BUY_TICK, seedUnits, BUY_GROUP);
+
+        _takeExpectRevert(
+            buy,
+            seedUnits / 2,
+            abi.encodeWithSignature(
+                "AccessControlUnauthorizedAccount(address,bytes32)",
+                address(jit),
+                ALLOCATOR_ROLE
+            )
+        );
+    }
+
+    function test_makerBuy_justInTimeSourcing() external {
+        vm.prank(allocatorAdmin);
+        accessControls.grantRole(ALLOCATOR_ROLE, address(jit));
+
+        Offer memory buy =
+            _makerOffer(market, address(jit), true, MAKER_BUY_TICK, seedUnits, BUY_GROUP);
+
+        uint256 units = seedUnits / 2;
+
+        uint256 psmLimitBefore = rateLimits.getCurrentRateLimit(psmKey);
+
+        ( uint256 buyerAssets, ) = _take(buy, units);
+
+        assertEq(buyerAssets, _makerBuyerAssets(units, MAKER_BUY_TICK));
+
+        assertEq(_credit(), units);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), 0);
+        assertEq(usds.balanceOf(address(almProxy)),      usdsBalance - buyerAssets * 1e12);
+
+        assertEq(loanToken.balanceOf(address(jit)),           0);
+        assertEq(loanToken.allowance(address(jit), MIDNIGHT), 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(psmKey),    psmLimitBefore - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(jitBuyKey), rateLimit - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),    rateLimit - buyerAssets);
+
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
+        assertEq(midnight.debt(marketId, address(almProxy)),      0);
+    }
+
+}
