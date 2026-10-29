@@ -852,8 +852,8 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
     }
 
     // Midnight calls back on a zero-unit take, and the strategy returns without calling fundFill,
-    // so nothing is metered or moved. A cancelled group sits above every cap, so it refuses even
-    // a zero-unit take.
+    // so nothing is metered or moved. A cancel sets consumed to the uint128 maximum, above this
+    // offer's maxUnits, so it then refuses even a zero-unit take.
     function test_makerSell_zeroUnitTakeIsUnmetered() external {
         _seedCredit();
 

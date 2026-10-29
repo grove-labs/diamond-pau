@@ -328,7 +328,7 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 **Function:** `cancelOfferGroup(group)` (`ALLOCATOR_ROLE`)
 
-`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A retired group's consumed counter sits above every offer's cap, so it refuses even a zero-unit take (`ConsumedUnits()`).
+`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A group cancel sets the group's consumed amount to the `uint128` maximum, so afterwards even a zero-unit take of an offer with a smaller `maxUnits` reverts in Midnight (`ConsumedUnits()`) before any callback. An offer whose `maxUnits` is the `uint128` maximum still passes at zero units and reaches its callback, where it is a dust no-op.
 
 **Event:** `MidnightOfferGroupCancelled(group)`
 
