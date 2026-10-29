@@ -1383,7 +1383,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - bound);
     }
 
-    // A whitelisted strategy can report an exit that never happened, but neither leg restores
+    // A keyed strategy can report an exit that never happened, but neither leg restores
     // anything, so a fabricated exit buys no entry room and the entry meter alone bounds the game.
     function test_attack_strategyCannotFakeExitsForEntryRoom_makeMidnight() external {
         _onboardStrategy(address(greedy));
@@ -1420,9 +1420,9 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         greedy.pull(marketId, true, floorAssets, units, 0);
     }
 
-    // No zero-unit guard upstream and the consumed cap passes at zero, so a consumed offer stays
-    // pokeable; the strategy's short-circuit is what keeps that free.
-    function test_attack_zeroUnitPokeOnConsumedOffer_makeMidnight() external {
+    // Midnight has no zero-unit guard and a fully filled offer still passes its cap at zero
+    // units, so the callback fires; the strategy returns without calling fundFill.
+    function test_attack_zeroUnitTakeOfFilledOffer_makeMidnight() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
         _take(buy, seedUnits);
