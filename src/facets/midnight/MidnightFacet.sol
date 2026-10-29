@@ -3,7 +3,7 @@ pragma solidity ^0.8.34;
 
 import { ApproveLib } from "../../libraries/ApproveLib.sol";
 
-import { makeBytes32Key } from "../../libraries/RateLimitHelpers.sol";
+import { makeAddressBytes32Key, makeBytes32Key } from "../../libraries/RateLimitHelpers.sol";
 
 import { IALMProxy } from "../../interfaces/IALMProxy.sol";
 
@@ -80,8 +80,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         mapping (bytes32 marketId => MarketConfig config)     marketConfigs;
         mapping (bytes32 marketId => MakeConfig config)       makeConfigs;
         mapping (bytes32 marketId => DesignatedGroups groups) designatedGroups;
-        mapping (bytes32 marketId =>
-            mapping (address callback => bool allowed))       allowedCallbacks;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -117,6 +115,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
     bytes32 internal constant _LIMIT_REDEEM = keccak256("LIMIT_MIDNIGHT_REDEEM");
     bytes32 internal constant _LIMIT_SELL   = keccak256("LIMIT_MIDNIGHT_SELL");
 
+    bytes32 internal constant _LIMIT_STRATEGY_BUY  = keccak256("LIMIT_MIDNIGHT_STRATEGY_BUY");
+    bytes32 internal constant _LIMIT_STRATEGY_SELL = keccak256("LIMIT_MIDNIGHT_STRATEGY_SELL");
+
     /// @inheritdoc IFacet
     string public constant override VERSION = "1.0.0";
 
@@ -140,21 +141,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
     /*** External Interactive Admin Functions                                                   ***/
     /**********************************************************************************************/
-
-    /// @inheritdoc IMidnightFacet
-    function setCallbackAllowed(bytes32 marketId, address callback, bool allowed)
-        external
-        override
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        // A zero callback is never invoked upstream, so allowing it would ratify unmetered fills.
-        require(callback != address(0), "MidnightFacet/zero-callback");
-
-        _getFacetStorage().allowedCallbacks[marketId][callback] = allowed;
-
-        emit MidnightCallbackAllowedSet(marketId, callback, allowed);
-    }
 
     /// @inheritdoc IMidnightFacet
     function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
@@ -445,22 +431,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /// @inheritdoc IMidnightFacet
-    function removeCallback(bytes32 marketId, address callback)
-        external
-        override
-        nonReentrant
-        onlyRole(ALLOCATOR_ROLE)
-    {
-        FacetStorage storage $ = _getFacetStorage();
-
-        require($.allowedCallbacks[marketId][callback], "MidnightFacet/callback-not-allowed");
-
-        $.allowedCallbacks[marketId][callback] = false;
-
-        emit MidnightCallbackRemoved(marketId, callback);
-    }
-
-    /// @inheritdoc IMidnightFacet
     function sell(
         bytes32         marketId,
         Offer  calldata offer,
@@ -548,12 +518,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
         MakeConfig   storage makeConfig = $.makeConfigs[marketId];
         MarketConfig storage config     = $.marketConfigs[marketId];
 
-        // No role gate: the whitelist is the authorization, so removal revokes it retroactively.
-        require(
-            $.allowedCallbacks[marketId][msg.sender],
-            "MidnightFacet/callback-not-allowed"
-        );
-
+        // No role gate: the caller's own strategy key is the authorization, and an unset key
+        // reverts in the rate limits before anything moves.
         require(makeConfig.maxOfferSize != 0, "MidnightFacet/make-not-enabled");
         require(assets != 0,                  "MidnightFacet/zero-assets");
         require(units  != 0,                  "MidnightFacet/zero-units");
@@ -576,7 +542,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
             // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
             _requireDebtFree(marketId, proxy);
 
-            _decreaseRateLimit(getSellRateLimitKey(marketId), assets);
+            _decreaseRateLimit(getStrategySellRateLimitKey(msg.sender, marketId), assets);
+            _decreaseRateLimit(getSellRateLimitKey(marketId),                     assets);
 
             emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
 
@@ -601,7 +568,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/fill-price-too-high"
         );
 
-        _decreaseRateLimit(getBuyRateLimitKey(marketId), assets);
+        _decreaseRateLimit(getStrategyBuyRateLimitKey(msg.sender, marketId), assets);
+        _decreaseRateLimit(getBuyRateLimitKey(marketId),                     assets);
 
         // Last step, so every gate and both meters have already passed.
         IALMProxy(_getSharedControllerStorage().proxy).doCall(
@@ -662,13 +630,45 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /// @inheritdoc IMidnightFacet
-    function isCallbackAllowed(bytes32 marketId, address callback)
+    function getStrategyBuyRateLimitKey(address strategy, bytes32 marketId)
+        public
+        pure
+        override
+        returns (bytes32)
+    {
+        return makeAddressBytes32Key(_LIMIT_STRATEGY_BUY, strategy, marketId);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function getStrategySellRateLimitKey(address strategy, bytes32 marketId)
+        public
+        pure
+        override
+        returns (bytes32)
+    {
+        return makeAddressBytes32Key(_LIMIT_STRATEGY_SELL, strategy, marketId);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function isCallbackAllowed(bytes32 marketId, address callback, bool buying)
         external
         view
         override
         returns (bool)
     {
-        return _getFacetStorage().allowedCallbacks[marketId][callback];
+        // Hard-coded, so a key funded for the zero address by mistake cannot ratify an offer
+        // whose fills would never reach fundFill.
+        if (callback == address(0)) return false;
+
+        if (_getFacetStorage().makeConfigs[marketId].maxOfferSize == 0) return false;
+
+        bytes32 strategyKey = buying
+            ? getStrategyBuyRateLimitKey(callback, marketId)
+            : getStrategySellRateLimitKey(callback, marketId);
+
+        bytes32 marketKey = buying ? getBuyRateLimitKey(marketId) : getSellRateLimitKey(marketId);
+
+        return _rateLimitExists(strategyKey) && _rateLimitExists(marketKey);
     }
 
     /**********************************************************************************************/

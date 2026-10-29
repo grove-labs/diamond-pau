@@ -1357,8 +1357,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         // Zero the entry yield so the tick is the binding bound and the expectation is exact.
         _setConfig(MAKER_BUY_TICK, TICK_98, 0, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0);
 
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setCallbackAllowed(marketId, address(greedy), true);
+        _onboardStrategy(address(greedy));
 
         uint256 units = seedUnits;
         uint256 bound = units * MidnightTickLib.tickToPrice(MAKER_BUY_TICK) / 1e18;
@@ -1387,8 +1386,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
     // A whitelisted strategy can report an exit that never happened, but neither leg restores
     // anything, so a fabricated exit buys no entry room and the entry meter alone bounds the game.
     function test_attack_strategyCannotFakeExitsForEntryRoom_makeMidnight() external {
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setCallbackAllowed(marketId, address(greedy), true);
+        _onboardStrategy(address(greedy));
 
         uint256 units = seedUnits;
         uint256 floorAssets = units * MidnightTickLib.tickToPrice(TICK_98) / 1e18;

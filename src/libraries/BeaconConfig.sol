@@ -1155,13 +1155,13 @@ library BeaconConfig {
         );
 
         wires[18] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_setCallbackAllowed.selector,
-            IMidnightFacet.setCallbackAllowed.selector
+            IMidnightController.midnight_getStrategyBuyRateLimitKey.selector,
+            IMidnightFacet.getStrategyBuyRateLimitKey.selector
         );
 
         wires[19] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_removeCallback.selector,
-            IMidnightFacet.removeCallback.selector
+            IMidnightController.midnight_getStrategySellRateLimitKey.selector,
+            IMidnightFacet.getStrategySellRateLimitKey.selector
         );
 
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config({

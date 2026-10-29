@@ -8,9 +8,6 @@ interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
 
-    function midnight_setCallbackAllowed(bytes32 marketId, address callback, bool allowed)
-        external;
-
     function midnight_setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
         external;
 
@@ -52,8 +49,6 @@ interface IMidnightController {
         external
         returns (uint256 assetsWithdrawn);
 
-    function midnight_removeCallback(bytes32 marketId, address callback) external;
-
     function midnight_sell(
         bytes32         marketId,
         Offer  calldata offer,
@@ -85,7 +80,17 @@ interface IMidnightController {
 
     function midnight_getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
-    function midnight_isCallbackAllowed(bytes32 marketId, address callback)
+    function midnight_getStrategyBuyRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_getStrategySellRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_isCallbackAllowed(bytes32 marketId, address callback, bool buy)
         external
         view
         returns (bool allowed);

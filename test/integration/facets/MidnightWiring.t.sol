@@ -3,6 +3,7 @@ pragma solidity ^0.8.34;
 
 import { IController }             from "../../../src/interfaces/IController.sol";
 import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableIntegrations.sol";
+import { IRateLimits }             from "../../../src/interfaces/IRateLimits.sol";
 
 import { IFacet } from "../../../src/facets/IFacet.sol";
 
@@ -11,6 +12,9 @@ import { BeaconConfig } from "../../../src/libraries/BeaconConfig.sol";
 import { IMidnightController } from "../../../src/facets/midnight/IMidnightController.sol";
 import { IMidnightFacet }      from "../../../src/facets/midnight/IMidnightFacet.sol";
 import { MidnightFacet }       from "../../../src/facets/midnight/MidnightFacet.sol";
+import { MidnightIdLib }       from "../../../src/facets/midnight/MidnightIdLib.sol";
+
+import { CollateralParams, Market } from "../../../src/facets/midnight/MidnightInterfaces.sol";
 
 import { Integration_TestBase } from "../TestBase.t.sol";
 
@@ -102,11 +106,31 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         calls[17]     = IMidnightController.midnight_isCallbackAllowed.selector;
         delegates[17] = IMidnightFacet.isCallbackAllowed.selector;
 
-        calls[18]     = IMidnightController.midnight_setCallbackAllowed.selector;
-        delegates[18] = IMidnightFacet.setCallbackAllowed.selector;
+        calls[18]     = IMidnightController.midnight_getStrategyBuyRateLimitKey.selector;
+        delegates[18] = IMidnightFacet.getStrategyBuyRateLimitKey.selector;
 
-        calls[19]     = IMidnightController.midnight_removeCallback.selector;
-        delegates[19] = IMidnightFacet.removeCallback.selector;
+        calls[19]     = IMidnightController.midnight_getStrategySellRateLimitKey.selector;
+        delegates[19] = IMidnightFacet.getStrategySellRateLimitKey.selector;
+    }
+
+    // The periphery calls these three by selector, so they are pinned to literals, not derived.
+    function test_midnightWiring_peripherySelectors() external view {
+        assertEq(IMidnightController.midnight_fundFill.selector,            bytes4(0xfb9e2099));
+        assertEq(IMidnightController.midnight_isCallbackAllowed.selector,   bytes4(0x5c0f4590));
+        assertEq(IMidnightController.midnight_getDesignatedGroups.selector, bytes4(0x87d2a293));
+
+        assertEq(
+            beacon.getDispatch(bytes4(0xfb9e2099)).delegateSelector,
+            IMidnightFacet.fundFill.selector
+        );
+        assertEq(
+            beacon.getDispatch(bytes4(0x5c0f4590)).delegateSelector,
+            IMidnightFacet.isCallbackAllowed.selector
+        );
+        assertEq(
+            beacon.getDispatch(bytes4(0x87d2a293)).delegateSelector,
+            IMidnightFacet.getDesignatedGroups.selector
+        );
     }
 
     function test_midnightWiring_everyDeclaredPairIsInstalled() external view {
@@ -160,15 +184,43 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     // Midnight staticcalls isRatified, so a periphery ratifier can only read policy from here if
     // the dispatch itself is static-safe.
     function test_midnightWiring_policyViewsAnswerAStaticCall() external {
-        bytes32 marketId  = keccak256("market");
+        Market memory market = Market({
+            chainId          : block.chainid,
+            midnight         : midnight,
+            loanToken        : makeAddr("loanToken"),
+            collateralParams : new CollateralParams[](0),
+            maturity         : block.timestamp + 180 days,
+            rcfThreshold     : 0,
+            enterGate        : address(0),
+            liquidatorGate   : address(0)
+        });
+
+        bytes32 marketId  = MidnightIdLib.toId(market);
         bytes32 buyGroup  = keccak256("buy");
         bytes32 sellGroup = keccak256("sell");
 
         address callback = makeAddr("callback");
 
+        IMidnightController alias_ = IMidnightController(controller);
+        IRateLimits         limits = IRateLimits(IController(payable(controller)).rateLimits());
+
+        bytes32 strategyKey = alias_.midnight_getStrategyBuyRateLimitKey(callback, marketId);
+        bytes32 marketKey   = alias_.midnight_getBuyRateLimitKey(marketId);
+
+        // setMakeConfig reads the market back from the venue, so the venue needs code and an answer.
+        vm.etch(midnight, hex"00");
+        vm.mockCall(
+            midnight,
+            abi.encodeWithSignature("toMarket(bytes32)", marketId),
+            abi.encode(market)
+        );
+
         vm.startPrank(admin);
-        IMidnightController(controller).midnight_setDesignatedGroups(marketId, buyGroup, sellGroup);
-        IMidnightController(controller).midnight_setCallbackAllowed(marketId, callback, true);
+        alias_.midnight_setMarketConfig(marketId, 1, 1, 0, 1, 0, 0);
+        alias_.midnight_setMakeConfig(market, 1);
+        alias_.midnight_setDesignatedGroups(marketId, buyGroup, sellGroup);
+        limits.setRateLimitData(strategyKey, 1, 0);
+        limits.setRateLimitData(marketKey,   1, 0);
         vm.stopPrank();
 
         ( bool ok, bytes memory data ) = controller.staticcall(
@@ -184,7 +236,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         assertEq(groups.sellGroup, sellGroup);
 
         ( ok, data ) = controller.staticcall(
-            abi.encodeCall(IMidnightController.midnight_isCallbackAllowed, (marketId, callback))
+            abi.encodeCall(IMidnightController.midnight_isCallbackAllowed, (marketId, callback, true))
         );
 
         assertTrue(ok);

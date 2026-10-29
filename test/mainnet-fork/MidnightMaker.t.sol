@@ -68,6 +68,9 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
     MockFundingStrategy internal strategy;
 
+    bytes32 internal strategyBuyKey;
+    bytes32 internal strategySellKey;
+
     uint256 internal maxOfferSize;
 
     function setUp() public virtual override {
@@ -81,10 +84,24 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
         mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
-        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), true);
         vm.stopPrank();
 
+        ( strategyBuyKey, strategySellKey ) = _onboardStrategy(address(strategy));
+
         vm.label(address(strategy), "MockFundingStrategy");
+    }
+
+    function _onboardStrategy(address strategy_)
+        internal
+        returns (bytes32 buyKey_, bytes32 sellKey_)
+    {
+        buyKey_  = mainnetController.midnight_getStrategyBuyRateLimitKey(strategy_, marketId);
+        sellKey_ = mainnetController.midnight_getStrategySellRateLimitKey(strategy_, marketId);
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey_,  rateLimit, rateLimit / 1 days);
+        rateLimits.setRateLimitData(sellKey_, rateLimit, rateLimit / 1 days);
+        vm.stopPrank();
     }
 
     /**********************************************************************************************/
@@ -173,12 +190,16 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                            creditBefore - units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + sellerAssets);
 
-        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - sellerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - sellerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - sellerAssets);
 
-        // The exit leg debits its own meter and puts nothing back on the entry side.
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore);
+        // The exit leg debits its own meters and puts nothing back on the entry side.
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),         buyLimitBefore);
+        assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey), rateLimit);
 
         assertEq(midnight.consumed(address(almProxy), SELL_GROUP), units);
+
+        uint256 exitAssets = sellerAssets;
 
         /*** Entry leg ***/
 
@@ -197,7 +218,9 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         assertEq(_credit(),                              creditBefore + units);
         assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - buyerAssets);
 
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyLimitBefore - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),          buyLimitBefore - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(strategyBuyKey),  rateLimit - buyerAssets);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - exitAssets);
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
@@ -365,20 +388,32 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-price-too-low");
     }
 
-    function test_removingCallbackRevokesBothLegs() external {
+    function test_zeroingStrategyKeysRevokesBothLegs() external {
         _seedCredit();
 
         Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
 
-        _take(buy,  seedUnits / 4);
-        _take(sell, seedUnits / 4);
+        uint256 units = seedUnits / 8;
 
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), false);
+        _take(buy,  units);
+        _take(sell, units);
 
-        _takeExpectRevert(buy,  seedUnits / 4, "MidnightFacet/callback-not-allowed");
-        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/callback-not-allowed");
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(strategyBuyKey,  0, 0);
+        rateLimits.setRateLimitData(strategySellKey, 0, 0);
+        vm.stopPrank();
+
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), true));
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), false));
+
+        _takeExpectRevert(buy,  units, "RateLimits/zero-maxAmount");
+        _takeExpectRevert(sell, units, "RateLimits/zero-maxAmount");
+
+        _onboardStrategy(address(strategy));
+
+        _take(buy,  units);
+        _take(sell, units);
     }
 
     // Each maker leg is bounded by the taker meter for its own direction, and by nothing else.
@@ -492,32 +527,6 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
             seedUnits / 4,
             abi.encodeWithSignature("RatifierUnauthorized()")
         );
-    }
-
-    function test_allocatorEjectsStrategyAndAdminRestoresIt() external {
-        _seedCredit();
-
-        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
-        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
-
-        uint256 units = seedUnits / 8;
-
-        _take(buy,  units);
-        _take(sell, units);
-
-        vm.prank(allocator);
-        mainnetController.midnight_removeCallback(marketId, address(strategy));
-
-        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy)));
-
-        _takeExpectRevert(buy,  units, "MidnightFacet/callback-not-allowed");
-        _takeExpectRevert(sell, units, "MidnightFacet/callback-not-allowed");
-
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setCallbackAllowed(marketId, address(strategy), true);
-
-        _take(buy,  units);
-        _take(sell, units);
     }
 
     function test_makeDisableLeavesTheTakerPathWorking() external {
