@@ -231,9 +231,9 @@ Strategies are trusted code: the facet does not cross-check what a strategy repo
 
 **Pass-through strategies** hold no role.
 
-**Operator-role strategies** source their own liquidity inside `onBuy` and hold `ALLOCATOR_ROLE` in `AccessControls`. Each must be immutable, run one hardcoded sourcing sequence, and be audited on its own. Onboarding takes two authorities: governance sets the strategy keys for each market and direction it serves, and the allocator role admin (`ALLOCATOR_ADMIN_ROLE` in `AccessControls`) grants it `ALLOCATOR_ROLE`. Offboarding is the reverse: zero its keys, and have the allocator role admin revoke the role, which no other role can do. Sourcing may leave residual dust on the proxy, or run a cleanup step after `fundFill`; the strategy itself still ends every callback empty.
+**Operator-role strategies** source their own liquidity inside `onBuy` and hold `ALLOCATOR_ROLE` in `AccessControls`. Each must be immutable, run one hardcoded sourcing sequence, and be audited on its own. Onboarding takes two authorities: governance sets the strategy keys for each market and direction it serves, and the allocator role admin grants it `ALLOCATOR_ROLE`. That admin is whichever role `setRoleAdmin` names (`ALLOCATOR_ADMIN_ROLE` in the reference deployment), and `DEFAULT_ADMIN_ROLE` can always reassign it. Offboarding is the reverse: zero its keys, and have the allocator role admin revoke the role. Midnight pays a sell's proceeds to the proxy before it calls `onSell`, so a sell strategy can redeploy them in the same callback. Sourcing may leave residual dust on the proxy, or run a cleanup step after `fundFill`; the strategy itself still ends every callback empty.
 
-The role is the whole allocator surface, not just the sequence the strategy's code runs, so its code and the keys on its path are what bound it. Per fill, the exposure is at most the lesser of its strategy key, the market key for the direction, and each venue key its sourcing sequence touches.
+The role is the whole allocator surface, not just the sequence the strategy's code runs: it can spend every rate limit `ALLOCATOR_ROLE` can spend, and only revoking the role ends that. Per fill, the loan token `fundFill` sends it is at most the lesser of `maxOfferSize`, its strategy key and the market key for the direction; a venue key binds only the amount the sourcing sequence draws through that venue.
 
 **Phase 3 design considerations.** These describe risks, not restrictions; which strategies phase 3 builds is not decided.
 
@@ -328,7 +328,7 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 **Function:** `cancelOfferGroup(group)` (`ALLOCATOR_ROLE`)
 
-`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A group cancel sets the group's consumed amount to the `uint128` maximum, so afterwards even a zero-unit take of an offer with a smaller `maxUnits` reverts in Midnight (`ConsumedUnits()`) before any callback. An offer whose `maxUnits` is the `uint128` maximum still passes at zero units and reaches its callback, where it is a dust no-op.
+`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A group cancel sets the group's consumed amount to the `uint128` maximum, so afterwards even a zero-unit take of an offer whose `maxUnits` (or `maxAssets`, when set) is below that maximum reverts in Midnight (`ConsumedUnits()` or `ConsumedAssets()`) before any callback. An offer capped at the `uint128` maximum still reaches its callback at zero units, where the dust rule makes it a no-op.
 
 **Event:** `MidnightOfferGroupCancelled(group)`
 
@@ -365,7 +365,7 @@ The Midnight singleton is an immutable, non-upgradeable contract with no owner o
 An offer may name a `callback` contract with opaque `callbackData`; Midnight calls it inside `take`, after the transfers when the maker sells and before them when the maker buys. The facet cannot vet what it does and does not try to: banning callbacks is not viable because callback-backed offers are how makers source liquidity. Instead the facet relies on three post-conditions that hold for the whole call:
 
 - The controller's reentrancy guard is held for the entire call, so the callback cannot re-enter any facet.
-- The approval to Midnight is exactly `maxAssetsIn`, and Midnight only pulls from the proxy on the proxy's own take. A callback that tries to spend the open approval needs the proxy as payer of some other flow, which Midnight refuses (the proxy authorizes no ratifier and no operator, and is not a repay callback).
+- The approval to Midnight is exactly `maxAssetsIn`, and Midnight only pulls from the proxy on the proxy's own take. A callback that tries to spend the open approval needs the proxy as payer of some other flow, which Midnight refuses (the only address the proxy authorizes is the ratifier, which makes no calls; a proxy maker buy always pays through its keyed callback, whose `fundFill` the held guard blocks; and the proxy is not a repay callback).
 - The exact credit-delta, zero-debt and `maxAssetsIn` checks after the take catch any change to the proxy's position or balance that did not come from the requested fill, including a socialized loss landing mid-fill. The mainnet-fork attack tests drive a hostile maker through take, withdraw, authorization and repayment attempts, and slash a third borrower from inside a fill, in both directions.
 
 ### Ratifier Data Is Opaque
@@ -410,9 +410,9 @@ The containment is that the authorized contract must be *incapable* of using the
 
 ### Keyed Strategies Are Trusted
 
-A keyed strategy can call `fundFill` with no fill behind it, and that call involves no offer, no group, no ratifier and no `take`, so neither `cancelOfferGroup` nor the ratifier's `freeze()` can touch it. The entry branch pays `msg.sender`, and the price bound only ties `assets` to `units`, which the caller chooses, so what bounds a fabricated entry is the strategy's remaining buy key and the market's buy key, not the price. A fabricated exit pays nothing and restores nothing, so it cannot reopen entry room; it only burns the sell budgets. Cumulative exposure is therefore the lesser of the two buy keys' remaining capacity plus whatever their slopes refill before the strategy is offboarded. Zeroing the strategy's keys is what stops it, and offboarding one strategy leaves the rest of the market trading. This is why every strategy has to meet the [conformance rules](#strategy-conformance-rules) and be reviewed before it is keyed.
+A keyed strategy can call `fundFill` with no fill behind it, and that call involves no offer, no group, no ratifier and no `take`, so neither `cancelOfferGroup` nor the ratifier's `freeze()` can touch it. The entry branch pays `msg.sender`, and the price bound only ties `assets` to `units`, which the caller chooses, so what bounds a fabricated entry is the strategy's remaining buy key and the market's buy key, not the price. A fabricated exit pays nothing and restores nothing, so it cannot reopen entry room; it only burns the sell budgets. Cumulative exposure is therefore the lesser of the two buy keys' remaining capacity plus whatever their slopes refill before the strategy is offboarded, with each call capped by `maxOfferSize`. Zeroing a strategy's keys stops that strategy and leaves the rest of the market trading. Zeroing `maxOfferSize` (`setMakeConfig(market, 0)`) stops every strategy on that market, fabricated calls included, because make-enabled is the first check `fundFill` makes. This is why every strategy has to meet the [conformance rules](#strategy-conformance-rules) and be reviewed before it is keyed.
 
-A strategy key set to `type(uint256).max` is unlimited, the `RateLimits` special case: it is never debited, and it still counts as set, so the strategy is onboarded and `isCallbackAllowed` holds. This is intended configuration that governance may choose deliberately. Such a strategy is then bounded per fill by `maxOfferSize` and cumulatively by the market key for the direction alone.
+A strategy key set to `type(uint256).max` is unlimited, the `RateLimits` special case: it is never debited, and it still counts as set, so the strategy is onboarded and `isCallbackAllowed` holds. This is intended configuration that governance may choose deliberately. Such a strategy is then bounded per fill by `maxOfferSize` and cumulatively by the market key for the direction alone. If that market key is also `type(uint256).max`, the strategy's fabricated buys are bounded only by the proxy's loan-token balance.
 
 Offers naming an offboarded strategy stay published and signed. They are not recalled; the ratifier stops ratifying them once the key is zero, so their fills revert before reaching the facet.
 
@@ -496,7 +496,7 @@ Reverts raised by the ratifier and the funding strategy are theirs to document, 
 | `MidnightFacet/continuous-fee-too-high`       | facet    | `fundFill` entry while the live fee exceeds the configured ceiling                 |
 | `MidnightFacet/debt-not-zero`                 | facet    | `fundFill` exit leaving the proxy's position holding debt                          |
 | `RatifierFailed()`                            | Midnight | the ratifier returned anything other than the success value                        |
-| `ConsumedUnits()`                             | Midnight | the designated group is exhausted, including by `cancelOfferGroup`                 |
+| `ConsumedUnits()`, `ConsumedAssets()`         | Midnight | the designated group is exhausted, including by `cancelOfferGroup`                 |
 | `UnusedReceiverMustBeZero()`                  | Midnight | a buy offer naming a receiver, refused before ratification runs                    |
 | `RatifierUnauthorized()`                      | Midnight | the ratifier's authorization was revoked                                           |
 | `RatifierFrozen()`                            | ratifier | the ratifier has been frozen                                                       |
@@ -527,7 +527,7 @@ Steps 1 to 4 above are prerequisites, the rate limits included: a maker entry de
 9. `setRatifierAuthorization(ratifier, true)` **last**, once everything above is in place and verified. This is the blanket grant described above, and it is what makes resting offers fillable at all.
 10. Grant the ratifier's quoter role (`grantRole(QUOTER_ROLE, key)`, held by its `MANAGER_ROLE`) to the signing key that will publish offers, and its `FREEZER_ROLE` to the incident key. The quoter role is checked at ratification, not at signing, so revoking it invalidates every offer the old key signed, in one transaction and with no redeployment.
 
-A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` granted to it in `AccessControls` by the allocator role admin (`ALLOCATOR_ADMIN_ROLE`), which is also the only role that can revoke it, and the rate-limit keys of every venue its sourcing sequence touches. Nothing else is required: no facet change and no controller change.
+A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` granted to it in `AccessControls` by the allocator role admin, which also revokes it. That admin is whichever role `setRoleAdmin` names (`ALLOCATOR_ADMIN_ROLE` in the reference deployment), and `DEFAULT_ADMIN_ROLE` can always reassign it. The strategy also needs the rate-limit keys of every venue its sourcing sequence touches. Nothing else is required: no facet change and no controller change.
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
@@ -540,17 +540,18 @@ Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturit
 | ratifier `blockOffer(offerDigest)`                        | one signed offer, until the freezer or admin unblocks it                      | ratifier freezer     |
 | `cancelOfferGroup(group)`                                 | one direction on one market, irreversible for that group                      | allocator            |
 | zero a strategy's `LIMIT_MIDNIGHT_STRATEGY_*` key         | one strategy on one market and direction, fabricated `fundFill` calls included | rate limits admin    |
+| `setMakeConfig(market, 0)`                                | one market, both directions, fabricated `fundFill` calls included             | admin                |
 | `setRatifierAuthorization(ratifier, false)`               | every market, both directions, one transaction                                | admin                |
 | `controller.removeIntegrations(["MIDNIGHT_FACET"])`       | every Midnight function at once, `fundFill` included, so maker exits stop too | admin                |
 | revoke the controller's `CONTROLLER` role on `RateLimits` | every metered path in the system, maker exits included                        | limits admin         |
 
-Three more admin levers exist and are dominated by the rows above. `setMakeConfig(market, 0)` stops ratification on that market in both directions, since `isCallbackAllowed` then returns false, but it needs a spell. Zeroing a market key does the same for one direction and also stops taker traffic on that side, which is a blunter instrument than zeroing the strategy key. Tightening `setMarketConfig` refuses the fill inside `fundFill` after ratification has already passed, so it reverts a stranger's transaction instead of stopping the book; treat it as configuration, not as an incident response.
+Two more admin levers exist and are dominated by the rows above. Zeroing a market key stops one direction on that market, fabricated `fundFill` calls included, and also stops taker traffic on that side, which is a blunter instrument than zeroing the strategy key. Tightening `setMarketConfig` refuses the fill inside `fundFill` after ratification has already passed, so it reverts a stranger's transaction instead of stopping the book; treat it as configuration, not as an incident response.
 
-**Ratifier freeze.** The ratifier's `freeze()`, held by its `FREEZER_ROLE`, is the maker kill switch on both hosts: it stops new ratified maker fills in both directions, and only the ratifier admin can `unfreeze()`. It does not stop a keyed strategy calling `fundFill` directly; only zeroing that strategy's keys does.
+**Ratifier freeze.** The ratifier's `freeze()`, held by its `FREEZER_ROLE`, is the maker kill switch on both hosts: it stops new ratified maker fills in both directions, and only the ratifier admin can `unfreeze()`. Each host and chain has its own ratifier deployment, bound to one proxy and one controller, and `freeze()` stops only the ratifier it is called on, so freeze every ratifier authorized for the affected proxy. A freeze does not stop a keyed strategy calling `fundFill` directly. Zeroing that strategy's keys stops it, zeroing `maxOfferSize` stops every strategy on the market, and `removeIntegrations` or the `RateLimits` revoke stops all of them.
 
 **Runbook.**
 
-1. Freeze the ratifier.
+1. Freeze every ratifier authorized for the affected proxy.
 2. Before any proxy freeze, the admin zeroes `maxOfferSize` (`setMakeConfig(market, 0)`) or deauthorizes the ratifier (`setRatifierAuthorization(ratifier, false)`), and an allocator calls `cancelOfferGroup` on the designated groups. A proxy freeze (the controller losing its `CONTROLLER` role on the ALMProxy) stops maker buys but not maker sells, because the exit branch of `fundFill` makes no proxy call and Midnight pays the proxy directly. It also blocks `cancelOfferGroup` and `setRatifierAuthorization`, which reach the venue through `IALMProxy.doCall`, and `removeIntegrations` unwires them outright.
 3. Governance zeroes the strategy keys, and the allocator role admin revokes any operator role a strategy holds.
 
@@ -560,7 +561,7 @@ Freezing the ratifier and zeroing a strategy key touch neither the proxy nor the
 
 ### Divergences from the ALM Controller
 
-The periphery serves this facet and the ALM controller with one ratifier and one strategy, through `midnight_fundFill`, `midnight_isCallbackAllowed` and `midnight_getDesignatedGroups`, whose selectors and semantics are identical on both hosts. The rest differs by design:
+The periphery serves this facet and the ALM controller with the same ratifier and strategy contracts, deployed once per host, through `midnight_fundFill`, `midnight_isCallbackAllowed` and `midnight_getDesignatedGroups`, whose selectors and semantics are identical on both hosts. The rest differs by design:
 
 - **Roles.** Admin maps to `DEFAULT_ADMIN_ROLE`, the ALM `RELAYER` to `ALLOCATOR_ROLE` in `AccessControls`. The ALM `FREEZER` has no equivalent here, so per-market `maxOfferSize` zeroing is admin-only on the diamond while the ALM lets its freezer do it; the ratifier's `freeze()` is the fast stop on both.
 - **Group cancels.** `cancelOfferGroup` is `ALLOCATOR_ROLE` only. The ALM's `cancelMidnightOfferGroup` is open to its `RELAYER` and its `FREEZER`, so there the freezer can retire a book, and here only an allocator can.
