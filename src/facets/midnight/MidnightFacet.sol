@@ -550,17 +550,17 @@ contract MidnightFacet is IMidnightFacet, Facet {
             return;
         }
 
-        // A non-zero loss factor means this market's lenders have already been slashed.
-        require(
-            IMidnightLike(midnight).lossFactor(marketId) <= config.maxLossFactor,
-            "MidnightFacet/loss-factor-too-high"
-        );
-
         // The entry bound is priced at the ceiling, so a higher live fee undercuts the yield.
         require(
             IMidnightLike(midnight).continuousFee(marketId)
                 <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
             "MidnightFacet/continuous-fee-too-high"
+        );
+
+        // A non-zero loss factor means this market's lenders have already been slashed.
+        require(
+            IMidnightLike(midnight).lossFactor(marketId) <= config.maxLossFactor,
+            "MidnightFacet/loss-factor-too-high"
         );
 
         require(

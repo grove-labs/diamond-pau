@@ -1395,6 +1395,31 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
     }
 
+    // Same order as the sibling controller, so both hosts report the same reason for one market.
+    function test_fundFill_continuousFeeCheckedBeforeLossFactor() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(1);
+
+        _mockContinuousFee(CONTINUOUS_FEE);
+
+        uint256 assets = _honestAssets(FILL_UNITS);
+
+        vm.expectRevert("MidnightFacet/loss-factor-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        vm.mockCall(
+            midnight,
+            abi.encodeCall(IMidnightMock.continuousFee, (_marketId())),
+            abi.encode(MidnightUtils.continuousFeePerSecond(CONTINUOUS_FEE) + 1)
+        );
+
+        vm.expectRevert("MidnightFacet/continuous-fee-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+    }
+
     // An exit is a report, not a transfer, so the live fee has no bearing on what it may accept.
     function test_fundFill_sell_ignoresContinuousFee() external {
         _onboardAndEnableMake(0);
