@@ -596,6 +596,44 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         );
     }
 
+    // A proxy freeze leaves the authorization on Midnight in place, so exits keep settling and
+    // the group cancel and ratifier deauthorization that would stop them can no longer run.
+    function test_proxyFreezeAloneLeavesMakerSellsLive() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits / 4);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
+
+        bytes32 controllerRole = almProxy.CONTROLLER();
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        almProxy.revokeRole(controllerRole, address(mainnetController));
+
+        bytes memory frozen = abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            address(mainnetController),
+            controllerRole
+        );
+
+        _takeExpectRevert(buy, seedUnits / 8, frozen);
+
+        uint256 creditBefore = _credit();
+
+        ( , uint256 sellerAssets ) = _take(sell, seedUnits / 8);
+
+        assertGt(sellerAssets, 0);
+        assertEq(_credit(), creditBefore - seedUnits / 8);
+
+        vm.prank(allocator);
+        vm.expectRevert(frozen);
+        mainnetController.midnight_cancelOfferGroup(SELL_GROUP);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        vm.expectRevert(frozen);
+        mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, false);
+
+        assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
+    }
     function test_makeDisableLeavesTheTakerPathWorking() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
