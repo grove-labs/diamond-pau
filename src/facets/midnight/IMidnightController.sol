@@ -2,11 +2,16 @@
 pragma solidity ^0.8.34;
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
-import { Offer } from "./MidnightInterfaces.sol";
+import { Market, Offer } from "./MidnightInterfaces.sol";
 
 interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
+
+    function midnight_setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
+        external;
+
+    function midnight_setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
 
     function midnight_setMarketConfig(
         bytes32 marketId,
@@ -16,6 +21,18 @@ interface IMidnightController {
         uint16  maxSellYield,
         uint16  maxContinuousFee,
         uint128 maxLossFactor
+    ) external;
+
+    function midnight_setRatifierAuthorization(address ratifier, bool authorized) external;
+
+    function midnight_cancelOfferGroup(bytes32 group) external;
+
+    function midnight_fundFill(
+        bytes32 marketId,
+        bool    buy,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
     ) external;
 
     function midnight_buy(
@@ -44,6 +61,16 @@ interface IMidnightController {
 
     function midnight_getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
+    function midnight_getDesignatedGroups(bytes32 marketId)
+        external
+        view
+        returns (IMidnightFacet.DesignatedGroups memory groups);
+
+    function midnight_getMakeConfig(bytes32 marketId)
+        external
+        view
+        returns (IMidnightFacet.MakeConfig memory config);
+
     function midnight_getMarketConfig(bytes32 marketId)
         external
         view
@@ -52,6 +79,21 @@ interface IMidnightController {
     function midnight_getRedeemRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     function midnight_getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    function midnight_getStrategyBuyRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_getStrategySellRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_isCallbackAllowed(bytes32 marketId, address callback, bool buy)
+        external
+        view
+        returns (bool allowed);
 
     function midnight_midnight() external view returns (address);
 

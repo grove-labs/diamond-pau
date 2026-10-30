@@ -9,6 +9,8 @@ import { ReentrancyGuard } from "../../lib/openzeppelin-contracts/contracts/util
 
 import { SafeERC20, IERC20 } from "../../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import { ReentrancyGuard } from "../../lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+
 import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
 import { Ethereum as GroveEthereum } from "../../lib/grove-address-registry/src/Ethereum.sol";
@@ -28,6 +30,7 @@ import { Farm_TestBase }                     from "./Farm.t.sol";
 import { LayerZero_TestBase }                from "./LayerZero.t.sol";
 import { Maple_TestBase }                    from "./Maple.t.sol";
 import { Midnight_TestBase, MockOracle }     from "./Midnight.t.sol";
+import { IOnBuyLike, Midnight_Maker_TestBase, ITakeLike } from "./MidnightMaker.t.sol";
 import { Pendle_TestBase }                   from "./Pendle.t.sol";
 import { UniswapV3_TestBase }                from "./UniswapV3.t.sol";
 import { UniswapV4_USDC_USDT_TestBase }      from "./UniswapV4.t.sol";
@@ -36,6 +39,8 @@ import { WEETH_TestBase }                    from "./WEETH.t.sol";
 import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
 
 import { Market, Offer } from "../../src/facets/midnight/MidnightInterfaces.sol";
+
+import { MidnightTickLib } from "../../src/facets/midnight/MidnightTickLib.sol";
 
 import { IUniswapV3Facet } from "../../src/facets/uniswap-v3/IUniswapV3Facet.sol";
 
@@ -75,6 +80,18 @@ interface IAaveV4SpokeReserveLike {
 
 interface IUniswapV4PositionManagerLike {
     function poolKeys(bytes25 poolId) external view returns (PoolKey memory poolKey);
+}
+
+interface IMidnightFundFillLike {
+
+    function midnight_fundFill(
+        bytes32 marketId,
+        bool    buy,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
+    ) external;
+
 }
 
 // The Midnight entry points a hostile maker callback can reach while the proxy's take is in flight.
@@ -1193,6 +1210,289 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/min-assets-out-not-met");
         _redeem(attackUnits, attackUnits);
+    }
+
+}
+
+// Takes an offer of its own choosing from inside the proxy's fill, and keeps the reason it failed.
+contract MidnightNestedTaker {
+
+    bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    address public immutable midnight;
+
+    bool public innerAttempted;
+    bool public innerSucceeded;
+
+    bytes public innerError;
+
+    constructor(address midnight_) {
+        midnight = midnight_;
+    }
+
+    function onSell(
+        bytes32,
+        Market  memory,
+        uint256,
+        uint256,
+        uint256,
+        address,
+        address,
+        bytes   memory data
+    )
+        external returns (bytes32)
+    {
+        ( Offer memory offer, bytes memory ratifierData, uint256 units ) =
+            abi.decode(data, (Offer, bytes, uint256));
+
+        innerAttempted = true;
+
+        try IMidnightAttackLike(midnight).take(
+            offer, ratifierData, units, address(this), address(this), address(0), ""
+        ) {
+            innerSucceeded = true;
+        } catch (bytes memory err) {
+            innerError = err;
+        }
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+// A compromised funding strategy, asking `fundFill` for more than its reported units justify.
+contract MidnightGreedyStrategy {
+
+    address public immutable controller;
+
+    constructor(address controller_) {
+        controller = controller_;
+    }
+
+    function pull(bytes32 marketId, bool buy, uint256 assets, uint256 units, uint256 pendingFee)
+        external
+    {
+        IMidnightFundFillLike(controller)
+            .midnight_fundFill(marketId, buy, assets, units, pendingFee);
+    }
+
+}
+
+contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase {
+
+    address internal attacker = makeAddr("attacker");
+
+    MidnightGreedyStrategy internal greedy;
+
+    function setUp() public override {
+        super.setUp();
+
+        greedy = new MidnightGreedyStrategy(address(mainnetController));
+
+        // Collateralized and able to ratify offers of its own, so it can publish a book.
+        deal(address(loanToken), attacker, proxyBalance);
+        deal(address(weth),      attacker, 2_000_000e18);
+
+        vm.startPrank(attacker);
+        midnight.setIsAuthorized(SETTER_RATIFIER, true, attacker);
+        loanToken.approve(MIDNIGHT, type(uint256).max);
+        weth.approve(MIDNIGHT, type(uint256).max);
+        midnight.supplyCollateral(market, 0, 2_000_000e18, attacker);
+        vm.stopPrank();
+    }
+
+    // Both of the singleton's own gates pass here, so ratification of that exact offer is the
+    // only thing left between a fabricated one and a fill.
+    function test_attack_unratifiedProxyMakerOffer_makeMidnight() external {
+        Offer memory offer = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
+
+        offer.tick = MAKER_BUY_TICK + 4;
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSignature("NotRatified()"));
+        ITakeLike(MIDNIGHT).take(
+            offer,
+            _ratifierData(offer),
+            seedUnits,
+            attacker,
+            attacker,
+            address(0),
+            new bytes(0)
+        );
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
+    }
+
+    // Round-tripping the position against our own book would pay the spread to the venue.
+    function test_attack_selfTake_makeMidnight() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        // Caught by the facet's own anti-self-dealing check before it reaches the singleton.
+        vm.expectRevert("MidnightFacet/invalid-offer-receiver");
+        vm.prank(allocator);
+        mainnetController.midnight_buy(
+            marketId,
+            sell,
+            _ratifierData(sell),
+            seedUnits,
+            type(uint256).max
+        );
+
+        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        vm.expectRevert(abi.encodeWithSignature("SelfTake()"));
+        vm.prank(allocator);
+        mainnetController.midnight_sell(marketId, buy, _ratifierData(buy), seedUnits, 1);
+    }
+
+    // The bound needs no rounding slack on real market state: the honest amount clears and one
+    // wei more does not.
+    function test_attack_greedyStrategyOverdraws_makeMidnight() external {
+        // Zero the entry yield so the tick is the binding bound and the expectation is exact.
+        _setConfig(MAKER_BUY_TICK, TICK_98, 0, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        _onboardStrategy(address(greedy));
+
+        uint256 units = seedUnits;
+        uint256 bound = units * MidnightTickLib.tickToPrice(MAKER_BUY_TICK) / 1e18;
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        greedy.pull(marketId, true, bound + 1, units, 0);
+
+        // 362 of the 1,686 accessible steps are flat, so a step up the grid being dearer has to
+        // be asserted rather than assumed.
+        uint256 dearer = units * MidnightTickLib.tickToPrice(MAKER_BUY_TICK + 4) / 1e18;
+
+        assertGt(dearer, bound);
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        greedy.pull(marketId, true, dearer, units, 0);
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        greedy.pull(marketId, true, bound, units, 0);
+
+        assertEq(loanToken.balanceOf(address(greedy)),   bound);
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - bound);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - bound);
+    }
+
+    // A keyed strategy can report an exit that never happened, but neither leg restores
+    // anything, so a fabricated exit buys no entry room and the entry meter alone bounds the game.
+    function test_attack_strategyCannotFakeExitsForEntryRoom_makeMidnight() external {
+        _onboardStrategy(address(greedy));
+
+        uint256 units = seedUnits;
+        uint256 floorAssets = units * MidnightTickLib.tickToPrice(TICK_98) / 1e18;
+
+        // Drain the entry budget down by one honest-priced entry's worth.
+        greedy.pull(marketId, true, floorAssets, units, 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - floorAssets);
+
+        uint256 proxyBalanceBefore  = loanToken.balanceOf(address(almProxy));
+        uint256 greedyBalanceBefore = loanToken.balanceOf(address(greedy));
+
+        greedy.pull(marketId, false, floorAssets, units, 0);
+
+        // The fabricated exit moved nothing, burned exit room, and returned no entry room.
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  rateLimit - floorAssets);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - floorAssets);
+
+        assertEq(loanToken.balanceOf(address(greedy)),   greedyBalanceBefore);
+        assertEq(loanToken.balanceOf(address(almProxy)), proxyBalanceBefore);
+
+        // With the entry meter emptied, no number of fabricated exits reopens it.
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(buyKey, floorAssets, 0);
+
+        greedy.pull(marketId, true, floorAssets, units, 0);
+
+        greedy.pull(marketId, false, floorAssets, units, 0);
+
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        greedy.pull(marketId, true, floorAssets, units, 0);
+    }
+
+    // Midnight has no zero-unit guard and a fully filled offer still passes its cap at zero
+    // units, so the callback fires; the strategy returns without calling fundFill.
+    function test_attack_zeroUnitTakeOfFilledOffer_makeMidnight() external {
+        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        _take(buy, seedUnits);
+
+        uint256 balanceBefore  = loanToken.balanceOf(address(almProxy));
+        uint256 creditBefore   = _credit();
+        uint256 limitBefore    = rateLimits.getCurrentRateLimit(buyKey);
+        uint128 consumedBefore = midnight.consumed(address(almProxy), BUY_GROUP);
+
+        _takeExpectRevert(buy, 1, abi.encodeWithSignature("ConsumedUnits()"));
+
+        bytes memory ratifierData = _ratifierData(buy);
+
+        vm.prank(attacker);
+        ( uint256 buyerAssets, uint256 sellerAssets ) = ITakeLike(MIDNIGHT).take(
+            buy, ratifierData, 0, attacker, attacker, address(0), new bytes(0)
+        );
+
+        assertEq(buyerAssets,  0);
+        assertEq(sellerAssets, 0);
+
+        assertEq(loanToken.balanceOf(address(almProxy)),          balanceBefore);
+        assertEq(_credit(),                                       creditBefore);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),     limitBefore);
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), consumedBefore);
+
+        // The poke settles two zero-value transfers from the proxy, and needs no allowance to.
+        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+    }
+
+    // Filling one of our resting buy offers runs through fundFill, so a taker reached from inside
+    // a batch is a second controller entry, and the guard is shared across facets.
+    function test_attack_nestedControllerEntry_makeMidnight() external {
+        MidnightNestedTaker nested = new MidnightNestedTaker(MIDNIGHT);
+
+        deal(address(weth), address(nested), 2_000_000e18);
+
+        vm.startPrank(address(nested));
+        weth.approve(MIDNIGHT, type(uint256).max);
+        midnight.supplyCollateral(market, 0, 2_000_000e18, address(nested));
+        vm.stopPrank();
+
+        Offer memory ours = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+
+        Offer memory outer = _offer(false, TICK_98, seedUnits);
+        outer.callback     = address(nested);
+        outer.callbackData = abi.encode(ours, _ratifierData(ours), seedUnits);
+
+        _ratify(outer);
+
+        uint256 creditBefore   = _credit();
+        uint256 limitBefore    = rateLimits.getCurrentRateLimit(buyKey);
+        uint128 consumedBefore = midnight.consumed(address(almProxy), BUY_GROUP);
+
+        uint256 spent = _buy(outer, seedUnits, type(uint256).max);
+
+        assertTrue (nested.innerAttempted());
+        assertFalse(nested.innerSucceeded());
+
+        assertEq(
+            nested.innerError(),
+            abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
+
+        // The proxy got exactly the fill it asked for, and none of the nested one.
+        assertEq(_credit(), creditBefore + seedUnits);
+
+        // The nested entry would have debited the same meter a second time.
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),          limitBefore - spent);
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), consumedBefore);
     }
 
 }
