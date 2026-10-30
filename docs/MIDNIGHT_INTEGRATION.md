@@ -227,7 +227,8 @@ Strategies are trusted code: the facet does not cross-check what a strategy repo
 - call `fundFill` with the callback's direction and exactly Midnight's `assets`, `units` and pending fee value;
 - leave no allowance behind, and no balance in the strategy itself;
 - never take amounts, venues or slippage parameters from callback data;
-- return success without calling `fundFill` on a dust callback, as described under [Fund Fill](#fund-fill-callback-no-role).
+- return success without calling `fundFill` on a dust callback, as described under [Fund Fill](#fund-fill-callback-no-role);
+- not short-circuit a sell whose assets round to zero (`units > 0`, `sellerAssets == 0`): it reverts by design, as described under [Fund Fill](#fund-fill-callback-no-role).
 
 **Pass-through strategies** hold no role.
 
@@ -285,6 +286,8 @@ Both price comparisons are cross-multiplied rather than divided, so neither boun
 
 **Dust callbacks.** Midnight places no lower bound on `units`, so any offer can be taken for zero units and the callback still fires, and a small enough buy fill rounds `buyerAssets` down to zero. The strategy returns success without calling `fundFill` when `buyerAssets == 0` on a buy, or when `units == 0` on a sell or a zero-unit take. Nothing is metered and nothing moves. A zero-asset buy gives the proxy free dust credit. This is a conformance rule: `fundFill` refuses both cases, so a strategy that called it would fail an unrelated taker's transaction.
 
+A sell whose assets round to zero (`units > 0`, `sellerAssets == 0`) reverts by design; strategies do not short-circuit it. Midnight has already taken the proxy's units when `onSell` runs, so a short-circuit would hand those units away with no floor and no meter; the revert (`MidnightFacet/zero-assets`) costs only the dust taker. Midnight rounds a maker sell's assets up, so only an offer priced at zero (tick 0) reaches this case.
+
 ### The Maker Exit Leg
 
 A third party taking a resting **sell** offer moves credit out of the proxy's position with none of our transactions in the stack, but `onSell` does reach `fundFill`, so the exit is priced and metered by the facet.
@@ -305,6 +308,8 @@ One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstr
 Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since Midnight moves at most that much in one fill and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
 
 `maxOfferSize` is two things. It is the make-enabled flag (`!= 0`) and the per-market kill switch, and it is the cap on the loan token a **single fill** may move, in either direction: `fundFill` refuses `assets > maxOfferSize` (`MidnightFacet/offer-size-too-large`). It is a per-fill cap, not a cap on an offer's total size: an offer can be filled many times, each fill bounded by `maxOfferSize` and all of them together bounded by the strategy and direction keys. Size the keys accordingly. Zeroing it makes `isCallbackAllowed` return false, so the ratifier stops ratifying the market's offers in both directions; a fill that races the change still fails inside `fundFill` with `make-not-enabled`. On this host only the admin can zero it.
+
+`setMakeConfig` reads the venue (`toMarket`) even when it zeroes `maxOfferSize`, so the kill switch depends on that read. This is accepted: the Midnight singleton is immutable and market records are permanent, so the read cannot start failing.
 
 **Event:** `MidnightMakeConfigSet(marketId, loanToken, maturity, maxOfferSize)`
 
@@ -467,7 +472,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/zero-ratifier`            | facet       | `setRatifierAuthorization` with a zero address                                            |
 | `MidnightFacet/make-not-enabled`         | facet       | `fundFill` on a market whose `maxOfferSize` is zero                                       |
 | `MidnightFacet/offer-size-too-large`     | facet       | `fundFill` moving more than the market's `maxOfferSize` in one fill                       |
-| `MidnightFacet/zero-assets`              | facet       | `fundFill` with zero assets                                                               |
+| `MidnightFacet/zero-assets`              | facet       | `fundFill` with zero assets, including a sell whose assets round to zero                  |
 | `MidnightFacet/fill-price-too-high`      | facet       | `fundFill` paying above the lesser of the tick and capped-fee yield bounds                 |
 | `MidnightFacet/fill-price-too-low`       | facet       | `fundFill` on an exit realizing below the greater of the tick and yield floors             |
 | `RateLimits/rate-limit-exceeded`         | rate limits | trade exceeding the configured limit                                                      |
