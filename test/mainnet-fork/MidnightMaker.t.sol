@@ -891,6 +891,18 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
 
         _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
     }
+
+    // Midnight rounds a maker sell's assets up, so only an offer priced at zero (tick 0) pays
+    // nothing for a unit. Its units are already gone when onSell runs, so fundFill must revert.
+    function test_makerSell_zeroAssetFillReverts() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, 0, seedUnits);
+
+        assertEq(_makerSellerAssets(1, 0), 0);
+
+        _takeExpectRevert(sell, 1, "MidnightFacet/zero-assets");
+    }
 }
 
 // Reports every exit's lien at a multiple of what the fill actually shed.
