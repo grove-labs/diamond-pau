@@ -303,6 +303,8 @@ One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstr
 
 ### Set Make Config (admin)
 
+Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`.
+
 **Function:** `setMakeConfig(market, maxOfferSize)` (`DEFAULT_ADMIN_ROLE`)
 
 Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since Midnight moves at most that much in one fill and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
@@ -540,7 +542,7 @@ A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` gra
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-**Revoking, fastest first.** Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The facet has no freezer of its own: the ratifier's `freeze()` is the maker kill switch, and the first four rows avoid a spell.
+**Revoking, fastest first.** Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`. The ratifier's `freeze()`, `unfreeze()`, `removeQuoter` and `blockOffer` are called on the ratifier itself, `removeIntegrations` on `PAU_CONTROLLER` under its own name, and the role revokes on `RateLimits`, the ALMProxy and `AccessControls`. Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The facet has no freezer of its own: the ratifier's `freeze()` is the maker kill switch, and the first four rows avoid a spell.
 
 | Lever                                                     | Scope                                                                         | Role                 |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------- |
