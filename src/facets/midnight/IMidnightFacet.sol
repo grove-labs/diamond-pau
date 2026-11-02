@@ -315,6 +315,10 @@ interface IMidnightFacet is IFacet {
      *         silently resting an unfillable book. A cap above `type(uint128).max` is rejected,
      *         since Midnight moves at most that much in one fill and a larger cap could never
      *         bind. Setting `maxOfferSize` to zero disables making.
+     * @dev    Callable by `DEFAULT_ADMIN_ROLE`, or by `MIDNIGHT_FREEZER_ROLE` with a zero
+     *         `maxOfferSize` only, so the freezer can disable making but never enable or raise it.
+     *         Any other call reverts with `AccessControlUnauthorizedAccount` for
+     *         `DEFAULT_ADMIN_ROLE`.
      * @param  market       Full market config; its id is derived here.
      * @param  maxOfferSize Largest loan token amount a single fill may move.
      */
@@ -362,6 +366,9 @@ interface IMidnightFacet is IFacet {
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
     /**********************************************************************************************/
+
+    /// @notice Role identifier for accounts that may disable making on a market, and nothing else.
+    function MIDNIGHT_FREEZER_ROLE() external pure returns (bytes32);
 
     /// @notice Address of the Midnight singleton entries are pinned to (immutable).
     function midnight() external view returns (address);

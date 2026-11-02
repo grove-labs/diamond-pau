@@ -5,7 +5,8 @@ import { ApproveLib } from "../../libraries/ApproveLib.sol";
 
 import { makeAddressBytes32Key, makeBytes32Key } from "../../libraries/RateLimitHelpers.sol";
 
-import { IALMProxy } from "../../interfaces/IALMProxy.sol";
+import { IAccessControls } from "../../interfaces/IAccessControls.sol";
+import { IALMProxy }       from "../../interfaces/IALMProxy.sol";
 
 import { IFacet } from "../IFacet.sol";
 
@@ -118,6 +119,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
     bytes32 internal constant _LIMIT_STRATEGY_BUY  = keccak256("LIMIT_MIDNIGHT_STRATEGY_BUY");
     bytes32 internal constant _LIMIT_STRATEGY_SELL = keccak256("LIMIT_MIDNIGHT_STRATEGY_SELL");
 
+    /// @inheritdoc IMidnightFacet
+    bytes32 public constant override MIDNIGHT_FREEZER_ROLE = keccak256("MIDNIGHT_FREEZER_ROLE");
+
     /// @inheritdoc IFacet
     string public constant override VERSION = "1.0.0";
 
@@ -166,8 +170,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
         external
         override
         nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        _checkMakeConfigRole(maxOfferSize);
+
         require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
 
         bytes32 marketId = MidnightIdLib.toId(market);
@@ -803,6 +808,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     function _requireDebtFree(bytes32 marketId, address user) internal view {
         require(IMidnightLike(midnight).debt(marketId, user) == 0, "MidnightFacet/debt-not-zero");
+    }
+
+    function _checkMakeConfigRole(uint256 maxOfferSize) private view {
+        IAccessControls accessControls =
+            IAccessControls(_getSharedControllerStorage().accessControls);
+
+        if (maxOfferSize == 0 && accessControls.hasRole(MIDNIGHT_FREEZER_ROLE, msg.sender)) return;
+
+        require(
+            accessControls.hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            AccessControlUnauthorizedAccount(msg.sender, DEFAULT_ADMIN_ROLE)
+        );
     }
 
 }
