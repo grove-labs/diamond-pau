@@ -430,6 +430,61 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
     }
 
+    function test_freezerDisablingMakeKillsBothLegs() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+
+        uint256 units = seedUnits / 8;
+
+        _take(buy,  units);
+        _take(sell, units);
+
+        assertTrue(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), true));
+        assertTrue(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), false));
+
+        address freezer = makeAddr("midnightFreezer");
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+
+        vm.prank(freezer);
+        mainnetController.midnight_setMakeConfig(market, 0);
+
+        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), true));
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), false));
+
+        _takeExpectRevert(buy,  units, "MidnightFacet/make-not-enabled");
+        _takeExpectRevert(sell, units, "MidnightFacet/make-not-enabled");
+
+        vm.startPrank(address(strategy));
+
+        vm.expectRevert("MidnightFacet/make-not-enabled");
+        mainnetController.midnight_fundFill(marketId, true, 1e6, 1e6, 0);
+
+        vm.expectRevert("MidnightFacet/make-not-enabled");
+        mainnetController.midnight_fundFill(marketId, false, 1e6, 1e6, 0);
+
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            freezer,
+            bytes32(0)
+        ));
+        vm.prank(freezer);
+        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+
+        _take(buy,  units);
+        _take(sell, units);
+    }
+
     function test_tighteningExitTickKillsRestingOffer() external {
         _seedCredit();
 

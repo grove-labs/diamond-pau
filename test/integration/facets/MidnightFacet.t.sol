@@ -4,6 +4,7 @@ pragma solidity ^0.8.34;
 import { ReentrancyGuard } from "../../../lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 import { IMidnightFacet }          from "../../../src/facets/midnight/IMidnightFacet.sol";
+import { IAccessControls }         from "../../../src/interfaces/IAccessControls.sol";
 import { IController }             from "../../../src/interfaces/IController.sol";
 import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableIntegrations.sol";
 import { IRateLimits }             from "../../../src/interfaces/IRateLimits.sol";
@@ -931,6 +932,158 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertEq(config.maxOfferSize, 0);
         assertEq(config.loanToken,    loanToken);
+    }
+
+    /**********************************************************************************************/
+    /*** setMakeConfig Freezer Tests                                                            ***/
+    /**********************************************************************************************/
+
+    function _grantFreezer() internal returns (address freezer) {
+        freezer = makeAddr("midnightFreezer");
+
+        IAccessControls accessControls =
+            IAccessControls(IController(payable(address(controller))).accessControls());
+
+        bytes32 role = MidnightFacet(facetAddress).MIDNIGHT_FREEZER_ROLE();
+
+        vm.prank(admin);
+        accessControls.grantRole(role, freezer);
+    }
+
+    function _expectAdminRoleRevert(address caller) internal {
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            caller,
+            DEFAULT_ADMIN_ROLE
+        ));
+    }
+
+    function test_midnightFreezerRole() external view {
+        bytes32 role = MidnightFacet(facetAddress).MIDNIGHT_FREEZER_ROLE();
+
+        assertEq(role, keccak256("MIDNIGHT_FREEZER_ROLE"));
+        assertEq(role, 0x734f97facdc17c5a0364162ede289ef3fc7501314999442287d4c3f97235a585);
+
+        assertEq(IMidnightFacet.MIDNIGHT_FREEZER_ROLE.selector, bytes4(0xf9925515));
+        assertEq(IMidnightFacet.setMakeConfig.selector,         bytes4(0xcc658cd0));
+    }
+
+    function test_setMakeConfig_freezerDisables() external {
+        _onboardAndEnableMake(0);
+
+        address freezer = _grantFreezer();
+
+        vm.record();
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightMakeConfigSet(_marketId(), loanToken, marketMaturity, 0);
+
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), 0);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        IMidnightFacet.MakeConfig memory config = controller.getMakeConfig(_marketId());
+
+        assertEq(config.maxOfferSize, 0);
+        assertEq(config.maturity,     uint64(marketMaturity));
+        assertEq(config.loanToken,    loanToken);
+
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), MAX_OFFER_SIZE);
+
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, MAX_OFFER_SIZE);
+
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), 0);
+
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, 0);
+    }
+
+    function test_setMakeConfig_freezerCannotEnable() external {
+        _onboardAndEnableMake(0);
+
+        address freezer = _grantFreezer();
+
+        _expectAdminRoleRevert(freezer);
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), 1);
+
+        _expectAdminRoleRevert(freezer);
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), MAX_OFFER_SIZE);
+
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, MAX_OFFER_SIZE);
+    }
+
+    function testFuzz_setMakeConfig_freezerCannotEnable(uint256 maxOfferSize) external {
+        maxOfferSize = bound(maxOfferSize, 1, type(uint256).max);
+
+        _onboardAndEnableMake(0);
+
+        address freezer = _grantFreezer();
+
+        _expectAdminRoleRevert(freezer);
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), maxOfferSize);
+
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, MAX_OFFER_SIZE);
+    }
+
+    function test_setMakeConfig_neitherRoleCannotDisable() external {
+        _onboardAndEnableMake(0);
+
+        _expectAdminRoleRevert(unauthorized);
+        vm.prank(unauthorized);
+        controller.setMakeConfig(_market(), 0);
+
+        _expectAdminRoleRevert(allocator);
+        vm.prank(allocator);
+        controller.setMakeConfig(_market(), 0);
+
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, MAX_OFFER_SIZE);
+    }
+
+    function test_setMakeConfig_freezerTakesTheAdminPath() external {
+        address freezer = _grantFreezer();
+
+        _mockMarketExists();
+
+        vm.expectRevert("MidnightFacet/market-not-onboarded");
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), 0);
+
+        marketMidnight = makeAddr("otherMidnight");
+
+        vm.expectRevert("MidnightFacet/invalid-midnight");
+        vm.prank(freezer);
+        controller.setMakeConfig(_market(), 0);
+    }
+
+    function test_midnightFreezer_grantsNothingElse() external {
+        address freezer = _grantFreezer();
+
+        vm.startPrank(freezer);
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            freezer,
+            ALLOCATOR_ROLE
+        ));
+        controller.cancelOfferGroup(BUY_GROUP);
+
+        _expectAdminRoleRevert(freezer);
+        controller.setMarketConfig(
+            _marketId(), 0, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
+        );
+
+        _expectAdminRoleRevert(freezer);
+        controller.setDesignatedGroups(_marketId(), BUY_GROUP, SELL_GROUP);
+
+        _expectAdminRoleRevert(freezer);
+        controller.setRatifierAuthorization(ratifier, false);
+
+        vm.stopPrank();
     }
 
     /**********************************************************************************************/
