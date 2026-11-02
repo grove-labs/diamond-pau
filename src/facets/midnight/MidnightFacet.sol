@@ -369,8 +369,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
         external
         override
         nonReentrant
-        onlyRole(ALLOCATOR_ROLE)
     {
+        _checkCancelOfferGroupRole();
+
         address proxy = _getSharedControllerStorage().proxy;
 
         // Midnight rejects any amount below what the group consumed, so max can only retire.
@@ -819,6 +820,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(
             accessControls.hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
             AccessControlUnauthorizedAccount(msg.sender, DEFAULT_ADMIN_ROLE)
+        );
+    }
+
+    function _checkCancelOfferGroupRole() private view {
+        IAccessControls accessControls =
+            IAccessControls(_getSharedControllerStorage().accessControls);
+
+        if (accessControls.hasRole(MIDNIGHT_FREEZER_ROLE, msg.sender)) return;
+
+        require(
+            accessControls.hasRole(ALLOCATOR_ROLE, msg.sender),
+            AccessControlUnauthorizedAccount(msg.sender, ALLOCATOR_ROLE)
         );
     }
 

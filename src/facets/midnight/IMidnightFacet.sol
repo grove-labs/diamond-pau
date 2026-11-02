@@ -214,6 +214,8 @@ interface IMidnightFacet is IFacet {
      *         consumption only ever increases. Risk-reducing, so it is allocator-callable, and it
      *         is the only way to retire offers already published to the mempool. Groups are
      *         per-direction, so the entry and exit books can be cancelled separately.
+     * @dev    Callable by `ALLOCATOR_ROLE` or `MIDNIGHT_FREEZER_ROLE`. Any other caller reverts
+     *         with `AccessControlUnauthorizedAccount` for `ALLOCATOR_ROLE`.
      * @param  group Offer group to consume.
      */
     function cancelOfferGroup(bytes32 group) external;
