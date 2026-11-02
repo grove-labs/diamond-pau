@@ -305,11 +305,11 @@ One post-condition is available and is used: `debt(marketId, proxy) == 0`. Upstr
 
 Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`.
 
-**Function:** `setMakeConfig(market, maxOfferSize)` (`DEFAULT_ADMIN_ROLE`)
+**Function:** `setMakeConfig(market, maxOfferSize)` (`DEFAULT_ADMIN_ROLE`, or `MIDNIGHT_FREEZER_ROLE` with a zero `maxOfferSize` only)
 
 Takes the full `Market` struct, not an id, because `MakeConfig` caches the maturity and loan token the ratifier and `fundFill` price against. Requires `market.midnight == midnight` (`MidnightFacet/invalid-midnight`), the market to be onboarded for taking already (`minSellTick != 0`, `MidnightFacet/market-not-onboarded`), `market.maturity <= type(uint64).max` (`MidnightFacet/maturity-oob`), `maxOfferSize <= type(uint128).max` (`MidnightFacet/max-offer-size-oob`), since Midnight moves at most that much in one fill and a larger cap could never bind, and `toMarket(marketId).maturity == market.maturity` (`MidnightFacet/market-mismatch`), which reverts unless the market exists on the singleton.
 
-`maxOfferSize` is two things. It is the make-enabled flag (`!= 0`) and the per-market kill switch, and it is the cap on the loan token a **single fill** may move, in either direction: `fundFill` refuses `assets > maxOfferSize` (`MidnightFacet/offer-size-too-large`). It is a per-fill cap, not a cap on an offer's total size: an offer can be filled many times, each fill bounded by `maxOfferSize` and all of them together bounded by the strategy and direction keys. Size the keys accordingly. Zeroing it makes `isCallbackAllowed` return false, so the ratifier stops ratifying the market's offers in both directions; a fill that races the change still fails inside `fundFill` with `make-not-enabled`. On this host only the admin can zero it.
+`maxOfferSize` is two things. It is the make-enabled flag (`!= 0`) and the per-market kill switch, and it is the cap on the loan token a **single fill** may move, in either direction: `fundFill` refuses `assets > maxOfferSize` (`MidnightFacet/offer-size-too-large`). It is a per-fill cap, not a cap on an offer's total size: an offer can be filled many times, each fill bounded by `maxOfferSize` and all of them together bounded by the strategy and direction keys. Size the keys accordingly. Zeroing it makes `isCallbackAllowed` return false, so the ratifier stops ratifying the market's offers in both directions; a fill that races the change still fails inside `fundFill` with `make-not-enabled`. The admin can set any value. A holder of `MIDNIGHT_FREEZER_ROLE` in `AccessControls` can only zero it, and any other call reverts with `AccessControlUnauthorizedAccount` for `DEFAULT_ADMIN_ROLE`; both callers then take the same checks.
 
 `setMakeConfig` reads the venue (`toMarket`) even when it zeroes `maxOfferSize`, so the kill switch depends on that read. This is accepted: the Midnight singleton is immutable and market records are permanent, so the read cannot start failing.
 
@@ -337,7 +337,7 @@ Midnight tracks consumed size per `offer.group`. These two values are the only g
 
 **Function:** `cancelOfferGroup(group)` (`ALLOCATOR_ROLE`)
 
-`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above are admin-only. Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A group cancel sets the group's consumed amount to the `uint128` maximum, so afterwards even a zero-unit take of an offer whose `maxUnits` (or `maxAssets`, when set) is below that maximum reverts in Midnight (`ConsumedUnits()` or `ConsumedAssets()`) before any callback. An offer capped at the `uint128` maximum still reaches its callback at zero units, where the dust rule makes it a no-op.
+`doCall`s `midnight.setConsumed(group, type(uint128).max, proxy)`. Midnight rejects any amount below what the group has already consumed, so the call can only retire a group and never reopen one, which is why it sits at allocator level while the setters above need the admin (the Midnight freezer can only zero `maxOfferSize`). Groups are per direction, so entries can be retired while exits stay fillable. Retiring a group is irreversible for that group. A group nothing ever used is retired just the same. A group cancel sets the group's consumed amount to the `uint128` maximum, so afterwards even a zero-unit take of an offer whose `maxUnits` (or `maxAssets`, when set) is below that maximum reverts in Midnight (`ConsumedUnits()` or `ConsumedAssets()`) before any callback. An offer capped at the `uint128` maximum still reaches its callback at zero units, where the dust rule makes it a no-op.
 
 **Event:** `MidnightOfferGroupCancelled(group)`
 
@@ -542,7 +542,7 @@ A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` gra
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-**Revoking, fastest first.** Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`. The ratifier's `freeze()`, `unfreeze()`, `removeQuoter` and `blockOffer` are called on the ratifier itself, `removeIntegrations` on `PAU_CONTROLLER` under its own name, and the role revokes on `RateLimits`, the ALMProxy and `AccessControls`. Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The facet has no freezer of its own: the ratifier's `freeze()` is the maker kill switch, and the first four rows avoid a spell.
+**Revoking, fastest first.** Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`. The ratifier's `freeze()`, `unfreeze()`, `removeQuoter` and `blockOffer` are called on the ratifier itself, `removeIntegrations` on `PAU_CONTROLLER` under its own name, and the role revokes on `RateLimits`, the ALMProxy and `AccessControls`. Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The ratifier's `freeze()` is the maker kill switch, the Midnight freezer's `setMakeConfig(market, 0)` stops one market, and the first five rows avoid a spell.
 
 | Lever                                                     | Scope                                                                         | Role                 |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------- |
@@ -550,12 +550,14 @@ Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturit
 | ratifier `removeQuoter(key)`                              | every offer that key signed                                                   | ratifier freezer     |
 | ratifier `blockOffer(offerDigest)`                        | one signed offer, until the freezer or admin unblocks it                      | ratifier freezer     |
 | `cancelOfferGroup(group)`                                 | one direction on one market, irreversible for that group                      | allocator            |
+| `setMakeConfig(market, 0)`                                | one market, both directions, fabricated `fundFill` calls included             | Midnight freezer     |
 | zero a strategy's `LIMIT_MIDNIGHT_STRATEGY_*` key         | one strategy on one market and direction, fabricated `fundFill` calls included | rate limits admin    |
-| `setMakeConfig(market, 0)`                                | one market, both directions, fabricated `fundFill` calls included             | admin                |
 | `setRatifierAuthorization(ratifier, false)`               | every market, both directions, one transaction                                | admin                |
 | `controller.removeIntegrations(["MIDNIGHT_FACET"])`       | every Midnight function at once, `fundFill` included, so maker exits stop too | admin                |
 | revoke the controller's `CONTROLLER` role on `RateLimits` | every metered path in the system, maker exits included                        | limits admin         |
 | revoke the controller's `CONTROLLER` role on the ALMProxy | maker buys, fabricated ones included, not maker sells; see Proxy freeze below | proxy admin          |
+
+The Midnight freezer (`MIDNIGHT_FREEZER_ROLE` in `AccessControls`) can disable making on a market by setting `maxOfferSize` to zero, which stops every strategy on that market, fabricated `fundFill` calls included; only the admin can set it back to a non-zero value.
 
 Two more admin levers exist and are dominated by the rows above. Zeroing a market key stops one direction on that market, fabricated `fundFill` calls included, and also stops taker traffic on that side, which is a blunter instrument than zeroing the strategy key. Tightening `setMarketConfig` refuses the fill inside `fundFill` after ratification has already passed, so it reverts a stranger's transaction instead of stopping the book; treat it as configuration, not as an incident response.
 
@@ -566,17 +568,18 @@ Two more admin levers exist and are dominated by the rows above. Zeroing a marke
 **Runbook.**
 
 1. Freeze every ratifier authorized for the affected proxy; under the one-ratifier rule that is a single `freeze()`.
-2. Before any proxy freeze, the admin zeroes `maxOfferSize` (`setMakeConfig(market, 0)`) or deauthorizes the ratifier (`setRatifierAuthorization(ratifier, false)`), and an allocator calls `cancelOfferGroup` on the designated groups, because a proxy freeze leaves maker sells live and blocks both of those calls. `removeIntegrations` unwires them outright.
+2. Before any proxy freeze, the Midnight freezer zeroes `maxOfferSize` (`setMakeConfig(market, 0)`) or the admin deauthorizes the ratifier (`setRatifierAuthorization(ratifier, false)`), and an allocator calls `cancelOfferGroup` on the designated groups, because a proxy freeze leaves maker sells live and blocks both of those calls. `removeIntegrations` unwires them outright.
 3. Governance zeroes the strategy keys, and the allocator role admin revokes any operator role a strategy holds.
 
 Freezing the ratifier and zeroing a strategy key touch neither the proxy nor the facet, so both still work after a proxy freeze.
 
-**Strategy compromised.** The ratifier freeze does not stop a keyed strategy calling `fundFill` with no fill behind it, and no fast role on this host reaches that call.
+**Strategy compromised.** The ratifier freeze does not stop a keyed strategy calling `fundFill` with no fill behind it.
 
+- The Midnight freezer (`MIDNIGHT_FREEZER_ROLE` in `AccessControls`) can disable making on a market by setting `maxOfferSize` to zero, which stops every strategy on that market, fabricated `fundFill` calls included; only the admin can set it back to a non-zero value. It is the fast stop for any strategy, roleless ones included: the freezer zeroes `maxOfferSize` on every market the strategy is keyed for.
 - For an operator-role strategy, the `ALLOCATOR_ROLE` admin revokes its role through `AccessControls`. That ends its allocator surface, every venue key the role can spend, but not its `fundFill` calls, which carry no role gate.
-- For any strategy, roleless ones included, only the admin can stop the fabricated calls: the rate limits admin zeroes its strategy keys, or the controller admin zeroes `maxOfferSize` on every market it is keyed for. For a roleless strategy these are the only levers.
+- To offboard the strategy and let the rest of each market trade again, the rate limits admin zeroes its strategy keys and the admin sets `maxOfferSize` back.
 
-This is a known slow path. Until the admin action lands, fabricated buys draw down the lesser of the strategy's and the market's remaining buy keys plus their slopes, at most `maxOfferSize` per call, which is why the market buy key is kept finite. A proxy freeze also stops fabricated buys, but it is a governance action as well and comes after runbook step 2.
+Until the freezer acts, fabricated buys draw down the lesser of the strategy's and the market's remaining buy keys plus their slopes, at most `maxOfferSize` per call, which is why the market buy key is kept finite. A proxy freeze also stops fabricated buys, but it is a governance action and comes after runbook step 2.
 
 **Every lever announces itself.** A compromised strategy watching the mempool can draw whatever budget is left in front of an offboarding transaction, so send it through a private relay.
 
@@ -584,14 +587,14 @@ This is a known slow path. Until the admin action lands, fabricated buys draw do
 
 The periphery serves this facet and the ALM controller with the same ratifier and strategy contracts, deployed once per host, through `midnight_fundFill`, `midnight_isCallbackAllowed` and `midnight_getDesignatedGroups`, whose selectors and semantics are identical on both hosts. The rest differs by design:
 
-- **Roles.** Admin maps to `DEFAULT_ADMIN_ROLE`, the ALM `RELAYER` to `ALLOCATOR_ROLE` in `AccessControls`. The ALM `FREEZER` has no equivalent here, so per-market `maxOfferSize` zeroing is admin-only on the diamond while the ALM lets its freezer do it; the ratifier's `freeze()` is the fast stop on both. A compromised strategy's fabricated `fundFill` calls are therefore stopped by the freezer on the ALM and only by governance here, see Strategy compromised under [Revoking](#enabling-maker-mode-on-a-market).
+- **Roles.** Admin maps to `DEFAULT_ADMIN_ROLE`, the ALM `RELAYER` to `ALLOCATOR_ROLE` in `AccessControls`, and the ALM `FREEZER`, for `maxOfferSize` zeroing only, to `MIDNIGHT_FREEZER_ROLE`. The Midnight freezer (`MIDNIGHT_FREEZER_ROLE` in `AccessControls`) can disable making on a market by setting `maxOfferSize` to zero, which stops every strategy on that market, fabricated `fundFill` calls included; only the admin can set it back to a non-zero value. The ALM's `FREEZER` can do the same on the ALM, so on both hosts a freezer stops a compromised strategy's fabricated `fundFill` calls, see Strategy compromised under [Revoking](#enabling-maker-mode-on-a-market); the ratifier's `freeze()` is the fast stop for ratified fills on both.
 - **Group cancels.** `cancelOfferGroup` is `ALLOCATOR_ROLE` only. The ALM's `cancelMidnightOfferGroup` is open to its `RELAYER` and its `FREEZER`, so there the freezer can retire a book, and here only an allocator can.
 - **Operator roles.** A phase 3 strategy's `ALLOCATOR_ROLE` is granted and revoked by the allocator role admin in `AccessControls`, a different authority from the governance that sets its keys. On the ALM the admin grants `RELAYER`, and the freezer can also `removeRelayer`.
 - **Make config.** `setMakeConfig` takes the full `Market` struct here and a `marketId` on the ALM. The cached maturity is a `uint64` here and a `uint48` on the ALM; Midnight caps maturity at 100 years, so neither width binds.
 - **Key getters.** `getStrategyBuyRateLimitKey` and `getStrategySellRateLimitKey` exist only here. The ALM exposes the ids as `MidnightLib` constants; the key encodings are identical on both hosts.
 - **Error prefixes.** Facet errors are `MidnightFacet/...` here and `MidnightLib/...` or `FC/...` on the ALM. The suffixes match for every maker check, except the zero ratifier (`MidnightFacet/zero-ratifier` vs `FC/ratifier-zero-address`) and the transfer (`MidnightFacet/transfer-failed` vs `ERC20Lib/transfer-failed`). An unset key reverts `RateLimits/zero-maxAmount` on both.
 - **Transfer return data.** The entry transfer here accepts empty return data or exactly 32 bytes encoding `true`. The ALM's `ERC20Lib.transfer` decodes the first word of any return of 32 bytes or more. The two differ only for a non-standard token returning more than 32 bytes, which the ALM accepts and this host rejects.
-- **Setter guards and events.** The Midnight config setters are `nonReentrant` here and not on the ALM; both are admin-only. Taker legs emit `MidnightBuy`, `MidnightSell` and `MidnightRedeem` here and no event on the ALM. The maker events are identical.
+- **Setter guards and events.** The Midnight config setters are `nonReentrant` here and not on the ALM; on both they are admin-only, except that the freezer can zero `maxOfferSize`. Taker legs emit `MidnightBuy`, `MidnightSell` and `MidnightRedeem` here and no event on the ALM. The maker events are identical.
 - **Full exit with an oversized fee.** This host computes `pendingFee * WAD / units` before the full-exit short-circuit, so a full exit reporting a `pendingFee` above about `1.16e59` reverts on overflow here and passes on the ALM. It is unreachable in practice: Midnight's fee is a `uint128`, and a conforming strategy forwards it unchanged.
 - **USDS mint.** Available as a sourcing venue here only, see [Strategy Conformance Rules](#strategy-conformance-rules).
 - **Naming.** Every Midnight function is wired on the controller with the `midnight_` prefix, as for every other facet. The ALM controller carries the prefix only on the three periphery-facing functions.
