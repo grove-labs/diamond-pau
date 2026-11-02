@@ -92,6 +92,8 @@ See [Liquidity Operations](./LIQUIDITY_OPERATIONS.md) for OTC mechanics.
 
 **Rulebook Exception:** `fundFill` has no role gate, a documented exception to facet rulebook rules A-1 and A-2 for callback entry points reached from a third party's transaction. The strategy key bounds it per market and direction exactly as a role would, and an unset key reverts before any state change. An upstream exemption for callback entry points is being requested separately.
 
+**Rulebook Exception, Midnight Freezer:** `MIDNIGHT_FREEZER_ROLE` is a role local to the Midnight facet, an accepted exception to facet rulebook rule A-1. `setMakeConfig` carries `nonReentrant` without `onlyRole` and checks both roles with a private helper that calls `hasRole` on `AccessControls` directly, so it also departs from A-2 and A-3. The role grants nothing else: `cancelOfferGroup` stays `ALLOCATOR_ROLE` only and every other Midnight setter stays `DEFAULT_ADMIN_ROLE`. The `AccessControls` admin grants it in the spell to the incident freezer key.
+
 **External Audits:** Eleven reports under `morpho-org/midnight/audits/` at the pinned commit `70607569ac348e9880b512ffd3b574be55405932` (Spearbit, Cantina competition, Blackthorn, TrustSec, Stermi; 2026-04 through 2026-09), which is the code deployed as the mainnet singleton.
 
 See [Midnight Integration](./MIDNIGHT_INTEGRATION.md) for the facet's controls, price and fee rails, and failure modes.
