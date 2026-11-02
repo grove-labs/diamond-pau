@@ -1060,17 +1060,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setMakeConfig(_market(), 0);
     }
 
-    function test_midnightFreezer_grantsNothingElse() external {
+    function test_midnightFreezer_cannotCallOtherAdminSetters() external {
         address freezer = _grantFreezer();
 
         vm.startPrank(freezer);
-
-        vm.expectRevert(abi.encodeWithSignature(
-            "AccessControlUnauthorizedAccount(address,bytes32)",
-            freezer,
-            ALLOCATOR_ROLE
-        ));
-        controller.cancelOfferGroup(BUY_GROUP);
 
         _expectAdminRoleRevert(freezer);
         controller.setMarketConfig(
@@ -1210,6 +1203,40 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             ALLOCATOR_ROLE
         ));
         controller.cancelOfferGroup(BUY_GROUP);
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            unauthorized,
+            ALLOCATOR_ROLE
+        ));
+        vm.prank(unauthorized);
+        controller.cancelOfferGroup(BUY_GROUP);
+    }
+
+    function test_cancelOfferGroup_freezer() external {
+        address freezer = _grantFreezer();
+
+        vm.record();
+
+        vm.expectCall(
+            midnight,
+            abi.encodeCall(
+                IMidnightMock.setConsumed,
+                (SELL_GROUP, type(uint128).max, proxy)
+            )
+        );
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightOfferGroupCancelled(SELL_GROUP);
+
+        vm.prank(freezer);
+        controller.cancelOfferGroup(SELL_GROUP);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+    }
+
+    function test_cancelOfferGroup_selector() external pure {
+        assertEq(IMidnightFacet.cancelOfferGroup.selector, bytes4(0x287c1295));
     }
 
     function test_cancelOfferGroup() external {

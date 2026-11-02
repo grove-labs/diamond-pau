@@ -598,6 +598,78 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         assertGt(sellerAssets, 0);
     }
 
+    function test_freezerCancellingBuyGroupKillsItsOffers() external {
+        _seedCredit();
+
+        Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits / 4);
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
+
+        uint256 units = seedUnits / 8;
+
+        _take(buy, units);
+
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
+
+        address freezer = makeAddr("midnightFreezer");
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightOfferGroupCancelled(BUY_GROUP);
+
+        vm.prank(freezer);
+        mainnetController.midnight_cancelOfferGroup(BUY_GROUP);
+
+        assertEq(midnight.consumed(address(almProxy), BUY_GROUP),  type(uint128).max);
+        assertEq(midnight.consumed(address(almProxy), SELL_GROUP), 0);
+
+        _takeExpectRevert(buy, 1, abi.encodeWithSignature("ConsumedUnits()"));
+
+        ( , uint256 sellerAssets ) = _take(sell, units);
+
+        assertGt(sellerAssets, 0);
+    }
+
+    function test_midnightFreezerCannotTradeOrEnableMake() external {
+        Offer memory offer = _makerOffer(true, MAKER_BUY_TICK, seedUnits / 4);
+
+        address freezer = makeAddr("midnightFreezer");
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+        mainnetController.midnight_setMakeConfig(market, 0);
+        vm.stopPrank();
+
+        bytes memory notAllocator = abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            freezer,
+            keccak256("ALLOCATOR_ROLE")
+        );
+
+        vm.startPrank(freezer);
+
+        vm.expectRevert(notAllocator);
+        mainnetController.midnight_buy(marketId, offer, "", 1, type(uint256).max);
+
+        vm.expectRevert(notAllocator);
+        mainnetController.midnight_sell(marketId, offer, "", 1, 0);
+
+        vm.expectRevert(notAllocator);
+        mainnetController.midnight_redeem(marketId, 1, 0);
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            freezer,
+            bytes32(0)
+        ));
+        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+
+        vm.stopPrank();
+
+        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+    }
+
 }
 
 contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_TestBase {
@@ -721,6 +793,35 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         vm.prank(address(strategy));
         vm.expectRevert("MidnightFacet/make-not-enabled");
         mainnetController.midnight_fundFill(marketId, false, 1e6, 1e6, 0);
+    }
+
+    function test_midnightFreezerCannotCancelAfterProxyFreeze() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
+
+        address freezer = makeAddr("midnightFreezer");
+
+        bytes32 controllerRole = almProxy.CONTROLLER();
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+        almProxy.revokeRole(controllerRole, address(mainnetController));
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            address(mainnetController),
+            controllerRole
+        ));
+        vm.prank(freezer);
+        mainnetController.midnight_cancelOfferGroup(SELL_GROUP);
+
+        assertEq(midnight.consumed(address(almProxy), SELL_GROUP), 0);
+
+        ( , uint256 sellerAssets ) = _take(sell, seedUnits / 8);
+
+        assertGt(sellerAssets, 0);
     }
 
     function test_makeDisableLeavesTheTakerPathWorking() external {
