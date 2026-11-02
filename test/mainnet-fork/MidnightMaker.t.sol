@@ -7,6 +7,8 @@ import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
 import { IMidnightController } from "../../src/facets/midnight/IMidnightController.sol";
 
+import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
+
 import { Market, Offer } from "../../src/facets/midnight/MidnightInterfaces.sol";
 
 import { MAX_TICK, MidnightTickLib } from "../../src/facets/midnight/MidnightTickLib.sol";
@@ -689,6 +691,38 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
 
         assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
     }
+
+    function test_midnightFreezerStopsMakerSellsAfterProxyFreeze() external {
+        _seedCredit();
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
+
+        address freezer = makeAddr("midnightFreezer");
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+        almProxy.revokeRole(almProxy.CONTROLLER(), address(mainnetController));
+        vm.stopPrank();
+
+        assertFalse(almProxy.hasRole(almProxy.CONTROLLER(), address(mainnetController)));
+
+        _take(sell, seedUnits / 8);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightMakeConfigSet(marketId, market.loanToken, market.maturity, 0);
+
+        vm.prank(freezer);
+        mainnetController.midnight_setMakeConfig(market, 0);
+
+        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+
+        _takeExpectRevert(sell, seedUnits / 8, "MidnightFacet/make-not-enabled");
+
+        vm.prank(address(strategy));
+        vm.expectRevert("MidnightFacet/make-not-enabled");
+        mainnetController.midnight_fundFill(marketId, false, 1e6, 1e6, 0);
+    }
+
     function test_makeDisableLeavesTheTakerPathWorking() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
