@@ -211,9 +211,10 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Cancels every resting offer in one of the proxy's offer groups.
      * @dev    Consumes the group to its maximum on Midnight, which is irreversible for that group:
-     *         consumption only ever increases. Risk-reducing, so it is allocator-callable, and it
-     *         is the only way to retire offers already published to the mempool. Groups are
-     *         per-direction, so the entry and exit books can be cancelled separately.
+     *         consumption only ever increases. Risk-reducing, so an allocator or the Midnight
+     *         freezer can call it, and it is the only way to retire offers already published to
+     *         the mempool. Groups are per-direction, so the entry and exit books can be cancelled
+     *         separately.
      * @dev    Callable by `ALLOCATOR_ROLE` or `MIDNIGHT_FREEZER_ROLE`. Any other caller reverts
      *         with `AccessControlUnauthorizedAccount` for `ALLOCATOR_ROLE`.
      * @param  group Offer group to consume.
