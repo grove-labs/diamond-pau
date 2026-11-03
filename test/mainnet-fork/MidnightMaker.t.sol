@@ -5,6 +5,8 @@ import { IERC20 } from "../../lib/forge-std/src/interfaces/IERC20.sol";
 
 import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
+import { Ethereum as GroveEthereum } from "../../lib/grove-address-registry/src/Ethereum.sol";
+
 import { IMidnightController } from "../../src/facets/midnight/IMidnightController.sol";
 
 import { IMidnightFacet } from "../../src/facets/midnight/IMidnightFacet.sol";
@@ -446,7 +448,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         assertTrue(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), true));
         assertTrue(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), false));
 
-        address freezer = makeAddr("midnightFreezer");
+        address freezer = GroveEthereum.ALM_FREEZER;
 
         vm.prank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
@@ -610,7 +612,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
 
-        address freezer = makeAddr("midnightFreezer");
+        address freezer = GroveEthereum.ALM_FREEZER;
 
         vm.prank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
@@ -634,7 +636,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
     function test_midnightFreezerCannotTradeOrEnableMake() external {
         Offer memory offer = _makerOffer(true, MAKER_BUY_TICK, seedUnits / 4);
 
-        address freezer = makeAddr("midnightFreezer");
+        address freezer = GroveEthereum.ALM_FREEZER;
 
         vm.startPrank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
@@ -769,7 +771,7 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
 
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
 
-        address freezer = makeAddr("midnightFreezer");
+        address freezer = GroveEthereum.ALM_FREEZER;
 
         vm.startPrank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
@@ -800,7 +802,7 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
 
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
 
-        address freezer = makeAddr("midnightFreezer");
+        address freezer = GroveEthereum.ALM_FREEZER;
 
         bytes32 controllerRole = almProxy.CONTROLLER();
 
