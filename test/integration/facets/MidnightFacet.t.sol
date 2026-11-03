@@ -2354,9 +2354,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(controller.isCallbackAllowed(_marketId(), other, false), false);
     }
 
-    // Amount, price and venue-state checks are held open (honest assets under every cap, the live
-    // fee at the ceiling, no loss factor, no debt, a funded proxy), so only the make switch and the
-    // keys vary, and the view must answer exactly what fundFill does.
+    // Excluded checks, held passing by honest assets under every cap, the live fee at the ceiling,
+    // no loss factor, no debt and a funded proxy: zero-assets, zero-units, offer-size-too-large,
+    // rate-limit-exceeded, continuous fee, loss factor, price, debt, transfer. The zero callback is
+    // also excluded: the view hard-codes false for it.
     function testFuzz_isCallbackAllowed_matchesFundFillGates(
         bool    buying,
         bool    makeEnabled,
