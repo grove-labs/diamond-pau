@@ -642,7 +642,7 @@ contract MidnightHostileMaker {
 
         // Take an offer of our own choosing while the proxy's approval is live.
         try IMidnightAttackLike(midnight).take(
-            attackOffer, ratifierData, units, address(this), address(0), address(0), ""
+            attackOffer, ratifierData, units, address(this), address(this), address(0), ""
         ) {
             tookOffer = true;
         } catch {}
@@ -799,6 +799,13 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         deal(address(loanToken), address(hostile), proxyBalance);
         hostile.approveMidnight(address(loanToken));
 
+        // Collateralized, so the take probe's units can be sold without failing on health.
+        deal(address(weth), address(hostile), 2_000_000e18);
+        hostile.approveMidnight(address(weth));
+
+        vm.prank(address(hostile));
+        midnight.supplyCollateral(market, 0, 2_000_000e18, address(hostile));
+
         donator = new MidnightDonatingMaker(MIDNIGHT);
 
         deal(address(loanToken), address(donator), proxyBalance);
@@ -827,8 +834,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         slasher.approveMidnight(address(loanToken));
     }
 
-    // An offer that would make the proxy the payer. The proxy authorizes no ratifier, so Midnight
-    // refuses it before the ratifier is even consulted.
+    // An offer that would make the proxy the payer. In this suite the proxy authorizes no ratifier.
     function _proxyAsMakerOffer(uint256 units) internal view returns (Offer memory offer) {
         offer = Offer({
             market                  : market,
@@ -881,14 +887,21 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         );
     }
 
+    // The take probe is ratified and the withdraw probe has liquidity to draw, so each can only
+    // fail on the proxy's authorization: of the ratifier, and of the callback.
     function test_attack_hostileMakerCallback_buyMidnight() external {
+        _victimRepays();
+
         uint256 expected     = _buyerAssets(attackUnits, TICK_98);
         uint256 creditBefore = _credit();
+
+        Offer memory attackOffer = _proxyAsMakerOffer(attackUnits);
+        _ratify(attackOffer);
 
         Offer memory offer = _offer(false, TICK_98, attackUnits);
         offer.callback     = address(hostile);
         offer.callbackData = abi.encode(
-            address(almProxy), _proxyAsMakerOffer(attackUnits), new bytes(0), attackUnits
+            address(almProxy), attackOffer, _ratifierData(attackOffer), attackUnits
         );
         _ratify(offer);
 
@@ -916,15 +929,24 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     }
 
     // The same callback on the other leg, where the proxy gives up units instead of paying for
-    // them, so there is no approval for the callback to spend in the first place.
+    // them, so there is no approval for the callback to spend in the first place. The take probe is
+    // ratified and its ratifier authorized, so only that missing approval can stop it.
     function test_attack_hostileMakerCallback_sellMidnight() external {
+        _victimRepays();
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
+
         uint256 expected     = _sellerAssets(attackUnits, TICK_99);
         uint256 creditBefore = _credit();
+
+        Offer memory attackOffer = _proxyAsMakerOffer(attackUnits);
+        _ratify(attackOffer);
 
         Offer memory offer = _offer(true, TICK_99, attackUnits);
         offer.callback     = address(hostile);
         offer.callbackData = abi.encode(
-            address(almProxy), _proxyAsMakerOffer(attackUnits), new bytes(0), attackUnits
+            address(almProxy), attackOffer, _ratifierData(attackOffer), attackUnits
         );
         _ratify(offer);
 
@@ -1278,6 +1300,40 @@ contract MidnightGreedyStrategy {
 
 }
 
+// A funding strategy that forwards every buy callback to fundFill, dust included.
+contract MidnightForwardingStrategy {
+
+    bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    address public immutable midnight;
+    address public immutable controller;
+
+    constructor(address midnight_, address controller_) {
+        midnight   = midnight_;
+        controller = controller_;
+    }
+
+    function onBuy(
+        bytes32         marketId,
+        Market   memory market,
+        uint256         buyerAssets,
+        uint256         units,
+        uint256         pendingFeeIncrease,
+        address,
+        bytes    memory
+    )
+        external returns (bytes32)
+    {
+        IMidnightFundFillLike(controller)
+            .midnight_fundFill(marketId, true, buyerAssets, units, pendingFeeIncrease);
+
+        IERC20Like(market.loanToken).approve(midnight, buyerAssets);
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
 contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase {
 
     address internal attacker = makeAddr("attacker");
@@ -1421,36 +1477,25 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
     }
 
     // Midnight has no zero-unit guard and a fully filled offer still passes its cap at zero
-    // units, so the callback fires; the strategy returns without calling fundFill.
+    // units, so the callback fires; a strategy that forwards it meets the facet's zero guards.
     function test_attack_zeroUnitTakeOfFilledOffer_makeMidnight() external {
-        Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
+        MidnightForwardingStrategy forwarder =
+            new MidnightForwardingStrategy(MIDNIGHT, address(mainnetController));
+
+        _onboardStrategy(address(forwarder));
+
+        Offer memory buy =
+            _makerOffer(market, address(forwarder), true, MAKER_BUY_TICK, seedUnits, BUY_GROUP);
 
         _take(buy, seedUnits);
-
-        uint256 balanceBefore  = loanToken.balanceOf(address(almProxy));
-        uint256 creditBefore   = _credit();
-        uint256 limitBefore    = rateLimits.getCurrentRateLimit(buyKey);
-        uint128 consumedBefore = midnight.consumed(address(almProxy), BUY_GROUP);
 
         _takeExpectRevert(buy, 1, abi.encodeWithSignature("ConsumedUnits()"));
 
         bytes memory ratifierData = _ratifierData(buy);
 
         vm.prank(attacker);
-        ( uint256 buyerAssets, uint256 sellerAssets ) = ITakeLike(MIDNIGHT).take(
-            buy, ratifierData, 0, attacker, attacker, address(0), new bytes(0)
-        );
-
-        assertEq(buyerAssets,  0);
-        assertEq(sellerAssets, 0);
-
-        assertEq(loanToken.balanceOf(address(almProxy)),          balanceBefore);
-        assertEq(_credit(),                                       creditBefore);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey),     limitBefore);
-        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), consumedBefore);
-
-        // The poke settles two zero-value transfers from the proxy, and needs no allowance to.
-        assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
+        vm.expectRevert("MidnightFacet/zero-assets");
+        ITakeLike(MIDNIGHT).take(buy, ratifierData, 0, attacker, attacker, address(0), new bytes(0));
     }
 
     // Filling one of our resting buy offers runs through fundFill, so a taker reached from inside
