@@ -121,6 +121,7 @@ Only pools with 1:1 assets should be onboarded:
 | **ERC-7540**       | Pending async deposit/redeem requests                 |
 | **Ethena**         | Pending mint/burn operations, delegated signer status |
 | **Maple**          | Pending redemption requests                           |
+| **Midnight**       | Credit balances, upcoming maturities, realized yields |
 | **OTC**            | Outstanding swap amounts, recharge progress           |
 | **UniswapV3**      | Pool price, position value                            |
 | **UniswapV4**      | Pool price, position value                            |
