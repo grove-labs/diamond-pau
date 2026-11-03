@@ -9,6 +9,7 @@ import { IController }             from "../../../src/interfaces/IController.sol
 import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableIntegrations.sol";
 import { IRateLimits }             from "../../../src/interfaces/IRateLimits.sol";
 
+import { BeaconConfig }   from "../../../src/libraries/BeaconConfig.sol";
 import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
@@ -766,20 +767,40 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertFalse(_containsSelector(code, IMidnightForbidden.borrow.selector));
     }
 
-    // Collateral operations are unreachable by name as well as by selector: the controller exposes
-    // no entry point for them, so a spell cannot route one through the diamond.
+    // Collateral operations are unreachable by name as well as by selector: the production wiring
+    // gives the controller no entry point for them, so a spell cannot route one through the diamond.
     function test_controllerExposesNoCollateralEntryPoint() external {
-        vm.expectRevert();
-        (bool ok, ) = address(controller).call(
-            abi.encodeWithSelector(IMidnightForbidden.supplyCollateral.selector)
-        );
-        ok;
+        vm.prank(beaconAdmin);
+        BeaconConfig.setMidnightIntegration(address(beacon), facetAddress);
 
-        vm.expectRevert();
-        (ok, ) = address(controller).call(
-            abi.encodeWithSelector(IMidnightForbidden.withdrawCollateral.selector)
-        );
-        ok;
+        bytes32[] memory integrationIds = new bytes32[](1);
+        integrationIds[0] = "MIDNIGHT_FACET";
+
+        vm.prank(admin);
+        controller.updateIntegrations(integrationIds);
+
+        IEnumerableIntegrations.Wire[] memory wires =
+            IEnumerableIntegrations(address(controller)).getConfig("MIDNIGHT_FACET").wires;
+
+        assertEq(wires.length, 20);
+
+        bytes4[2] memory forbidden = [
+            IMidnightForbidden.supplyCollateral.selector,
+            IMidnightForbidden.withdrawCollateral.selector
+        ];
+
+        for (uint256 i; i < forbidden.length; ++i) {
+            for (uint256 j; j < wires.length; ++j) {
+                assertTrue(wires[j].callSelector     != forbidden[i]);
+                assertTrue(wires[j].delegateSelector != forbidden[i]);
+            }
+
+            vm.expectRevert(
+                abi.encodeWithSelector(IController.CallSelectorNotWired.selector, forbidden[i])
+            );
+            ( bool ok, ) = address(controller).call(abi.encodeWithSelector(forbidden[i]));
+            ok;
+        }
     }
 
     /**********************************************************************************************/
