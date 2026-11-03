@@ -257,7 +257,7 @@ Called by a funding strategy keyed for the market and direction, from inside Mid
 
 2. Require `continuousFee(marketId) <= continuousFeePerSecond(maxContinuousFee)` (`MidnightFacet/continuous-fee-too-high`), read live. The price bound below is computed at the configured ceiling, so a live rate above it would let the fill clear the bound while earning less than `minBuyYield`.
 3. Require `lossFactor(marketId) <= maxLossFactor` (`MidnightFacet/loss-factor-too-high`), read live, so a market whose lenders have already been slashed stops funding fills.
-4. Require `assets * WAD <= units * maxFillPrice` (`MidnightFacet/fill-price-too-high`), where `maxFillPrice` is the lesser of `tickToPrice(maxBuyTick)` and `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))`. `pendingFee` is accepted and ignored on an entry.
+4. Require `assets * WAD <= units * maxFillPrice` (`MidnightFacet/fill-price-too-high`), where `maxFillPrice` is the lesser of `tickToPrice(maxBuyTick)` and `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))`. `pendingFee` is accepted and ignored on an entry. A `maxBuyTick` of `0` refuses every maker entry, because `tickToPrice(0) == 0`; `fundFill` has no separate `buy-not-enabled` check.
 5. Decrement the caller's `LIMIT_MIDNIGHT_STRATEGY_BUY` key for `marketId`, then `LIMIT_MIDNIGHT_BUY` keyed `marketId`, the same market key a taker `buy` spends, each by `assets`. An unset strategy key reverts here (`RateLimits/zero-maxAmount`) before anything moves.
 6. `doCall` `loanToken.transfer(msg.sender, assets)` as the last step, so every gate and the meters have already passed, and require it to return nothing or `true` (`MidnightFacet/transfer-failed`). The loan token comes from stored `MakeConfig`, never from the caller.
 
@@ -542,7 +542,7 @@ A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` gra
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-Setting `maxBuyTick` to zero closes entry but leaves `isCallbackAllowed` true for buys, so the ratifier still ratifies buy offers whose fills then revert in `fundFill`; to stop maker buys, also zero `maxOfferSize` or freeze the ratifier.
+Setting `maxBuyTick` to zero closes entry but leaves `isCallbackAllowed` true for buys, so the ratifier still ratifies buy offers whose fills then revert in `fundFill`; maker buy fills, fabricated `fundFill` calls included, already revert with `fill-price-too-high`; to stop the ratifier ratifying buy offers too, freeze the ratifier or zero `maxOfferSize`, which also stops maker sells on that market.
 
 **Revoking, fastest first.** Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`. The ratifier's `freeze()`, `unfreeze()`, `removeQuoter` and `blockOffer` are called on the ratifier itself, `removeIntegrations` on `PAU_CONTROLLER` under its own name, and the role revokes on `RateLimits`, the ALMProxy and `AccessControls`. Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The ratifier's `freeze()` is the maker kill switch, the Midnight freezer's `setMakeConfig(market, 0)` stops one market, and the first five rows avoid a spell.
 
