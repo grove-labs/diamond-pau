@@ -94,21 +94,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /**********************************************************************************************/
-    /*** Structs                                                                                ***/
-    /**********************************************************************************************/
-
-    // Per-call state kept in memory so buy and sell stay within the stack.
-    struct TakeContext {
-        address proxy;
-        Market  market;
-        uint256 timeToMaturity;
-        uint256 settlementFee;
-        uint256 creditBefore;
-        uint256 pendingFeeBefore;
-        uint256 balanceBefore;
-    }
-
-    /**********************************************************************************************/
     /*** Constants                                                                              ***/
     /**********************************************************************************************/
 
@@ -131,6 +116,17 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     /// @inheritdoc IMidnightFacet
     address public immutable override midnight;
+
+    // Per-call state kept in memory so buy and sell stay within the stack.
+    struct TakeContext {
+        address proxy;
+        Market  market;
+        uint256 timeToMaturity;
+        uint256 settlementFee;
+        uint256 creditBefore;
+        uint256 pendingFeeBefore;
+        uint256 balanceBefore;
+    }
 
     /**********************************************************************************************/
     /*** Constructor                                                                            ***/
@@ -502,7 +498,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /**********************************************************************************************/
-    /*** External Interactive Strategy Functions                                                ***/
+    /*** External Interactive Allocator Functions                                               ***/
     /**********************************************************************************************/
 
     /// @inheritdoc IMidnightFacet
