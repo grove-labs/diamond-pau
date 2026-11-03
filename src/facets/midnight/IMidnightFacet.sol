@@ -370,7 +370,9 @@ interface IMidnightFacet is IFacet {
     /*** Variables                                                                              ***/
     /**********************************************************************************************/
 
-    /// @notice Role identifier for accounts that may disable making on a market, and nothing else.
+    /// @notice Role identifier for accounts that may disable making on a market with
+    ///         `setMakeConfig(market, 0)` and cancel an offer group with `cancelOfferGroup`, and
+    ///         nothing else.
     function MIDNIGHT_FREEZER_ROLE() external pure returns (bytes32);
 
     /// @notice Address of the Midnight singleton entries are pinned to (immutable).
