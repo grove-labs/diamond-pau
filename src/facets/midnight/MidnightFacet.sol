@@ -673,6 +673,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         if (_getFacetStorage().makeConfigs[marketId].maxOfferSize == 0) return false;
 
+        if (buying && _getFacetStorage().marketConfigs[marketId].maxBuyTick == 0) return false;
+
         bytes32 strategyKey = buying
             ? getStrategyBuyRateLimitKey(callback, marketId)
             : getStrategySellRateLimitKey(callback, marketId);

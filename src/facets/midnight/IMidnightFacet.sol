@@ -452,8 +452,9 @@ interface IMidnightFacet is IFacet {
     /**
      * @notice Returns whether an offer callback may settle fills in one direction on a market.
      * @dev    True only for a non-zero callback on a market with making enabled whose strategy key
-     *         and per-market key for that direction both have a non-zero `maxAmount`. Reads the
-     *         configured ceilings, not the capacity left, so a drained key still answers true.
+     *         and per-market key for that direction both have a non-zero `maxAmount`, and for a
+     *         buy only while the market's `maxBuyTick` is non-zero. Reads the configured ceilings,
+     *         not the capacity left, so a drained key still answers true.
      * @param  marketId Identifier of the Midnight market.
      * @param  callback Offer callback address.
      * @param  buying   True for a buy offer, whose fills reach the callback's `onBuy`.

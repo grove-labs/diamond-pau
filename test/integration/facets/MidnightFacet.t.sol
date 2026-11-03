@@ -2354,16 +2354,47 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(controller.isCallbackAllowed(_marketId(), other, false), false);
     }
 
+    function test_isCallbackAllowed_buyRequiresMaxBuyTick() external {
+        _onboardForView();
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, true), true);
+
+        _closeBuyEntry();
+
+        assertEq(controller.getMarketConfig(_marketId()).maxBuyTick,  0);
+        assertEq(controller.getMakeConfig(_marketId()).maxOfferSize, MAX_OFFER_SIZE);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, true), false);
+    }
+
+    function test_isCallbackAllowed_sellIgnoresMaxBuyTick() external {
+        _onboardForView();
+
+        _closeBuyEntry();
+
+        assertEq(controller.getMarketConfig(_marketId()).maxBuyTick, 0);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, false), true);
+    }
+
+    function _closeBuyEntry() internal {
+        bytes32 marketId = _marketId();
+
+        vm.prank(admin);
+        _setConfig(marketId, 0, TICK_98, CONTINUOUS_FEE);
+    }
+
     // Excluded checks, held passing by honest assets under every cap, the live fee at the ceiling,
     // no loss factor, no debt and a funded proxy: zero-assets, zero-units, offer-size-too-large,
-    // rate-limit-exceeded, continuous fee, loss factor, price, debt, transfer. The zero callback is
-    // also excluded: the view hard-codes false for it.
+    // rate-limit-exceeded, continuous fee, loss factor, price other than a zero maxBuyTick, debt,
+    // transfer. The zero callback is also excluded: the view hard-codes false for it.
     function testFuzz_isCallbackAllowed_matchesFundFillGates(
         bool    buying,
         bool    makeEnabled,
         bool    strategyKeySet,
         bool    marketKeySet,
         bool    otherDirectionKeysSet,
+        bool    zeroMaxBuyTick,
         uint256 maxOfferSize,
         uint256 keyAmount
     )
@@ -2380,10 +2411,37 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.prank(admin);
         controller.setMakeConfig(_market(), makeEnabled ? maxOfferSize : 0);
 
-        uint256 strategyAmount = strategyKeySet        ? keyAmount : 0;
-        uint256 marketAmount   = marketKeySet          ? keyAmount : 0;
-        uint256 otherAmount    = otherDirectionKeysSet ? keyAmount : 0;
+        if (zeroMaxBuyTick) _closeBuyEntry();
 
+        _setViewKeys(
+            buying,
+            strategyKeySet        ? keyAmount : 0,
+            marketKeySet          ? keyAmount : 0,
+            otherDirectionKeysSet ? keyAmount : 0
+        );
+
+        bool allowed = controller.isCallbackAllowed(_marketId(), strategy, buying);
+
+        vm.prank(strategy);
+        ( bool funded, ) = address(controller).call(
+            abi.encodeCall(IControllerLike.fundFill, (_marketId(), buying, assets, FILL_UNITS, 0))
+        );
+
+        assertEq(allowed, funded);
+        assertEq(
+            allowed,
+            makeEnabled && strategyKeySet && marketKeySet && !(buying && zeroMaxBuyTick)
+        );
+    }
+
+    function _setViewKeys(
+        bool    buying,
+        uint256 strategyAmount,
+        uint256 marketAmount,
+        uint256 otherAmount
+    )
+        internal
+    {
         if (buying) {
             _setStrategyBuyLimit(strategy, strategyAmount);
             _setBuyLimit(marketAmount);
@@ -2395,16 +2453,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             _setStrategyBuyLimit(strategy, otherAmount);
             _setBuyLimit(otherAmount);
         }
-
-        bool allowed = controller.isCallbackAllowed(_marketId(), strategy, buying);
-
-        vm.prank(strategy);
-        ( bool funded, ) = address(controller).call(
-            abi.encodeCall(IControllerLike.fundFill, (_marketId(), buying, assets, FILL_UNITS, 0))
-        );
-
-        assertEq(allowed, funded);
-        assertEq(allowed, makeEnabled && strategyKeySet && marketKeySet);
     }
 
 }
