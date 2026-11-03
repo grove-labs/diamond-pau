@@ -498,7 +498,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /**********************************************************************************************/
-    /*** External Interactive Allocator Functions                                               ***/
+    /*** External Interactive Strategy Functions                                                ***/
     /**********************************************************************************************/
 
     /// @inheritdoc IMidnightFacet
