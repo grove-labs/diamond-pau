@@ -1526,6 +1526,23 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), true, honest, FILL_UNITS, 0);
     }
 
+    // The bound prices the fee at the configured ceiling, so a cheaper live market cannot lift it.
+    function test_fundFill_liveFeeBelowCap_fillPriceTooHighBoundary() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+        _mockContinuousFee(0);
+
+        uint256 honest = _honestAssets(FILL_UNITS);
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, honest + 1, FILL_UNITS, 0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, honest, FILL_UNITS, 0);
+    }
+
     function test_fundFill_sell_fillPriceTooLowBoundary() external {
         _onboardAndEnableMake(0);
         _onboardStrategy(MAX_OFFER_SIZE);
@@ -2335,6 +2352,58 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertEq(controller.isCallbackAllowed(_marketId(), other, true),  false);
         assertEq(controller.isCallbackAllowed(_marketId(), other, false), false);
+    }
+
+    // Amount, price and venue-state checks are held open (honest assets under every cap, the live
+    // fee at the ceiling, no loss factor, no debt, a funded proxy), so only the make switch and the
+    // keys vary, and the view must answer exactly what fundFill does.
+    function testFuzz_isCallbackAllowed_matchesFundFillGates(
+        bool    buying,
+        bool    makeEnabled,
+        bool    strategyKeySet,
+        bool    marketKeySet,
+        bool    otherDirectionKeysSet,
+        uint256 maxOfferSize,
+        uint256 keyAmount
+    )
+        external
+    {
+        _onboardAndEnableMake(0);
+        _mockLossFactor(0);
+
+        uint256 assets = buying ? _honestAssets(FILL_UNITS) : _honestSellAssets(FILL_UNITS);
+
+        maxOfferSize = bound(maxOfferSize, assets, type(uint128).max);
+        keyAmount    = bound(keyAmount,    assets, type(uint256).max);
+
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), makeEnabled ? maxOfferSize : 0);
+
+        uint256 strategyAmount = strategyKeySet        ? keyAmount : 0;
+        uint256 marketAmount   = marketKeySet          ? keyAmount : 0;
+        uint256 otherAmount    = otherDirectionKeysSet ? keyAmount : 0;
+
+        if (buying) {
+            _setStrategyBuyLimit(strategy, strategyAmount);
+            _setBuyLimit(marketAmount);
+            _setStrategySellLimit(strategy, otherAmount);
+            _setSellLimit(otherAmount);
+        } else {
+            _setStrategySellLimit(strategy, strategyAmount);
+            _setSellLimit(marketAmount);
+            _setStrategyBuyLimit(strategy, otherAmount);
+            _setBuyLimit(otherAmount);
+        }
+
+        bool allowed = controller.isCallbackAllowed(_marketId(), strategy, buying);
+
+        vm.prank(strategy);
+        ( bool funded, ) = address(controller).call(
+            abi.encodeCall(IControllerLike.fundFill, (_marketId(), buying, assets, FILL_UNITS, 0))
+        );
+
+        assertEq(allowed, funded);
+        assertEq(allowed, makeEnabled && strategyKeySet && marketKeySet);
     }
 
 }
