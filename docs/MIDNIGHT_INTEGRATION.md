@@ -171,7 +171,7 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 | `isCallbackAllowed(marketId, callback, buying)` | Whether `callback` may settle this market's fills in that direction |
 | `midnight()`                      | The immutable Midnight singleton every call is pinned to              |
 
-`getDesignatedGroups` and `isCallbackAllowed` are not diagnostics: the ratifier staticcalls both on every maker fill, so they are the live policy interface maker mode runs on. `isCallbackAllowed` is true only when the callback is non-zero, the market's `maxOfferSize` is non-zero, and both the strategy key and the market key for that direction have a non-zero `maxAmount`. It reads configuration, not remaining capacity, so an exhausted key still ratifies and the fill then reverts in `fundFill`. The zero address is refused outright, so a key funded for it by mistake cannot ratify an offer whose fills would never reach the facet. The rest of the policy is read by `fundFill` itself.
+`getDesignatedGroups` and `isCallbackAllowed` are not diagnostics: the ratifier staticcalls both on every maker fill, so they are the live policy interface maker mode runs on. `isCallbackAllowed` is true only when the callback is non-zero, the market's `maxOfferSize` is non-zero, both the strategy key and the market key for that direction have a non-zero `maxAmount`, and, for a buy, the market's `maxBuyTick` is non-zero. It reads configuration, not remaining capacity, so an exhausted key still ratifies and the fill then reverts in `fundFill`. The zero address is refused outright, so a key funded for it by mistake cannot ratify an offer whose fills would never reach the facet. The rest of the policy is read by `fundFill` itself.
 
 ---
 
@@ -542,7 +542,7 @@ A strategy that sources liquidity inside `onBuy` also needs `ALLOCATOR_ROLE` gra
 
 Verify the intended `maxBuyTick` against `maxBuyPrice(minBuyYield, timeToMaturity, continuousFeePerSecond(maxContinuousFee))` before publishing, not against the live fee: maker entry is bounded by the capped-fee ceiling, which at a 180 day term with the 1%/year cap sits about 48 basis points below the live-fee ceiling taker entry uses.
 
-Setting `maxBuyTick` to zero closes entry but leaves `isCallbackAllowed` true for buys, so the ratifier still ratifies buy offers whose fills then revert in `fundFill`; maker buy fills, fabricated `fundFill` calls included, already revert with `fill-price-too-high`; to stop the ratifier ratifying buy offers too, freeze the ratifier or zero `maxOfferSize`, which also stops maker sells on that market.
+Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
 
 **Revoking, fastest first.** Operators and spells call each function through `PAU_CONTROLLER` as `midnight_<name>`. The ratifier's `freeze()`, `unfreeze()`, `removeQuoter` and `blockOffer` are called on the ratifier itself, `removeIntegrations` on `PAU_CONTROLLER` under its own name, and the role revokes on `RateLimits`, the ALMProxy and `AccessControls`. Every lever here acts on offers already signed and published, which cannot be recalled from the venue. The ratifier's `freeze()` is the maker kill switch, the Midnight freezer's `setMakeConfig(market, 0)` stops one market, and the first five rows avoid a spell.
 
