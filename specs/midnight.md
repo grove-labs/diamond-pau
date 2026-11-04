@@ -51,7 +51,9 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Value direction:** outbound units, loan token returns to the proxy
 - **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`; enforcing
   decrease of the loan token received
-- **Refill:** none, because <OPEN: reason for no buy-key restore, see rule R-4>
+- **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
+  are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
+  and sells past the budget.
 - **Loss bounds:** `minAssetsOut` (non-zero); admin `minSellTick` and `maxSellYield` (floor off
   the fee the position carries); units capped at live credit
 - **External calls:** `take` via `doCall`, proceeds to the proxy
@@ -62,13 +64,15 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Value direction:** returning (to proxy)
 - **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`; enforcing
   decrease of the loan token received
-- **Refill:** none, because <OPEN>
+- **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
+  are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
+  and sells past the budget.
 - **Loss bounds:** `minAssetsOut` (non-zero); units capped at credit and `withdrawable`
 - **External calls:** `withdraw(market, units, proxy, proxy)` via `doCall`
 
 ### `fundFill(bytes32 marketId, bool buying, uint256 assets, uint256 units, uint256 pendingFee)`
-- **Role:** none; OPEN, depends on the upstream rulebook request (A-1, A-2, V-3). The caller's
-  strategy key is the authorization.
+- **Role:** none; this departs from rulebook A-1, A-2 and V-3; no exception has been requested yet.
+  The caller's strategy key is the authorization.
 - **Value direction:** buying: outbound to the calling strategy; selling: moves nothing (Midnight
   has already taken the proxy's units)
 - **Rate limit:** buying: `LIMIT_MIDNIGHT_STRATEGY_BUY`,
@@ -83,12 +87,14 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Zero-amount semantics:** zero `assets` or `units` revert
 
 ### `cancelOfferGroup(bytes32 group)`
-- **Role:** ALLOCATOR_ROLE or `MIDNIGHT_FREEZER_ROLE`; OPEN, depends on the upstream request (A-1, A-2)
+- **Role:** ALLOCATOR_ROLE or `MIDNIGHT_FREEZER_ROLE`; this departs from rulebook A-1 and A-2; no
+  exception has been requested yet.
 - **Value direction:** config (risk-reducing, retires a group)
 - **External calls:** `setConsumed(group, type(uint128).max, proxy)` via `doCall`
 
 ### `setMakeConfig(Market market, uint256 maxOfferSize)`
-- **Role:** DEFAULT_ADMIN_ROLE; `MIDNIGHT_FREEZER_ROLE` only for `maxOfferSize == 0`; OPEN as above
+- **Role:** DEFAULT_ADMIN_ROLE; `MIDNIGHT_FREEZER_ROLE` only for `maxOfferSize == 0`; this departs
+  from rulebook A-1 and A-2; no exception has been requested yet.
 - **Value direction:** config (per-fill cap for maker mode)
 - **External calls:** `toMarket(marketId)` (view)
 
@@ -129,16 +135,19 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 ## Standing approvals & declared exceptions
 
 No standing ERC-20 approval (the `buy` approval is reset in the same call). Standing authorization:
-the ratifier's `setIsAuthorized` grant on the singleton (row 5 above). OPEN: the role and callback
-departures from A-1, A-2 and V-3 are listed here only once the upstream request is decided.
+the ratifier's `setIsAuthorized` grant on the singleton (row 5 above). The role and callback design
+of `fundFill`, `cancelOfferGroup` and `setMakeConfig` departs from rulebook A-1, A-2 and V-3; no
+exception has been requested yet.
 
 ## Dependencies
 
-None as a `lib/` submodule. OPEN: three source files modified from
+None as a `lib/` submodule. Three source files are modified from
 `https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932`
-(`src/interfaces/IMidnight.sol`, `src/libraries/TickLib.sol`, `src/libraries/IdLib.sol`), shape
-and license per the owner's ruling on S-1/S-2. `RateLimitHelpers`: existing `makeBytes32Key` and
-`makeAddressBytes32Key`, no new shape.
+(`src/interfaces/IMidnight.sol`, `src/libraries/TickLib.sol`, `src/libraries/IdLib.sol`). They stay
+separate files with upstream's `GPL-2.0-or-later` licence. Line 1 is the SPDX identifier, line 2 the
+pragma, then the Morpho copyright. The `unchecked` blocks are kept as upstream wrote them. This
+departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLimitHelpers`: existing
+`makeBytes32Key` and `makeAddressBytes32Key`, no new shape.
 
 ## Attack surface (drives T-4 required tests)
 
