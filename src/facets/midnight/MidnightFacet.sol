@@ -489,6 +489,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             _fundFillSell(marketId, makeConfig, config, assets, units, pendingFee);
         }
     }
+
     /**********************************************************************************************/
     /*** External View/Pure Functions                                                           ***/
     /**********************************************************************************************/
@@ -652,6 +653,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
     }
+
     function _take(
         TakeContext memory ctx,
         Offer     calldata offer,
