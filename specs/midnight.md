@@ -101,15 +101,12 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 ### `setMarketConfig(bytes32 marketId, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`)
 
-### `setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)`
-- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (groups the ratifier accepts per market)
-
 ### `setRatifierAuthorization(address ratifier, bool authorized)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config, a blanket grant on the singleton
 - **External calls:** `setIsAuthorized(ratifier, authorized, proxy)` via `doCall`
 
 Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
-`getStrategyBuyRateLimitKey`, `getStrategySellRateLimitKey`, `getDesignatedGroups`,
+`getStrategyBuyRateLimitKey`, `getStrategySellRateLimitKey`,
 `getMakeConfig`, `getMarketConfig`, `isCallbackAllowed`, `midnight`, `MIDNIGHT_FREEZER_ROLE`,
 `VERSION`.
 
@@ -127,7 +124,7 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 
 ## Storage & constructor
 
-- **ERC-7201 storage fields:** `marketConfigs`, `makeConfigs`, `designatedGroups` (per `marketId`),
+- **ERC-7201 storage fields:** `marketConfigs`, `makeConfigs` (per `marketId`),
   namespace `sky.pau.storage.MidnightFacet.v1`.
 - **Immutables:** `midnight` (the singleton; zero-checked in the constructor).
 - **Auxiliary module:** none.
@@ -154,7 +151,7 @@ departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLim
 - **Mutable third-party reads feeding keys/checks:** `continuousFee`, `settlementFee`, `lossFactor`,
   `toMarket`, `updatePositionView`, `debt`, `withdrawable`; the offer's market hashes to the
   governance-supplied `marketId`.
-- **Async/multi-step state a rogue allocator could grief:** resting maker offers, designated
+- **Async/multi-step state a rogue allocator could grief:** resting maker offers, offer
   groups, ratifier authorization.
 - **Value-manipulation surface:** loan token pushed into the proxy during a `take`; socialized
   losses through `lossFactor`; fee changes between configuration and trade.
@@ -162,6 +159,6 @@ departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLim
 ## Operational requirements
 
 Order: `touchMarket` on Midnight, `setMarketConfig`, rate-limit keys, then for maker mode
-`setDesignatedGroups`, `setRatifierAuthorization`, strategy keys, `setMakeConfig`. The fork tests
+`setRatifierAuthorization`, strategy keys, `setMakeConfig`. The fork tests
 need an EVM with CLZ (`evm_version = 'osaka'`), which is a repository setting outside this facet
 PR. Deploy scripts are out of scope.
