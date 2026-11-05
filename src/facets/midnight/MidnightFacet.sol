@@ -483,67 +483,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(assets <= makeConfig.maxOfferSize, "MidnightFacet/offer-size-too-large");
 
-        // Midnight pays the proxy before calling back on an exit, so this branch moves nothing.
-        if (!buying) {
-            address proxy = _getSharedControllerStorage().proxy;
-
-            uint256 floor = _minFillPrice(
-                config,
-                makeConfig.maturity,
-                _exitFeePerUnit(marketId, proxy, units, pendingFee)
-            );
-
-            require(
-                assets * MidnightUtils.WAD >= units * floor,
-                "MidnightFacet/fill-price-too-low"
-            );
-
-            // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
-            _requireDebtFree(marketId, proxy);
-
-            _decreaseRateLimit(getStrategySellRateLimitKey(msg.sender, marketId), assets);
-            _decreaseRateLimit(getSellRateLimitKey(marketId),                     assets);
-
-            emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
-
-            return;
+        if (buying) {
+            _fundFillBuy(marketId, makeConfig, config, assets, units);
+        } else {
+            _fundFillSell(marketId, makeConfig, config, assets, units, pendingFee);
         }
-
-        // The entry bound is priced at the ceiling, so a higher live fee undercuts the yield.
-        require(
-            IMidnightLike(midnight).continuousFee(marketId)
-                <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
-            "MidnightFacet/continuous-fee-too-high"
-        );
-
-        // A non-zero loss factor means this market's lenders have already been slashed.
-        require(
-            IMidnightLike(midnight).lossFactor(marketId) <= config.maxLossFactor,
-            "MidnightFacet/loss-factor-too-high"
-        );
-
-        require(
-            assets * MidnightUtils.WAD <= units * _maxFillPrice(config, makeConfig.maturity),
-            "MidnightFacet/fill-price-too-high"
-        );
-
-        _decreaseRateLimit(getStrategyBuyRateLimitKey(msg.sender, marketId), assets);
-        _decreaseRateLimit(getBuyRateLimitKey(marketId),                     assets);
-
-        // Last step, so every gate and both meters have already passed.
-        bytes memory returnData = IALMProxy(_getSharedControllerStorage().proxy).doCall(
-            makeConfig.loanToken,
-            abi.encodeCall(IERC20Like.transfer, (msg.sender, assets))
-        );
-
-        require(
-            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
-            "MidnightFacet/transfer-failed"
-        );
-
-        emit MidnightFillFunded(marketId, msg.sender, true, assets, units);
     }
-
     /**********************************************************************************************/
     /*** External View/Pure Functions                                                           ***/
     /**********************************************************************************************/
@@ -631,6 +576,82 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /*** Internal Interactive Functions                                                         ***/
     /**********************************************************************************************/
 
+    function _fundFillBuy(
+        bytes32              marketId,
+        MakeConfig   storage makeConfig,
+        MarketConfig storage config,
+        uint256              assets,
+        uint256              units
+    )
+        internal
+    {
+        // The entry bound is priced at the ceiling, so a higher live fee undercuts the yield.
+        require(
+            IMidnightLike(midnight).continuousFee(marketId)
+                <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
+            "MidnightFacet/continuous-fee-too-high"
+        );
+
+        // A non-zero loss factor means this market's lenders have already been slashed.
+        require(
+            IMidnightLike(midnight).lossFactor(marketId) <= config.maxLossFactor,
+            "MidnightFacet/loss-factor-too-high"
+        );
+
+        require(
+            assets * MidnightUtils.WAD <= units * _maxFillPrice(config, makeConfig.maturity),
+            "MidnightFacet/fill-price-too-high"
+        );
+
+        _decreaseRateLimit(getStrategyBuyRateLimitKey(msg.sender, marketId), assets);
+        _decreaseRateLimit(getBuyRateLimitKey(marketId),                     assets);
+
+        // Last step, so every gate and both meters have already passed.
+        bytes memory returnData = IALMProxy(_getSharedControllerStorage().proxy).doCall(
+            makeConfig.loanToken,
+            abi.encodeCall(IERC20Like.transfer, (msg.sender, assets))
+        );
+
+        require(
+            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
+            "MidnightFacet/transfer-failed"
+        );
+
+        emit MidnightFillFunded(marketId, msg.sender, true, assets, units);
+    }
+
+    // Midnight pays the proxy before calling back on an exit, so this leg moves nothing.
+    function _fundFillSell(
+        bytes32              marketId,
+        MakeConfig   storage makeConfig,
+        MarketConfig storage config,
+        uint256              assets,
+        uint256              units,
+        uint256              pendingFee
+    )
+        internal
+    {
+        address proxy = _getSharedControllerStorage().proxy;
+
+        uint256 floor = _minFillPrice(
+            config,
+            makeConfig.maturity,
+            _exitFeePerUnit(marketId, proxy, units, pendingFee)
+        );
+
+        require(
+            assets * MidnightUtils.WAD >= units * floor,
+            "MidnightFacet/fill-price-too-low"
+        );
+
+        // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
+        _requireDebtFree(marketId, proxy);
+
+        _decreaseRateLimit(getStrategySellRateLimitKey(msg.sender, marketId), assets);
+        _decreaseRateLimit(getSellRateLimitKey(marketId),                     assets);
+
+        emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
+    }
     function _take(
         TakeContext memory ctx,
         Offer     calldata offer,
