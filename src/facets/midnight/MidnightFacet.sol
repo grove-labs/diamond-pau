@@ -149,25 +149,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
     {
         _checkMakeConfigRole(maxOfferSize);
 
-        require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
+        bytes32 marketId = _validateMarket(market);
 
-        bytes32 marketId = MidnightIdLib.toId(market);
+        _validateMakeConfig(maxOfferSize);
 
-        // Making rests offers that only an onboarded market can price, so take onboarding gates it.
-        require(
-            _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
-            "MidnightFacet/market-not-onboarded"
-        );
-        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
-
-        // Midnight moves at most uint128 assets in one fill, so a larger cap could never bind.
-        require(maxOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
-
-        // Reverts unless the market exists on Midnight; the equality holds by construction.
-        require(
-            IMidnightLike(midnight).toMarket(marketId).maturity == market.maturity,
-            "MidnightFacet/market-mismatch"
-        );
+        _validateMarketExists(marketId, market.maturity);
 
         _getFacetStorage().makeConfigs[marketId] = MakeConfig({
             maxOfferSize : maxOfferSize,
@@ -193,16 +179,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // Zero is meaningful: no maxBuyTick kills entries, no minSellTick means not onboarded.
-        require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
-        require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
-        require(
-            MidnightUtils.continuousFeePerSecond(maxContinuousFee)
-                <= MidnightUtils.MAX_CONTINUOUS_FEE,
-            "MidnightFacet/max-continuous-fee-oob"
-        );
-        // A zero sell yield would only clear at par and brick the exit, so one must be named.
-        require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
+        _validateTakeConfig(maxBuyTick, minSellTick, maxContinuousFee, maxSellYield);
 
         _getFacetStorage().marketConfigs[marketId] = MarketConfig({
             maxBuyTick       : maxBuyTick,
@@ -777,6 +754,53 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     function _requireDebtFree(bytes32 marketId, address user) internal view {
         require(IMidnightLike(midnight).debt(marketId, user) == 0, "MidnightFacet/debt-not-zero");
+    }
+
+    function _validateTakeConfig(
+        uint16 maxBuyTick,
+        uint16 minSellTick,
+        uint16 maxContinuousFee,
+        uint16 maxSellYield
+    )
+        internal
+        pure
+    {
+        // Zero is meaningful: no maxBuyTick kills entries, no minSellTick means not onboarded.
+        require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
+        require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
+        require(
+            MidnightUtils.continuousFeePerSecond(maxContinuousFee)
+                <= MidnightUtils.MAX_CONTINUOUS_FEE,
+            "MidnightFacet/max-continuous-fee-oob"
+        );
+        // A zero sell yield would only clear at par and brick the exit, so one must be named.
+        require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
+    }
+
+    function _validateMarket(Market calldata market) internal view returns (bytes32 marketId) {
+        require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
+
+        marketId = MidnightIdLib.toId(market);
+
+        // Making rests offers that only an onboarded market can price, so take onboarding gates it.
+        require(
+            _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
+            "MidnightFacet/market-not-onboarded"
+        );
+        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
+    }
+
+    function _validateMakeConfig(uint256 maxOfferSize) internal pure {
+        // Midnight moves at most uint128 assets in one fill, so a larger cap could never bind.
+        require(maxOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
+    }
+
+    function _validateMarketExists(bytes32 marketId, uint256 maturity) internal view {
+        // Reverts unless the market exists on Midnight; the equality holds by construction.
+        require(
+            IMidnightLike(midnight).toMarket(marketId).maturity == maturity,
+            "MidnightFacet/market-mismatch"
+        );
     }
 
     function _checkMakeConfigRole(uint256 maxOfferSize) private view {
