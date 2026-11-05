@@ -857,6 +857,25 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
     }
 
+    function test_setMakeConfig_marketNotOnboardedBeforeMaxOfferSize() external {
+        vm.expectRevert("MidnightFacet/market-not-onboarded");
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), uint256(type(uint128).max) + 1);
+    }
+
+    function test_setMakeConfig_maturityOobBeforeMaxOfferSize() external {
+        marketMaturity = uint256(type(uint64).max) + 1;
+
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _marketId(), TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
+        );
+
+        vm.expectRevert("MidnightFacet/maturity-oob");
+        vm.prank(admin);
+        controller.setMakeConfig(_market(), uint256(type(uint128).max) + 1);
+    }
+
     function test_setMakeConfig_marketNotCreated() external {
         vm.prank(admin);
         controller.setMarketConfig(
