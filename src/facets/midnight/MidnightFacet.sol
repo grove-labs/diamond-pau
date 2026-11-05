@@ -78,9 +78,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     /// @custom:storage-location erc7201:sky.pau.storage.MidnightFacet.v1
     struct FacetStorage {
-        mapping (bytes32 marketId => MarketConfig config)     marketConfigs;
-        mapping (bytes32 marketId => MakeConfig config)       makeConfigs;
-        mapping (bytes32 marketId => DesignatedGroups groups) designatedGroups;
+        mapping (bytes32 marketId => MarketConfig config) marketConfigs;
+        mapping (bytes32 marketId => MakeConfig config)   makeConfigs;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -141,25 +140,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
     /*** External Interactive Admin Functions                                                   ***/
     /**********************************************************************************************/
-
-    /// @inheritdoc IMidnightFacet
-    function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
-        external
-        override
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        // Zero is the ratifier's "not designated" sentinel; one shared group cancels both sides.
-        require(
-            buyGroup != 0 && sellGroup != 0 && buyGroup != sellGroup,
-            "MidnightFacet/invalid-groups"
-        );
-
-        _getFacetStorage().designatedGroups[marketId] =
-            DesignatedGroups({ buyGroup: buyGroup, sellGroup: sellGroup });
-
-        emit MidnightGroupsSet(marketId, buyGroup, sellGroup);
-    }
 
     /// @inheritdoc IMidnightFacet
     function setMakeConfig(Market calldata market, uint256 maxOfferSize)
@@ -594,16 +574,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @inheritdoc IMidnightFacet
     function getBuyRateLimitKey(bytes32 marketId) public pure override returns (bytes32) {
         return makeBytes32Key(_LIMIT_BUY, marketId);
-    }
-
-    /// @inheritdoc IMidnightFacet
-    function getDesignatedGroups(bytes32 marketId)
-        external
-        view
-        override
-        returns (DesignatedGroups memory)
-    {
-        return _getFacetStorage().designatedGroups[marketId];
     }
 
     /// @inheritdoc IMidnightFacet

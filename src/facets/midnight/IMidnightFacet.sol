@@ -24,19 +24,6 @@ interface IMidnightFacet is IFacet {
     /**********************************************************************************************/
 
     /**
-     * @notice Offer groups the proxy's resting offers must sit in, one per direction.
-     * @dev    Separate groups let the entry and exit books be cancelled independently, since
-     *         cancelling consumes a whole group. Zero is the unset state, which bars both
-     *         directions; once set, both groups are non-zero and distinct.
-     * @param  buyGroup  Group every resting buy (entry) offer must name.
-     * @param  sellGroup Group every resting sell (exit) offer must name.
-     */
-    struct DesignatedGroups {
-        bytes32 buyGroup;
-        bytes32 sellGroup;
-    }
-
-    /**
      * @notice Make-side limits for one Midnight market. Fits in two storage slots.
      * @dev    `maxOfferSize` caps the loan token a single fill may move, in either direction, and
      *         `maxOfferSize == 0` disables making, independently of take onboarding. Maturity and
@@ -102,14 +89,6 @@ interface IMidnightFacet is IFacet {
         uint256         assets,
         uint256         units
     );
-
-    /**
-     * @notice Emitted when the designated offer groups for a Midnight market are updated.
-     * @param  marketId  Identifier of the Midnight market.
-     * @param  buyGroup  Group every resting buy offer must name.
-     * @param  sellGroup Group every resting sell offer must name.
-     */
-    event MidnightGroupsSet(bytes32 indexed marketId, bytes32 buyGroup, bytes32 sellGroup);
 
     /**
      * @notice Emitted when the make-side limits for a Midnight market are updated.
@@ -213,8 +192,9 @@ interface IMidnightFacet is IFacet {
      * @dev    Consumes the group to its maximum on Midnight, which is irreversible for that group:
      *         consumption only ever increases. Risk-reducing, so an allocator or the Midnight
      *         freezer can call it, and it is the only way to retire offers already published to
-     *         the mempool. Groups are per-direction, so the entry and exit books can be cancelled
-     *         separately.
+     *         the mempool.
+     * @dev    Groups are operator-managed: any number and any id, per market or across markets.
+     *         Retiring a group is permanent.
      * @dev    Callable by `ALLOCATOR_ROLE` or `MIDNIGHT_FREEZER_ROLE`. Any other caller reverts
      *         with `AccessControlUnauthorizedAccount` for `ALLOCATOR_ROLE`.
      * @param  group Offer group to consume.
@@ -299,17 +279,6 @@ interface IMidnightFacet is IFacet {
         returns (uint256 assetsReceived);
 
     /**
-     * @notice Sets the offer groups the proxy's resting offers must sit in on one market.
-     * @dev    One group per direction, so cancelling the entry book leaves the exit book alive.
-     *         Reverts unless both groups are non-zero and distinct. A market meant to trade in
-     *         one direction only leaves the other direction's rate limit keys unset.
-     * @param  marketId  Identifier of the Midnight market.
-     * @param  buyGroup  Group every resting buy offer must name.
-     * @param  sellGroup Group every resting sell offer must name.
-     */
-    function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup) external;
-
-    /**
      * @notice Sets the make-side limits for a Midnight market.
      * @dev    Takes the whole `Market` rather than an id so that maturity and loan token are
      *         committed to by the id they are stored under and can never be passed loose. Reverts
@@ -388,16 +357,6 @@ interface IMidnightFacet is IFacet {
      * @return key      Derived rate limit key.
      */
     function getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
-
-    /**
-     * @notice Returns the designated offer groups for a Midnight market.
-     * @param  marketId Identifier of the Midnight market.
-     * @return groups   Designated groups. A zero group bars that direction.
-     */
-    function getDesignatedGroups(bytes32 marketId)
-        external
-        view
-        returns (DesignatedGroups memory groups);
 
     /**
      * @notice Returns the make-side limits configured for a Midnight market.

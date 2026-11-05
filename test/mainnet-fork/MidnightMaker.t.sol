@@ -174,7 +174,6 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         vm.startPrank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
         mainnetController.midnight_setMakeConfig(market, maxOfferSize);
-        mainnetController.midnight_setDesignatedGroups(marketId, BUY_GROUP, SELL_GROUP);
         vm.stopPrank();
 
         ( strategyBuyKey, strategySellKey ) = _onboardStrategy(address(strategy));
@@ -755,6 +754,84 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
 }
 
+contract MainnetController_MidnightMaker_FreeGroup_Tests is Midnight_Maker_TestBase {
+
+    bytes32 internal constant GROUP_A = keccak256("ops-group-a");
+    bytes32 internal constant GROUP_B = keccak256("ops-group-b");
+    bytes32 internal constant GROUP_C = keccak256("ops-group-c");
+
+    function _offerInGroup(bool buy, bytes32 group) internal returns (Offer memory) {
+        return _makerOffer(
+            market,
+            address(strategy),
+            buy,
+            buy ? MAKER_BUY_TICK : MAKER_SELL_TICK,
+            seedUnits / 4,
+            group
+        );
+    }
+
+    function test_freeGroups_offersFillInAnyGroup() external {
+        _seedCredit();
+
+        uint256 units = seedUnits / 8;
+
+        ( uint256 buyerAssets, ) = _take(_offerInGroup(true, GROUP_A), units);
+
+        assertEq(buyerAssets, _makerBuyerAssets(units, MAKER_BUY_TICK));
+
+        _take(_offerInGroup(true, GROUP_B), units);
+
+        ( , uint256 sellerAssets ) = _take(_offerInGroup(false, GROUP_C), units);
+
+        assertEq(sellerAssets, _makerSellerAssets(units, MAKER_SELL_TICK));
+
+        assertEq(midnight.consumed(address(almProxy), GROUP_A), units);
+        assertEq(midnight.consumed(address(almProxy), GROUP_B), units);
+        assertEq(midnight.consumed(address(almProxy), GROUP_C), units);
+    }
+
+    function test_freeGroups_allocatorRetiresAnArbitraryGroup() external {
+        Offer memory retired = _offerInGroup(true, GROUP_A);
+        Offer memory live    = _offerInGroup(true, GROUP_B);
+
+        vm.prank(allocator);
+        mainnetController.midnight_cancelOfferGroup(GROUP_A);
+
+        assertEq(midnight.consumed(address(almProxy), GROUP_A), type(uint128).max);
+
+        _takeExpectRevert(retired, 1, abi.encodeWithSignature("ConsumedUnits()"));
+
+        _take(live, seedUnits / 8);
+
+        assertEq(midnight.consumed(address(almProxy), GROUP_B), seedUnits / 8);
+    }
+
+    function test_freeGroups_freezerRetiresAnArbitraryGroup() external {
+        _seedCredit();
+
+        Offer memory retired = _offerInGroup(false, GROUP_C);
+        Offer memory live    = _offerInGroup(false, GROUP_B);
+
+        address freezer = GroveEthereum.ALM_FREEZER;
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+
+        vm.prank(freezer);
+        mainnetController.midnight_cancelOfferGroup(GROUP_C);
+
+        assertEq(midnight.consumed(address(almProxy), GROUP_C), type(uint128).max);
+
+        _takeExpectRevert(retired, 1, abi.encodeWithSignature("ConsumedUnits()"));
+
+        _take(live, seedUnits / 8);
+
+        assertEq(midnight.consumed(address(almProxy), GROUP_B), seedUnits / 8);
+    }
+
+}
+
 contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_TestBase {
 
     function test_deauthorizingRatifierKillsEverything() external {
@@ -1067,9 +1144,6 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
             otherId, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0
         );
         mainnetController.midnight_setMakeConfig(other, maxOfferSize);
-        mainnetController.midnight_setDesignatedGroups(
-            otherId, keccak256("other.buy"), keccak256("other.sell")
-        );
         rateLimits.setRateLimitData(
             mainnetController.midnight_getBuyRateLimitKey(otherId), rateLimit, 0
         );

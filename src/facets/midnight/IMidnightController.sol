@@ -8,9 +8,6 @@ interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
 
-    function midnight_setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup)
-        external;
-
     function midnight_setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
 
     function midnight_setMarketConfig(
@@ -60,11 +57,6 @@ interface IMidnightController {
         returns (uint256 assetsReceived);
 
     function midnight_getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
-
-    function midnight_getDesignatedGroups(bytes32 marketId)
-        external
-        view
-        returns (IMidnightFacet.DesignatedGroups memory groups);
 
     function midnight_getMakeConfig(bytes32 marketId)
         external

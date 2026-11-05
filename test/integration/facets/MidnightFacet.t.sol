@@ -43,8 +43,6 @@ interface IControllerLike {
 
     function setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
 
-    function setDesignatedGroups(bytes32 marketId, bytes32 buyGroup, bytes32 sellGroup) external;
-
     function setRatifierAuthorization(address ratifier, bool authorized) external;
 
     function cancelOfferGroup(bytes32 group) external;
@@ -66,11 +64,6 @@ interface IControllerLike {
         external
         view
         returns (IMidnightFacet.MakeConfig memory);
-
-    function getDesignatedGroups(bytes32 marketId)
-        external
-        view
-        returns (IMidnightFacet.DesignatedGroups memory);
 
     function getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32);
 
@@ -257,7 +250,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](16);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](14);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -295,46 +288,36 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
 
         wires[7] = IEnumerableIntegrations.Wire(
-            IControllerLike.setDesignatedGroups.selector,
-            IMidnightFacet.setDesignatedGroups.selector
-        );
-
-        wires[8] = IEnumerableIntegrations.Wire(
             IControllerLike.setRatifierAuthorization.selector,
             IMidnightFacet.setRatifierAuthorization.selector
         );
 
-        wires[9] = IEnumerableIntegrations.Wire(
+        wires[8] = IEnumerableIntegrations.Wire(
             IControllerLike.cancelOfferGroup.selector,
             IMidnightFacet.cancelOfferGroup.selector
         );
 
-        wires[10] = IEnumerableIntegrations.Wire(
+        wires[9] = IEnumerableIntegrations.Wire(
             IControllerLike.fundFill.selector,
             IMidnightFacet.fundFill.selector
         );
 
-        wires[11] = IEnumerableIntegrations.Wire(
+        wires[10] = IEnumerableIntegrations.Wire(
             IControllerLike.getMakeConfig.selector,
             IMidnightFacet.getMakeConfig.selector
         );
 
-        wires[12] = IEnumerableIntegrations.Wire(
-            IControllerLike.getDesignatedGroups.selector,
-            IMidnightFacet.getDesignatedGroups.selector
-        );
-
-        wires[13] = IEnumerableIntegrations.Wire(
+        wires[11] = IEnumerableIntegrations.Wire(
             IControllerLike.isCallbackAllowed.selector,
             IMidnightFacet.isCallbackAllowed.selector
         );
 
-        wires[14] = IEnumerableIntegrations.Wire(
+        wires[12] = IEnumerableIntegrations.Wire(
             IControllerLike.getStrategyBuyRateLimitKey.selector,
             IMidnightFacet.getStrategyBuyRateLimitKey.selector
         );
 
-        wires[15] = IEnumerableIntegrations.Wire(
+        wires[13] = IEnumerableIntegrations.Wire(
             IControllerLike.getStrategySellRateLimitKey.selector,
             IMidnightFacet.getStrategySellRateLimitKey.selector
         );
@@ -784,7 +767,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         IEnumerableIntegrations.Wire[] memory wires =
             IEnumerableIntegrations(address(controller)).getConfig("MIDNIGHT_FACET").wires;
 
-        assertEq(wires.length, 20);
+        assertEq(wires.length, 18);
 
         bytes4[2] memory forbidden = [
             IMidnightForbidden.supplyCollateral.selector,
@@ -1094,69 +1077,9 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
 
         _expectAdminRoleRevert(freezer);
-        controller.setDesignatedGroups(_marketId(), BUY_GROUP, SELL_GROUP);
-
-        _expectAdminRoleRevert(freezer);
         controller.setRatifierAuthorization(ratifier, false);
 
         vm.stopPrank();
-    }
-
-    /**********************************************************************************************/
-    /*** setDesignatedGroups Tests                                                              ***/
-    /**********************************************************************************************/
-
-    function test_setDesignatedGroups_reentrancy() external {
-        _setEntered(address(controller));
-        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
-    }
-
-    function test_setDesignatedGroups_unauthorizedAccount() external {
-        vm.expectRevert(abi.encodeWithSignature(
-            "AccessControlUnauthorizedAccount(address,bytes32)",
-            address(this),
-            DEFAULT_ADMIN_ROLE
-        ));
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
-    }
-
-    function test_setDesignatedGroups_invalidGroups() external {
-        vm.startPrank(admin);
-
-        vm.expectRevert("MidnightFacet/invalid-groups");
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, BUY_GROUP);
-
-        vm.expectRevert("MidnightFacet/invalid-groups");
-        controller.setDesignatedGroups(MARKET_ID, 0, SELL_GROUP);
-
-        vm.expectRevert("MidnightFacet/invalid-groups");
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, 0);
-
-        vm.expectRevert("MidnightFacet/invalid-groups");
-        controller.setDesignatedGroups(MARKET_ID, 0, 0);
-
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
-
-        vm.stopPrank();
-    }
-
-    function test_setDesignatedGroups() external {
-        vm.record();
-
-        vm.expectEmit(address(controller));
-        emit IMidnightFacet.MidnightGroupsSet(MARKET_ID, BUY_GROUP, SELL_GROUP);
-
-        vm.prank(admin);
-        controller.setDesignatedGroups(MARKET_ID, BUY_GROUP, SELL_GROUP);
-
-        _assertReentrancyGuardWrittenToTwice(address(controller));
-
-        IMidnightFacet.DesignatedGroups memory groups =
-            controller.getDesignatedGroups(MARKET_ID);
-
-        assertEq(groups.buyGroup,  BUY_GROUP);
-        assertEq(groups.sellGroup, SELL_GROUP);
     }
 
     /**********************************************************************************************/
@@ -1280,6 +1203,67 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.cancelOfferGroup(BUY_GROUP);
 
         _assertReentrancyGuardWrittenToTwice(address(controller));
+    }
+
+    function testFuzz_cancelOfferGroup_allocatorAnyGroupId(bytes32 group) external {
+        vm.expectCall(
+            midnight,
+            abi.encodeCall(IMidnightMock.setConsumed, (group, type(uint128).max, proxy))
+        );
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightOfferGroupCancelled(group);
+
+        vm.prank(allocator);
+        controller.cancelOfferGroup(group);
+    }
+
+    function testFuzz_cancelOfferGroup_freezerAnyGroupId(bytes32 group) external {
+        address freezer = _grantFreezer();
+
+        vm.expectCall(
+            midnight,
+            abi.encodeCall(IMidnightMock.setConsumed, (group, type(uint128).max, proxy))
+        );
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightOfferGroupCancelled(group);
+
+        vm.prank(freezer);
+        controller.cancelOfferGroup(group);
+    }
+
+    function test_cancelOfferGroup_manyGroupsOnAnUnconfiguredMarket() external {
+        address freezer = _grantFreezer();
+
+        bytes32[3] memory groups = [bytes32(0), keccak256("otherMarket-group"), BUY_GROUP];
+
+        for (uint256 i; i < groups.length; ++i) {
+            vm.expectCall(
+                midnight,
+                abi.encodeCall(IMidnightMock.setConsumed, (groups[i], type(uint128).max, proxy))
+            );
+
+            vm.prank(i == 1 ? freezer : allocator);
+            controller.cancelOfferGroup(groups[i]);
+        }
+
+        assertEq(controller.getMakeConfig(MARKET_ID).maxOfferSize,  0);
+        assertEq(controller.getMarketConfig(MARKET_ID).minSellTick, 0);
+    }
+
+    function test_groupDesignationIsGone() external {
+        vm.prank(admin);
+        ( bool setOk, ) = address(controller).call(
+            abi.encodeWithSelector(bytes4(0xbf77777b), MARKET_ID, BUY_GROUP, SELL_GROUP)
+        );
+
+        ( bool getOk, ) = address(controller).staticcall(
+            abi.encodeWithSelector(bytes4(0xafb3ade6), MARKET_ID)
+        );
+
+        assertFalse(setOk);
+        assertFalse(getOk);
     }
 
     /**********************************************************************************************/
@@ -2464,7 +2448,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     bytes32 internal constant INTEGRATION = "MIDNIGHT_FACET";
 
     // Bumping this is the step that forces a new controller alias to be paired below.
-    uint256 internal constant WIRE_COUNT = 20;
+    uint256 internal constant WIRE_COUNT = 18;
 
     address internal midnight = makeAddr("midnight");
 
@@ -2526,39 +2510,32 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         calls[10]     = IMidnightController.midnight_setMakeConfig.selector;
         delegates[10] = IMidnightFacet.setMakeConfig.selector;
 
-        calls[11]     = IMidnightController.midnight_setDesignatedGroups.selector;
-        delegates[11] = IMidnightFacet.setDesignatedGroups.selector;
+        calls[11]     = IMidnightController.midnight_setRatifierAuthorization.selector;
+        delegates[11] = IMidnightFacet.setRatifierAuthorization.selector;
 
-        calls[12]     = IMidnightController.midnight_setRatifierAuthorization.selector;
-        delegates[12] = IMidnightFacet.setRatifierAuthorization.selector;
+        calls[12]     = IMidnightController.midnight_cancelOfferGroup.selector;
+        delegates[12] = IMidnightFacet.cancelOfferGroup.selector;
 
-        calls[13]     = IMidnightController.midnight_cancelOfferGroup.selector;
-        delegates[13] = IMidnightFacet.cancelOfferGroup.selector;
+        calls[13]     = IMidnightController.midnight_fundFill.selector;
+        delegates[13] = IMidnightFacet.fundFill.selector;
 
-        calls[14]     = IMidnightController.midnight_fundFill.selector;
-        delegates[14] = IMidnightFacet.fundFill.selector;
+        calls[14]     = IMidnightController.midnight_getMakeConfig.selector;
+        delegates[14] = IMidnightFacet.getMakeConfig.selector;
 
-        calls[15]     = IMidnightController.midnight_getMakeConfig.selector;
-        delegates[15] = IMidnightFacet.getMakeConfig.selector;
+        calls[15]     = IMidnightController.midnight_isCallbackAllowed.selector;
+        delegates[15] = IMidnightFacet.isCallbackAllowed.selector;
 
-        calls[16]     = IMidnightController.midnight_getDesignatedGroups.selector;
-        delegates[16] = IMidnightFacet.getDesignatedGroups.selector;
+        calls[16]     = IMidnightController.midnight_getStrategyBuyRateLimitKey.selector;
+        delegates[16] = IMidnightFacet.getStrategyBuyRateLimitKey.selector;
 
-        calls[17]     = IMidnightController.midnight_isCallbackAllowed.selector;
-        delegates[17] = IMidnightFacet.isCallbackAllowed.selector;
-
-        calls[18]     = IMidnightController.midnight_getStrategyBuyRateLimitKey.selector;
-        delegates[18] = IMidnightFacet.getStrategyBuyRateLimitKey.selector;
-
-        calls[19]     = IMidnightController.midnight_getStrategySellRateLimitKey.selector;
-        delegates[19] = IMidnightFacet.getStrategySellRateLimitKey.selector;
+        calls[17]     = IMidnightController.midnight_getStrategySellRateLimitKey.selector;
+        delegates[17] = IMidnightFacet.getStrategySellRateLimitKey.selector;
     }
 
-    // The periphery calls these three by selector, so they are pinned to literals, not derived.
+    // The periphery calls these two by selector, so they are pinned to literals, not derived.
     function test_midnightWiring_peripherySelectors() external view {
-        assertEq(IMidnightController.midnight_fundFill.selector,            bytes4(0xfb9e2099));
-        assertEq(IMidnightController.midnight_isCallbackAllowed.selector,   bytes4(0x5c0f4590));
-        assertEq(IMidnightController.midnight_getDesignatedGroups.selector, bytes4(0x87d2a293));
+        assertEq(IMidnightController.midnight_fundFill.selector,          bytes4(0xfb9e2099));
+        assertEq(IMidnightController.midnight_isCallbackAllowed.selector, bytes4(0x5c0f4590));
 
         assertEq(
             beacon.getDispatch(bytes4(0xfb9e2099)).delegateSelector,
@@ -2568,10 +2545,27 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
             beacon.getDispatch(bytes4(0x5c0f4590)).delegateSelector,
             IMidnightFacet.isCallbackAllowed.selector
         );
-        assertEq(
-            beacon.getDispatch(bytes4(0x87d2a293)).delegateSelector,
-            IMidnightFacet.getDesignatedGroups.selector
+    }
+
+    // midnight_setDesignatedGroups and midnight_getDesignatedGroups.
+    function test_midnightWiring_groupDesignationIsNotRouted() external {
+        bytes4[2] memory removed = [bytes4(0x31903c7e), bytes4(0x87d2a293)];
+
+        for (uint256 i; i < removed.length; ++i) {
+            assertEq(beacon.getDispatch(removed[i]).facet, address(0));
+        }
+
+        vm.prank(admin);
+        ( bool setOk, ) = controller.call(
+            abi.encodeWithSelector(removed[0], bytes32("market"), bytes32("buy"), bytes32("sell"))
         );
+
+        ( bool getOk, ) = controller.staticcall(
+            abi.encodeWithSelector(removed[1], bytes32("market"))
+        );
+
+        assertFalse(setOk);
+        assertFalse(getOk);
     }
 
     function test_midnightWiring_everyDeclaredPairIsInstalled() external view {
@@ -2636,9 +2630,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
             liquidatorGate   : address(0)
         });
 
-        bytes32 marketId  = MidnightIdLib.toId(market);
-        bytes32 buyGroup  = keccak256("buy");
-        bytes32 sellGroup = keccak256("sell");
+        bytes32 marketId = MidnightIdLib.toId(market);
 
         address callback = makeAddr("callback");
 
@@ -2659,24 +2651,11 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         vm.startPrank(admin);
         alias_.midnight_setMarketConfig(marketId, 1, 1, 0, 1, 0, 0);
         alias_.midnight_setMakeConfig(market, 1);
-        alias_.midnight_setDesignatedGroups(marketId, buyGroup, sellGroup);
         limits.setRateLimitData(strategyKey, 1, 0);
         limits.setRateLimitData(marketKey,   1, 0);
         vm.stopPrank();
 
         ( bool ok, bytes memory data ) = controller.staticcall(
-            abi.encodeCall(IMidnightController.midnight_getDesignatedGroups, (marketId))
-        );
-
-        assertTrue(ok);
-
-        IMidnightFacet.DesignatedGroups memory groups =
-            abi.decode(data, (IMidnightFacet.DesignatedGroups));
-
-        assertEq(groups.buyGroup,  buyGroup);
-        assertEq(groups.sellGroup, sellGroup);
-
-        ( ok, data ) = controller.staticcall(
             abi.encodeCall(IMidnightController.midnight_isCallbackAllowed, (marketId, callback, true))
         );
 

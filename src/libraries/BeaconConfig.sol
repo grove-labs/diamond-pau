@@ -1062,7 +1062,7 @@ library BeaconConfig {
      * @param  facet  Address of the deployed MidnightFacet contract.
      */
     function setMidnightIntegration(address beacon, address facet) internal {
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](20);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](18);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_setMarketConfig.selector,
@@ -1120,46 +1120,36 @@ library BeaconConfig {
         );
 
         wires[11] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_setDesignatedGroups.selector,
-            IMidnightFacet.setDesignatedGroups.selector
-        );
-
-        wires[12] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_setRatifierAuthorization.selector,
             IMidnightFacet.setRatifierAuthorization.selector
         );
 
-        wires[13] = IEnumerableIntegrations.Wire(
+        wires[12] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_cancelOfferGroup.selector,
             IMidnightFacet.cancelOfferGroup.selector
         );
 
-        wires[14] = IEnumerableIntegrations.Wire(
+        wires[13] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_fundFill.selector,
             IMidnightFacet.fundFill.selector
         );
 
-        wires[15] = IEnumerableIntegrations.Wire(
+        wires[14] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_getMakeConfig.selector,
             IMidnightFacet.getMakeConfig.selector
         );
 
-        wires[16] = IEnumerableIntegrations.Wire(
-            IMidnightController.midnight_getDesignatedGroups.selector,
-            IMidnightFacet.getDesignatedGroups.selector
-        );
-
-        wires[17] = IEnumerableIntegrations.Wire(
+        wires[15] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_isCallbackAllowed.selector,
             IMidnightFacet.isCallbackAllowed.selector
         );
 
-        wires[18] = IEnumerableIntegrations.Wire(
+        wires[16] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_getStrategyBuyRateLimitKey.selector,
             IMidnightFacet.getStrategyBuyRateLimitKey.selector
         );
 
-        wires[19] = IEnumerableIntegrations.Wire(
+        wires[17] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_getStrategySellRateLimitKey.selector,
             IMidnightFacet.getStrategySellRateLimitKey.selector
         );
