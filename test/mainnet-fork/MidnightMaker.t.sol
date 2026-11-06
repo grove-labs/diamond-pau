@@ -153,7 +153,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
     uint256 internal constant MAX_OFFER_WINDOW = 1 days;
 
-    // fundFill prices the fee at the cap, which at 180 days puts the bound below TICK_99.
+    // Below both buy bounds at any live fee up to the configured ceiling.
     uint16 internal constant MAKER_BUY_TICK  = TICK_98;
     uint16 internal constant MAKER_SELL_TICK = TICK_99;
 
@@ -437,6 +437,39 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         );
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), 2 * units);
+    }
+
+    function test_makerBuy_yieldBoundUsesTheLiveFee() external {
+        uint256 ceilingBound = MidnightUtils.maxBuyPrice(
+            MIN_BUY_YIELD,
+            _timeToMaturity(),
+            MidnightUtils.continuousFeePerSecond(MAX_CONTINUOUS_FEE_CBPS)
+        );
+        uint256 liveBound = MidnightUtils.maxBuyPrice(MIN_BUY_YIELD, _timeToMaturity(), 0);
+
+        assertEq(midnight.continuousFee(marketId), 0);
+
+        uint256 betweenTick = _tickAtOrAbove(ceilingBound + 1);
+        uint256 aboveTick   = _tickAtOrAbove(liveBound + 1);
+
+        assertGt(aboveTick, betweenTick);
+        assertLe(MidnightTickLib.tickToPrice(betweenTick), liveBound);
+
+        _setConfig(uint16(aboveTick), TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        _takeExpectRevert(
+            _makerOffer(true, aboveTick, seedUnits), seedUnits / 4, "MidnightFacet/fill-price-too-high"
+        );
+
+        Offer memory buy = _makerOffer(true, betweenTick, seedUnits);
+
+        _take(buy, seedUnits / 4);
+
+        assertEq(_credit(), seedUnits / 4);
+
+        _setContinuousFee(MidnightUtils.continuousFeePerSecond(MAX_CONTINUOUS_FEE_CBPS));
+
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-price-too-high");
     }
 
     function test_makerBuy_offerCapExhausted() external {

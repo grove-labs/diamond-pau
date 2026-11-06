@@ -577,10 +577,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
     )
         internal
     {
-        // The entry bound is priced at the ceiling, so a higher live fee undercuts the yield.
+        uint256 continuousFee = IMidnightLike(midnight).continuousFee(marketId);
+
         require(
-            IMidnightLike(midnight).continuousFee(marketId)
-                <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
+            continuousFee <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
             "MidnightFacet/continuous-fee-too-high"
         );
 
@@ -591,7 +591,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
 
         require(
-            assets * MidnightUtils.WAD <= units * _maxFillPrice(config),
+            assets * MidnightUtils.WAD <= units * _maxFillPrice(config, continuousFee),
             "MidnightFacet/fill-price-too-high"
         );
 
@@ -696,8 +696,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( ctx.creditBefore, ctx.pendingFeeBefore ) = _credit(ctx.market, marketId, ctx.proxy);
     }
 
-    // Every input comes from config, never the live market, so the bound cannot loosen.
-    function _maxFillPrice(MarketConfig storage config)
+    function _maxFillPrice(MarketConfig storage config, uint256 continuousFee)
         internal
         view
         returns (uint256 bound)
@@ -707,7 +706,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         uint256 yieldBound = MidnightUtils.maxBuyPrice(
             config.minBuyYield,
             _timeToMaturity(config.maturity),
-            MidnightUtils.continuousFeePerSecond(config.maxContinuousFee)
+            continuousFee
         );
 
         if (yieldBound < bound) bound = yieldBound;

@@ -488,7 +488,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
     }
 
-    // Mirrors fundFill's bound from config alone, so a live market rate cannot satisfy it.
+    // Mirrors fundFill's bound with the live fee at the ceiling, as _mockMarketExists sets it.
     function _maxFillPrice() internal view returns (uint256 bound) {
         bound = MidnightTickLib.tickToPrice(TICK_99);
 
@@ -1737,21 +1737,41 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(_marketId(), true, honest, FILL_UNITS, 0);
     }
 
-    // The bound prices the fee at the configured ceiling, so a cheaper live market cannot lift it.
-    function test_fundFill_liveFeeBelowCap_fillPriceTooHighBoundary() external {
+    function test_fundFill_buyYieldBoundUsesTheLiveFee() external {
         _onboardAndEnableMake(0);
         _onboardStrategy(MAX_OFFER_SIZE);
         _mockLossFactor(0);
         _mockContinuousFee(0);
 
-        uint256 honest = _honestAssets(FILL_UNITS);
+        _setConfig(uint16(MAX_TICK), TICK_98, CONTINUOUS_FEE);
+
+        uint256 timeToMaturity = marketMaturity - block.timestamp;
+
+        uint256 ceilingBound = MidnightUtils.maxBuyPrice(
+            MIN_BUY_YIELD, timeToMaturity, MidnightUtils.continuousFeePerSecond(CONTINUOUS_FEE)
+        );
+        uint256 liveBound = MidnightUtils.maxBuyPrice(MIN_BUY_YIELD, timeToMaturity, 0);
+
+        assertLt(liveBound, MidnightTickLib.tickToPrice(uint16(MAX_TICK)));
+
+        uint256 assets = FILL_UNITS * liveBound / MidnightUtils.WAD;
+
+        assertGt(assets * MidnightUtils.WAD, FILL_UNITS * ceilingBound);
 
         vm.expectRevert("MidnightFacet/fill-price-too-high");
         vm.prank(strategy);
-        controller.fundFill(_marketId(), true, honest + 1, FILL_UNITS, 0);
+        controller.fundFill(_marketId(), true, assets + 1, FILL_UNITS, 0);
 
         vm.prank(strategy);
-        controller.fundFill(_marketId(), true, honest, FILL_UNITS, 0);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
+
+        assertEq(IERC20Mock(loanToken).balanceOf(strategy), assets);
+
+        _mockContinuousFee(CONTINUOUS_FEE);
+
+        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
     }
 
     function test_fundFill_sell_fillPriceTooLowBoundary() external {

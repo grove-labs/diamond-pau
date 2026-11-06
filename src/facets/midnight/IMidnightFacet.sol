@@ -225,10 +225,11 @@ interface IMidnightFacet is IFacet {
      * @dev    On a buy the loan token is sent to the caller, which is what Midnight then pulls. The
      *         fill must clear the configured loss factor, meet the configured fee ceiling against
      *         the market's live continuous fee, and price at or below the stricter of the
-     *         configured entry tick and entry yield. On a sell the proceeds have already reached
-     *         the proxy, so nothing moves here; the fill must price at or above the stricter of the
-     *         configured exit tick and exit yield, and must leave the proxy free of debt on the
-     *         market, which is what stops an exit from opening a short.
+     *         configured entry tick and entry yield, the yield priced at that live fee. On a sell
+     *         the proceeds have already reached the proxy, so nothing moves here; the fill must
+     *         price at or above the stricter of the configured exit tick and exit yield, and must
+     *         leave the proxy free of debt on the market, which is what stops an exit from opening
+     *         a short.
      * @dev    In both directions `assets` must not exceed the market's `maxMakeOfferSize`, which
      *         caps each fill rather than an offer's total size.
      * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
