@@ -80,9 +80,9 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
   for the market, both enforcing decreases of `assets`; selling: `LIMIT_MIDNIGHT_STRATEGY_SELL`
   then `LIMIT_MIDNIGHT_SELL`
 - **Refill:** none
-- **Loss bounds:** `assets <= maxOfferSize`; entry `assets * WAD <= units * maxFillPrice` from
-  config only; exit `assets * WAD >= units * minFillPrice`; fee and loss-factor gates on entry;
-  zero debt on exit
+- **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * maxFillPrice`, the
+  yield bound priced at the live `continuousFee`; exit `assets * WAD >= units * minFillPrice`;
+  fee and loss-factor gates on entry; zero debt on exit
 - **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`
 - **Zero-amount semantics:** zero `assets` or `units` revert
 
@@ -92,14 +92,17 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Value direction:** config (risk-reducing, retires a group)
 - **External calls:** `setConsumed(group, type(uint128).max, proxy)` via `doCall`
 
-### `setMakeConfig(Market market, uint256 maxOfferSize)`
-- **Role:** DEFAULT_ADMIN_ROLE; `MIDNIGHT_FREEZER_ROLE` only for `maxOfferSize == 0`; this departs
-  from rulebook A-1 and A-2; no exception has been requested yet.
-- **Value direction:** config (per-fill cap for maker mode)
-- **External calls:** `toMarket(marketId)` (view)
+### `disableMake(bytes32 marketId)`
+- **Role:** `MIDNIGHT_FREEZER_ROLE`; this departs from rulebook A-1; no exception has been requested
+  yet.
+- **Value direction:** config (risk-reducing, sets `maxMakeOfferSize` to zero and nothing else)
+- **External calls:** none
 
-### `setMarketConfig(bytes32 marketId, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor)`
-- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`)
+### `setMarketConfig(Market market, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor, uint256 maxMakeOfferSize)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`;
+  `maxMakeOfferSize != 0` enables making and caps each fill); every call restates every field
+- **External calls:** `toMarket(marketId)` (view), last; reverts unless the market exists on
+  Midnight
 
 ### `setRatifierAuthorization(address ratifier, bool authorized)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config, a blanket grant on the singleton
@@ -107,7 +110,7 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 
 Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
 `getStrategyBuyRateLimitKey`, `getStrategySellRateLimitKey`,
-`getMakeConfig`, `getMarketConfig`, `isCallbackAllowed`, `midnight`, `MIDNIGHT_FREEZER_ROLE`,
+`getMarketConfig`, `isCallbackAllowed`, `midnight`, `MIDNIGHT_FREEZER_ROLE`,
 `VERSION`.
 
 Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
@@ -117,14 +120,14 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 | # | Path | Destination | Bounded by |
 |---|------|-------------|------------|
 | 1 | `buy`: approval + `take` | offer maker (seller); proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
-| 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxOfferSize` per call; config price ceiling |
+| 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price ceiling at the live continuous fee |
 | 3 | `sell`: `take` | credit units to the offer maker; loan token to the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
 | 4 | maker sell fill (units taken by Midnight before `fundFill`) | offer taker | strategy sell key, then `LIMIT_MIDNIGHT_SELL`; config price floor |
 | 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
 
 ## Storage & constructor
 
-- **ERC-7201 storage fields:** `marketConfigs`, `makeConfigs` (per `marketId`),
+- **ERC-7201 storage fields:** `marketConfigs` (per `marketId`),
   namespace `sky.pau.storage.MidnightFacet.v1`.
 - **Immutables:** `midnight` (the singleton; zero-checked in the constructor).
 - **Auxiliary module:** none.
@@ -133,8 +136,8 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 
 No standing ERC-20 approval (the `buy` approval is reset in the same call). Standing authorization:
 the ratifier's `setIsAuthorized` grant on the singleton (row 5 above). The role and callback design
-of `fundFill`, `cancelOfferGroup` and `setMakeConfig` departs from rulebook A-1, A-2 and V-3; no
-exception has been requested yet.
+of `fundFill` departs from rulebook A-1, A-2 and V-3, that of `cancelOfferGroup` from A-1 and A-2,
+and that of `disableMake` from A-1; no exception has been requested yet.
 
 ## Dependencies
 
@@ -159,6 +162,8 @@ departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLim
 ## Operational requirements
 
 Order: `touchMarket` on Midnight, `setMarketConfig`, rate-limit keys, then for maker mode
-`setRatifierAuthorization`, strategy keys, `setMakeConfig`. The fork tests
+`setRatifierAuthorization`, strategy keys, `setMarketConfig` again with a non-zero
+`maxMakeOfferSize` (every call restates the whole config; the market must exist on Midnight). The
+fork tests
 need an EVM with CLZ (`evm_version = 'osaka'`), which is a repository setting outside this facet
 PR. Deploy scripts are out of scope.
