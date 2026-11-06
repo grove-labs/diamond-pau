@@ -168,11 +168,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        bytes32 marketId = _validateMarket(market);
+        _validateMarket(market);
 
-        _validateTakeConfig(maxBuyTick, minSellTick, maxContinuousFee, maxSellYield);
+        _validateMarketConfig(
+            maxBuyTick, minSellTick, maxContinuousFee, maxSellYield, maxMakeOfferSize
+        );
 
-        _validateMakeConfig(maxMakeOfferSize);
+        bytes32 marketId = MidnightIdLib.toId(market);
 
         _validateMarketExists(marketId, market.maturity);
 
@@ -548,9 +550,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // whose fills would never reach fundFill.
         if (callback == address(0)) return false;
 
-        if (_getFacetStorage().marketConfigs[marketId].maxMakeOfferSize == 0) return false;
+        MarketConfig storage config = _getFacetStorage().marketConfigs[marketId];
 
-        if (buying && _getFacetStorage().marketConfigs[marketId].maxBuyTick == 0) return false;
+        if (config.maxMakeOfferSize == 0) return false;
+
+        if (buying && config.maxBuyTick == 0) return false;
 
         bytes32 strategyKey = buying
             ? getStrategyBuyRateLimitKey(callback, marketId)
@@ -761,11 +765,17 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(IMidnightLike(midnight).debt(marketId, user) == 0, "MidnightFacet/debt-not-zero");
     }
 
-    function _validateTakeConfig(
-        uint16 maxBuyTick,
-        uint16 minSellTick,
-        uint16 maxContinuousFee,
-        uint16 maxSellYield
+    function _validateMarket(Market calldata market) internal view {
+        require(market.midnight == midnight,         "MidnightFacet/invalid-midnight");
+        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
+    }
+
+    function _validateMarketConfig(
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  maxContinuousFee,
+        uint16  maxSellYield,
+        uint256 maxMakeOfferSize
     )
         internal
         pure
@@ -780,16 +790,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         // A zero sell yield would only clear at par and brick the exit, so one must be named.
         require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
-    }
-
-    function _validateMarket(Market calldata market) internal view returns (bytes32 marketId) {
-        require(market.midnight == midnight,         "MidnightFacet/invalid-midnight");
-        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
-
-        marketId = MidnightIdLib.toId(market);
-    }
-
-    function _validateMakeConfig(uint256 maxMakeOfferSize) internal pure {
         // Midnight moves at most uint128 assets in one fill, so a larger cap could never bind.
         require(maxMakeOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
     }
