@@ -1824,7 +1824,6 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         uint256 assets = _honestAssets(FILL_UNITS);
 
-        // One wei per second above the configured ceiling, which is what the entry bound assumes.
         vm.mockCall(
             midnight,
             abi.encodeCall(IMidnightMock.continuousFee, (_marketId())),
