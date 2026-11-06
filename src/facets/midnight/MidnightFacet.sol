@@ -79,7 +79,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @custom:storage-location erc7201:sky.pau.storage.MidnightFacet.v1
     struct FacetStorage {
         mapping (bytes32 marketId => MarketConfig config) marketConfigs;
-        mapping (bytes32 marketId => MakeConfig config)   makeConfigs;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -142,44 +141,40 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /**********************************************************************************************/
 
     /// @inheritdoc IMidnightFacet
-    function setMakeConfig(Market calldata market, uint256 maxOfferSize)
+    function disableMake(bytes32 marketId)
         external
         override
         nonReentrant
+        onlyRole(MIDNIGHT_FREEZER_ROLE)
     {
-        _checkMakeConfigRole(maxOfferSize);
+        _getFacetStorage().marketConfigs[marketId].maxMakeOfferSize = 0;
 
-        bytes32 marketId = _validateMarket(market);
-
-        _validateMakeConfig(maxOfferSize);
-
-        _validateMarketExists(marketId, market.maturity);
-
-        _getFacetStorage().makeConfigs[marketId] = MakeConfig({
-            maxOfferSize : maxOfferSize,
-            maturity     : uint64(market.maturity),
-            loanToken    : market.loanToken
-        });
-
-        emit MidnightMakeConfigSet(marketId, market.loanToken, market.maturity, maxOfferSize);
+        emit MidnightMakeDisabled(marketId);
     }
 
     /// @inheritdoc IMidnightFacet
     function setMarketConfig(
-        bytes32 marketId,
-        uint16  maxBuyTick,
-        uint16  minSellTick,
-        uint16  minBuyYield,
-        uint16  maxSellYield,
-        uint16  maxContinuousFee,
-        uint128 maxLossFactor
+        Market calldata market,
+        uint16          maxBuyTick,
+        uint16          minSellTick,
+        uint16          minBuyYield,
+        uint16          maxSellYield,
+        uint16          maxContinuousFee,
+        uint128         maxLossFactor,
+        uint256         maxMakeOfferSize
     )
         external
         override
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        bytes32 marketId = _validateMarket(market);
+
         _validateTakeConfig(maxBuyTick, minSellTick, maxContinuousFee, maxSellYield);
+
+        _validateMakeConfig(maxMakeOfferSize);
+
+        _validateMarketExists(marketId, market.maturity);
 
         _getFacetStorage().marketConfigs[marketId] = MarketConfig({
             maxBuyTick       : maxBuyTick,
@@ -187,17 +182,23 @@ contract MidnightFacet is IMidnightFacet, Facet {
             minBuyYield      : minBuyYield,
             maxSellYield     : maxSellYield,
             maxContinuousFee : maxContinuousFee,
-            maxLossFactor    : maxLossFactor
+            maxLossFactor    : maxLossFactor,
+            maxMakeOfferSize : uint128(maxMakeOfferSize),
+            maturity         : uint64(market.maturity),
+            loanToken        : market.loanToken
         });
 
         emit MidnightMarketConfigSet(
             marketId,
+            market.loanToken,
+            market.maturity,
             maxBuyTick,
             minSellTick,
             minBuyYield,
             maxSellYield,
             maxContinuousFee,
-            maxLossFactor
+            maxLossFactor,
+            maxMakeOfferSize
         );
     }
 
@@ -470,23 +471,20 @@ contract MidnightFacet is IMidnightFacet, Facet {
         override
         nonReentrant
     {
-        FacetStorage storage $ = _getFacetStorage();
-
-        MakeConfig   storage makeConfig = $.makeConfigs[marketId];
-        MarketConfig storage config     = $.marketConfigs[marketId];
+        MarketConfig storage config = _getFacetStorage().marketConfigs[marketId];
 
         // No role gate: the caller's own strategy key is the authorization, and an unset key
         // reverts in the rate limits before anything moves.
-        require(makeConfig.maxOfferSize != 0, "MidnightFacet/make-not-enabled");
+        require(config.maxMakeOfferSize != 0, "MidnightFacet/make-not-enabled");
         require(assets != 0,                  "MidnightFacet/zero-assets");
         require(units  != 0,                  "MidnightFacet/zero-units");
 
-        require(assets <= makeConfig.maxOfferSize, "MidnightFacet/offer-size-too-large");
+        require(assets <= config.maxMakeOfferSize, "MidnightFacet/offer-size-too-large");
 
         if (buying) {
-            _fundFillBuy(marketId, makeConfig, config, assets, units);
+            _fundFillBuy(marketId, config, assets, units);
         } else {
-            _fundFillSell(marketId, makeConfig, config, assets, units, pendingFee);
+            _fundFillSell(marketId, config, assets, units, pendingFee);
         }
     }
 
@@ -497,16 +495,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @inheritdoc IMidnightFacet
     function getBuyRateLimitKey(bytes32 marketId) public pure override returns (bytes32) {
         return makeBytes32Key(_LIMIT_BUY, marketId);
-    }
-
-    /// @inheritdoc IMidnightFacet
-    function getMakeConfig(bytes32 marketId)
-        external
-        view
-        override
-        returns (MakeConfig memory)
-    {
-        return _getFacetStorage().makeConfigs[marketId];
     }
 
     /// @inheritdoc IMidnightFacet
@@ -560,7 +548,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // whose fills would never reach fundFill.
         if (callback == address(0)) return false;
 
-        if (_getFacetStorage().makeConfigs[marketId].maxOfferSize == 0) return false;
+        if (_getFacetStorage().marketConfigs[marketId].maxMakeOfferSize == 0) return false;
 
         if (buying && _getFacetStorage().marketConfigs[marketId].maxBuyTick == 0) return false;
 
@@ -579,7 +567,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     function _fundFillBuy(
         bytes32              marketId,
-        MakeConfig   storage makeConfig,
         MarketConfig storage config,
         uint256              assets,
         uint256              units
@@ -600,7 +587,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
 
         require(
-            assets * MidnightUtils.WAD <= units * _maxFillPrice(config, makeConfig.maturity),
+            assets * MidnightUtils.WAD <= units * _maxFillPrice(config),
             "MidnightFacet/fill-price-too-high"
         );
 
@@ -609,7 +596,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // Last step, so every gate and both meters have already passed.
         bytes memory returnData = IALMProxy(_getSharedControllerStorage().proxy).doCall(
-            makeConfig.loanToken,
+            config.loanToken,
             abi.encodeCall(IERC20Like.transfer, (msg.sender, assets))
         );
 
@@ -624,7 +611,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     // Midnight pays the proxy before calling back on an exit, so this leg moves nothing.
     function _fundFillSell(
         bytes32              marketId,
-        MakeConfig   storage makeConfig,
         MarketConfig storage config,
         uint256              assets,
         uint256              units,
@@ -634,11 +620,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     {
         address proxy = _getSharedControllerStorage().proxy;
 
-        uint256 floor = _minFillPrice(
-            config,
-            makeConfig.maturity,
-            _exitFeePerUnit(marketId, proxy, units, pendingFee)
-        );
+        uint256 floor = _minFillPrice(config, _exitFeePerUnit(marketId, proxy, units, pendingFee));
 
         require(
             assets * MidnightUtils.WAD >= units * floor,
@@ -711,7 +693,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     // Every input comes from config, never the live market, so the bound cannot loosen.
-    function _maxFillPrice(MarketConfig storage config, uint64 maturity)
+    function _maxFillPrice(MarketConfig storage config)
         internal
         view
         returns (uint256 bound)
@@ -720,14 +702,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         uint256 yieldBound = MidnightUtils.maxBuyPrice(
             config.minBuyYield,
-            _timeToMaturity(maturity),
+            _timeToMaturity(config.maturity),
             MidnightUtils.continuousFeePerSecond(config.maxContinuousFee)
         );
 
         if (yieldBound < bound) bound = yieldBound;
     }
 
-    function _minFillPrice(MarketConfig storage config, uint64 maturity, uint256 feePerUnit)
+    function _minFillPrice(MarketConfig storage config, uint256 feePerUnit)
         internal
         view
         returns (uint256 bound)
@@ -736,7 +718,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         uint256 yieldBound = MidnightUtils.minSellPrice(
             config.maxSellYield,
-            _timeToMaturity(maturity),
+            _timeToMaturity(config.maturity),
             MidnightUtils.WAD,
             feePerUnit
         );
@@ -801,21 +783,15 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     function _validateMarket(Market calldata market) internal view returns (bytes32 marketId) {
-        require(market.midnight == midnight, "MidnightFacet/invalid-midnight");
+        require(market.midnight == midnight,         "MidnightFacet/invalid-midnight");
+        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
 
         marketId = MidnightIdLib.toId(market);
-
-        // Making rests offers that only an onboarded market can price, so take onboarding gates it.
-        require(
-            _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
-            "MidnightFacet/market-not-onboarded"
-        );
-        require(market.maturity <= type(uint64).max, "MidnightFacet/maturity-oob");
     }
 
-    function _validateMakeConfig(uint256 maxOfferSize) internal pure {
+    function _validateMakeConfig(uint256 maxMakeOfferSize) internal pure {
         // Midnight moves at most uint128 assets in one fill, so a larger cap could never bind.
-        require(maxOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
+        require(maxMakeOfferSize <= type(uint128).max, "MidnightFacet/max-offer-size-oob");
     }
 
     function _validateMarketExists(bytes32 marketId, uint256 maturity) internal view {
@@ -823,18 +799,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(
             IMidnightLike(midnight).toMarket(marketId).maturity == maturity,
             "MidnightFacet/market-mismatch"
-        );
-    }
-
-    function _checkMakeConfigRole(uint256 maxOfferSize) private view {
-        IAccessControls accessControls =
-            IAccessControls(_getSharedControllerStorage().accessControls);
-
-        if (maxOfferSize == 0 && accessControls.hasRole(MIDNIGHT_FREEZER_ROLE, msg.sender)) return;
-
-        require(
-            accessControls.hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            AccessControlUnauthorizedAccount(msg.sender, DEFAULT_ADMIN_ROLE)
         );
     }
 

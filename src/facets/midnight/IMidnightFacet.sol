@@ -24,24 +24,8 @@ interface IMidnightFacet is IFacet {
     /**********************************************************************************************/
 
     /**
-     * @notice Make-side limits for one Midnight market. Fits in two storage slots.
-     * @dev    `maxOfferSize` caps the loan token a single fill may move, in either direction, and
-     *         `maxOfferSize == 0` disables making, independently of take onboarding. Maturity and
-     *         loan token are copied from the `Market` that produced the id, and `toId` commits to
-     *         every field, so neither can disagree with the market they describe. They are stored
-     *         rather than read per fill because `toMarket` resolves the config from contract code.
-     * @param  maxOfferSize Largest loan token amount a single fill may move.
-     * @param  maturity     Market maturity, used to price the remaining term on a fill.
-     * @param  loanToken    Market loan token, the asset a fill is funded in.
-     */
-    struct MakeConfig {
-        uint256 maxOfferSize;
-        uint64  maturity;
-        address loanToken;
-    }
-
-    /**
-     * @notice Governance limits for one Midnight market. Fits in one storage slot.
+     * @notice Governance limits for one Midnight market, taker and maker. Fits in three storage
+     *         slots, with every field a take reads in the first.
      * @dev    `maxBuyTick == 0` disables entry. `minSellTick != 0` marks the market as onboarded
      *         and gates sell and redeem; it is an exit price floor and has to stay reachable
      *         (below par net of the settlement fee). The fee and loss guards only apply to entry.
@@ -51,6 +35,21 @@ interface IMidnightFacet is IFacet {
      *         and the continuous fee crystallized over the remaining term are inside the
      *         comparison. They tighten towards par as maturity approaches, so at maturity a sell
      *         only clears at par. `minBuyYield == 0` still bars paying above what a unit returns.
+     * @dev    `maxMakeOfferSize` caps the loan token a single fill may move, in either direction,
+     *         and `maxMakeOfferSize == 0` disables making. Maturity and loan token are copied from
+     *         the `Market` that produced the id, and `toId` commits to every field, so neither can
+     *         disagree with the market they describe. They are stored rather than read per fill
+     *         because `toMarket` resolves the config from contract code.
+     * @param  maxBuyTick       Highest offer tick a buy may pay.
+     * @param  minSellTick      Lowest offer tick a sell may accept.
+     * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
+     * @param  maxSellYield     Highest implied yield a sell may give up (basis points a year).
+     * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
+     *                          a year).
+     * @param  maxLossFactor    Highest market loss factor a buy tolerates.
+     * @param  maxMakeOfferSize Largest loan token amount a single fill may move.
+     * @param  maturity         Market maturity, used to price the remaining term on a fill.
+     * @param  loanToken        Market loan token, the asset a fill is funded in.
      */
     struct MarketConfig {
         uint16  maxBuyTick;
@@ -59,6 +58,9 @@ interface IMidnightFacet is IFacet {
         uint16  maxSellYield;
         uint16  maxContinuousFee;
         uint128 maxLossFactor;
+        uint128 maxMakeOfferSize;
+        uint64  maturity;
+        address loanToken;
     }
 
     /**********************************************************************************************/
@@ -91,22 +93,16 @@ interface IMidnightFacet is IFacet {
     );
 
     /**
-     * @notice Emitted when the make-side limits for a Midnight market are updated.
-     * @param  marketId     Identifier of the Midnight market.
-     * @param  loanToken    Market loan token, as committed to by the market id.
-     * @param  maturity     Market maturity, as committed to by the market id.
-     * @param  maxOfferSize Largest loan token amount a single fill may move.
+     * @notice Emitted when the Midnight freezer disables making on a market.
+     * @param  marketId Identifier of the Midnight market.
      */
-    event MidnightMakeConfigSet(
-        bytes32 indexed marketId,
-        address         loanToken,
-        uint256         maturity,
-        uint256         maxOfferSize
-    );
+    event MidnightMakeDisabled(bytes32 indexed marketId);
 
     /**
      * @notice Emitted when the governance limits for a Midnight market are updated.
      * @param  marketId         Identifier of the Midnight market.
+     * @param  loanToken        Market loan token, as committed to by the market id.
+     * @param  maturity         Market maturity, as committed to by the market id.
      * @param  maxBuyTick       Highest offer tick a buy may pay.
      * @param  minSellTick      Lowest offer tick a sell may accept.
      * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
@@ -114,15 +110,20 @@ interface IMidnightFacet is IFacet {
      * @param  maxContinuousFee Highest market continuous fee a buy tolerates (centi-basis points
      *                          a year).
      * @param  maxLossFactor    Highest market loss factor a buy tolerates.
+     * @param  maxMakeOfferSize Largest loan token amount a single fill may move; zero disables
+     *                          making.
      */
     event MidnightMarketConfigSet(
         bytes32 indexed marketId,
+        address         loanToken,
+        uint256         maturity,
         uint16          maxBuyTick,
         uint16          minSellTick,
         uint16          minBuyYield,
         uint16          maxSellYield,
         uint16          maxContinuousFee,
-        uint128         maxLossFactor
+        uint128         maxLossFactor,
+        uint256         maxMakeOfferSize
     );
 
     /**
@@ -202,6 +203,19 @@ interface IMidnightFacet is IFacet {
     function cancelOfferGroup(bytes32 group) external;
 
     /**
+     * @notice Disables making on a Midnight market.
+     * @dev    Sets `maxMakeOfferSize` to zero and changes nothing else. Reads nothing from
+     *         Midnight and validates nothing, so it works on any id, configured or not, and
+     *         repeating it only emits again. Every fill of an offer already published then
+     *         reverts in `fundFill`. Only `DEFAULT_ADMIN_ROLE` can enable making again, through
+     *         `setMarketConfig`.
+     * @dev    Callable by `MIDNIGHT_FREEZER_ROLE` only. Any other caller reverts with
+     *         `AccessControlUnauthorizedAccount` for `MIDNIGHT_FREEZER_ROLE`.
+     * @param  marketId Identifier of the Midnight market.
+     */
+    function disableMake(bytes32 marketId) external;
+
+    /**
      * @notice Settles a fill of one of the proxy's resting offers, funding it when the proxy buys.
      * @dev    Called by the funding strategy named as the offer's callback, from inside Midnight's
      *         settlement. Carries no role on purpose: the caller's own strategy key for the market
@@ -215,8 +229,8 @@ interface IMidnightFacet is IFacet {
      *         the proxy, so nothing moves here; the fill must price at or above the stricter of the
      *         configured exit tick and exit yield, and must leave the proxy free of debt on the
      *         market, which is what stops an exit from opening a short.
-     * @dev    In both directions `assets` must not exceed the market's `maxOfferSize`, which caps
-     *         each fill rather than an offer's total size.
+     * @dev    In both directions `assets` must not exceed the market's `maxMakeOfferSize`, which
+     *         caps each fill rather than an offer's total size.
      * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
      *         position actually carries, read back from the venue, so a caller cannot widen its own
      *         floor by overstating the lien it sheds.
@@ -279,30 +293,19 @@ interface IMidnightFacet is IFacet {
         returns (uint256 assetsReceived);
 
     /**
-     * @notice Sets the make-side limits for a Midnight market.
+     * @notice Sets the governance limits for a Midnight market, taker and maker.
      * @dev    Takes the whole `Market` rather than an id so that maturity and loan token are
-     *         committed to by the id they are stored under and can never be passed loose. Reverts
-     *         unless the market names the configured venue, is already take-onboarded, and exists
-     *         on Midnight, so a mistyped or uncreated market fails in the spell instead of
-     *         silently resting an unfillable book. A cap above `type(uint128).max` is rejected,
-     *         since Midnight moves at most that much in one fill and a larger cap could never
-     *         bind. Setting `maxOfferSize` to zero disables making.
-     * @dev    Callable by `DEFAULT_ADMIN_ROLE`, or by `MIDNIGHT_FREEZER_ROLE` with a zero
-     *         `maxOfferSize` only, so the freezer can disable making but never enable or raise it.
-     *         Any other call reverts with `AccessControlUnauthorizedAccount` for
-     *         `DEFAULT_ADMIN_ROLE`.
-     * @param  market       Full market config; its id is derived here.
-     * @param  maxOfferSize Largest loan token amount a single fill may move.
-     */
-    function setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
-
-    /**
-     * @notice Sets the governance limits for a Midnight market.
-     * @dev    Reverts unless `maxBuyTick` and `minSellTick` are within Midnight's tick range,
-     *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
-     *         Midnight's ceiling. Setting `maxBuyTick` to zero blocks new entries while leaving
-     *         exits open.
-     * @param  marketId         Identifier of the Midnight market.
+     *         committed to by the id they are stored under and can never be passed loose. Every
+     *         call writes every field, so a change to one bound restates `maxMakeOfferSize` too.
+     * @dev    Reverts unless the market names the configured venue and its maturity fits in a
+     *         `uint64`, `maxBuyTick` and `minSellTick` are within Midnight's tick range,
+     *         `minSellTick` and `maxSellYield` are non-zero, `maxContinuousFee` is within
+     *         Midnight's ceiling, `maxMakeOfferSize` is at most `type(uint128).max` (Midnight
+     *         moves at most that much in one fill), and, checked last, the market exists on
+     *         Midnight, so a mistyped or uncreated market fails in the spell. Setting
+     *         `maxBuyTick` to zero blocks new entries while leaving exits open, and setting
+     *         `maxMakeOfferSize` to zero disables making.
+     * @param  market           Full market config; its id is derived here.
      * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
      * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
      * @param  minBuyYield      Lowest implied yield a buy may accept (basis points a year).
@@ -311,15 +314,18 @@ interface IMidnightFacet is IFacet {
      *                          a year).
      * @param  maxLossFactor    Highest market loss factor a buy tolerates (fraction of
      *                          `type(uint128).max`).
+     * @param  maxMakeOfferSize Largest loan token amount a single fill may move; zero disables
+     *                          making.
      */
     function setMarketConfig(
-        bytes32 marketId,
-        uint16  maxBuyTick,
-        uint16  minSellTick,
-        uint16  minBuyYield,
-        uint16  maxSellYield,
-        uint16  maxContinuousFee,
-        uint128 maxLossFactor
+        Market calldata market,
+        uint16          maxBuyTick,
+        uint16          minSellTick,
+        uint16          minBuyYield,
+        uint16          maxSellYield,
+        uint16          maxContinuousFee,
+        uint128         maxLossFactor,
+        uint256         maxMakeOfferSize
     ) external;
 
     /**
@@ -340,8 +346,7 @@ interface IMidnightFacet is IFacet {
     /**********************************************************************************************/
 
     /// @notice Role identifier for accounts that may disable making on a market with
-    ///         `setMakeConfig(market, 0)` and cancel an offer group with `cancelOfferGroup`, and
-    ///         nothing else.
+    ///         `disableMake` and cancel an offer group with `cancelOfferGroup`, and nothing else.
     function MIDNIGHT_FREEZER_ROLE() external pure returns (bytes32);
 
     /// @notice Address of the Midnight singleton entries are pinned to (immutable).
@@ -359,16 +364,10 @@ interface IMidnightFacet is IFacet {
     function getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     /**
-     * @notice Returns the make-side limits configured for a Midnight market.
-     * @param  marketId Identifier of the Midnight market.
-     * @return config   Configured limits. A zero `maxOfferSize` means making is disabled.
-     */
-    function getMakeConfig(bytes32 marketId) external view returns (MakeConfig memory config);
-
-    /**
      * @notice Returns the governance limits configured for a Midnight market.
      * @param  marketId Identifier of the Midnight market.
-     * @return config   Configured limits. All-zero means not onboarded.
+     * @return config   Configured limits. All-zero means not onboarded, and a zero
+     *                  `maxMakeOfferSize` means making is disabled.
      */
     function getMarketConfig(bytes32 marketId) external view returns (MarketConfig memory config);
 
@@ -410,10 +409,10 @@ interface IMidnightFacet is IFacet {
 
     /**
      * @notice Returns whether an offer callback may settle fills in one direction on a market.
-     * @dev    True only for a non-zero callback on a market with making enabled whose strategy key
-     *         and per-market key for that direction both have a non-zero `maxAmount`, and for a
-     *         buy only while the market's `maxBuyTick` is non-zero. Reads the configured ceilings,
-     *         not the capacity left, so a drained key still answers true.
+     * @dev    True only for a non-zero callback on a market with a non-zero `maxMakeOfferSize`
+     *         whose strategy key and per-market key for that direction both have a non-zero
+     *         `maxAmount`, and for a buy only while the market's `maxBuyTick` is non-zero. Reads
+     *         the configured ceilings, not the capacity left, so a drained key still answers true.
      * @param  marketId Identifier of the Midnight market.
      * @param  callback Offer callback address.
      * @param  buying   True for a buy offer, whose fills reach the callback's `onBuy`.

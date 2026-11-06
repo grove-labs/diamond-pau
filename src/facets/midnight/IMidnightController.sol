@@ -8,21 +8,22 @@ interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
 
-    function midnight_setMakeConfig(Market calldata market, uint256 maxOfferSize) external;
-
     function midnight_setMarketConfig(
-        bytes32 marketId,
-        uint16  maxBuyTick,
-        uint16  minSellTick,
-        uint16  minBuyYield,
-        uint16  maxSellYield,
-        uint16  maxContinuousFee,
-        uint128 maxLossFactor
+        Market calldata market,
+        uint16          maxBuyTick,
+        uint16          minSellTick,
+        uint16          minBuyYield,
+        uint16          maxSellYield,
+        uint16          maxContinuousFee,
+        uint128         maxLossFactor,
+        uint256         maxMakeOfferSize
     ) external;
 
     function midnight_setRatifierAuthorization(address ratifier, bool authorized) external;
 
     function midnight_cancelOfferGroup(bytes32 group) external;
+
+    function midnight_disableMake(bytes32 marketId) external;
 
     function midnight_fundFill(
         bytes32 marketId,
@@ -57,11 +58,6 @@ interface IMidnightController {
         returns (uint256 assetsReceived);
 
     function midnight_getBuyRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
-
-    function midnight_getMakeConfig(bytes32 marketId)
-        external
-        view
-        returns (IMidnightFacet.MakeConfig memory config);
 
     function midnight_getMarketConfig(bytes32 marketId)
         external

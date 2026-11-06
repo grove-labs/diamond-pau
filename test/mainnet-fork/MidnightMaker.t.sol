@@ -171,10 +171,10 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
 
         maxOfferSize = 2 * seedUnits;
 
-        vm.startPrank(Ethereum.SPARK_PROXY);
+        vm.prank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
-        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
-        vm.stopPrank();
+
+        _setMakeOfferSize(maxOfferSize);
 
         ( strategyBuyKey, strategySellKey ) = _onboardStrategy(address(strategy));
 
@@ -508,8 +508,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         _take(buy, seedUnits / 4);
 
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setMakeConfig(market, 0);
+        _setMakeOfferSize(0);
 
         _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
     }
@@ -534,9 +533,9 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
 
         vm.prank(freezer);
-        mainnetController.midnight_setMakeConfig(market, 0);
+        mainnetController.midnight_disableMake(marketId);
 
-        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+        assertEq(mainnetController.midnight_getMarketConfig(marketId).maxMakeOfferSize, 0);
 
         assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), true));
         assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(strategy), false));
@@ -560,10 +559,18 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
             bytes32(0)
         ));
         vm.prank(freezer);
-        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+        mainnetController.midnight_setMarketConfig(
+            market,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            maxOfferSize
+        );
 
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+        _setMakeOfferSize(maxOfferSize);
 
         _take(buy,  units);
         _take(sell, units);
@@ -718,10 +725,10 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         address freezer = GroveEthereum.ALM_FREEZER;
 
-        vm.startPrank(Ethereum.SPARK_PROXY);
+        vm.prank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
-        mainnetController.midnight_setMakeConfig(market, 0);
-        vm.stopPrank();
+
+        _setMakeOfferSize(0);
 
         bytes memory notAllocator = abi.encodeWithSignature(
             "AccessControlUnauthorizedAccount(address,bytes32)",
@@ -745,11 +752,20 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
             freezer,
             bytes32(0)
         ));
-        mainnetController.midnight_setMakeConfig(market, maxOfferSize);
+        mainnetController.midnight_setMarketConfig(
+            market,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            maxOfferSize
+        );
 
         vm.stopPrank();
 
-        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+        assertEq(mainnetController.midnight_getMarketConfig(marketId).maxMakeOfferSize, 0);
     }
 
 }
@@ -941,12 +957,12 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         _take(sell, seedUnits / 8);
 
         vm.expectEmit(address(mainnetController));
-        emit IMidnightFacet.MidnightMakeConfigSet(marketId, market.loanToken, market.maturity, 0);
+        emit IMidnightFacet.MidnightMakeDisabled(marketId);
 
         vm.prank(freezer);
-        mainnetController.midnight_setMakeConfig(market, 0);
+        mainnetController.midnight_disableMake(marketId);
 
-        assertEq(mainnetController.midnight_getMakeConfig(marketId).maxOfferSize, 0);
+        assertEq(mainnetController.midnight_getMarketConfig(marketId).maxMakeOfferSize, 0);
 
         _takeExpectRevert(sell, seedUnits / 8, "MidnightFacet/make-not-enabled");
 
@@ -987,8 +1003,7 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
     function test_makeDisableLeavesTheTakerPathWorking() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setMakeConfig(market, 0);
+        _setMakeOfferSize(0);
 
         _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/make-not-enabled");
 
@@ -1141,9 +1156,15 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
 
         vm.startPrank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setMarketConfig(
-            otherId, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0
+            other,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            maxOfferSize
         );
-        mainnetController.midnight_setMakeConfig(other, maxOfferSize);
         rateLimits.setRateLimitData(
             mainnetController.midnight_getBuyRateLimitKey(otherId), rateLimit, 0
         );
