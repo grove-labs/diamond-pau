@@ -2605,7 +2605,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         bool    marketKeySet,
         bool    otherDirectionKeysSet,
         bool    zeroMaxBuyTick,
-        uint256 maxOfferSize,
+        uint256 maxMakeOfferSize,
         uint256 keyAmount
     )
         external
@@ -2615,12 +2615,17 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         uint256 assets = buying ? _honestAssets(FILL_UNITS) : _honestSellAssets(FILL_UNITS);
 
-        maxOfferSize = bound(maxOfferSize, assets, type(uint128).max);
-        keyAmount    = bound(keyAmount,    assets, type(uint256).max);
+        maxMakeOfferSize = bound(maxMakeOfferSize, assets, type(uint128).max);
+        keyAmount        = bound(keyAmount,        assets, type(uint256).max);
 
         vm.prank(admin);
         _setBounds(
-            _market(), TICK_99, TICK_98, MAX_SELL_YIELD, CONTINUOUS_FEE, makeEnabled ? maxOfferSize : 0
+            _market(),
+            TICK_99,
+            TICK_98,
+            MAX_SELL_YIELD,
+            CONTINUOUS_FEE,
+            makeEnabled ? maxMakeOfferSize : 0
         );
 
         if (zeroMaxBuyTick) _closeBuyEntry();
@@ -2809,7 +2814,6 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         );
     }
 
-    // setMakeConfig, getMakeConfig and the bytes32-keyed setMarketConfig, facet then alias.
     function test_midnightWiring_previousConfigEntryPointsAreNotRouted() external {
         bytes4[6] memory removed = [
             bytes4(0xcc658cd0),

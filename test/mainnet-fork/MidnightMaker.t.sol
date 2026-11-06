@@ -162,19 +162,19 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
     bytes32 internal strategyBuyKey;
     bytes32 internal strategySellKey;
 
-    uint256 internal maxOfferSize;
+    uint256 internal maxMakeOfferSize;
 
     function setUp() public virtual override {
         super.setUp();
 
         strategy = new MockFundingStrategy(MIDNIGHT, address(almProxy), address(mainnetController));
 
-        maxOfferSize = 2 * seedUnits;
+        maxMakeOfferSize = 2 * seedUnits;
 
         vm.prank(Ethereum.SPARK_PROXY);
         mainnetController.midnight_setRatifierAuthorization(SETTER_RATIFIER, true);
 
-        _setMakeOfferSize(maxOfferSize);
+        _setMakeOfferSize(maxMakeOfferSize);
 
         ( strategyBuyKey, strategySellKey ) = _onboardStrategy(address(strategy));
 
@@ -600,10 +600,10 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
             MAX_SELL_YIELD,
             MAX_CONTINUOUS_FEE_CBPS,
             0,
-            maxOfferSize
+            maxMakeOfferSize
         );
 
-        _setMakeOfferSize(maxOfferSize);
+        _setMakeOfferSize(maxMakeOfferSize);
 
         _take(buy,  units);
         _take(sell, units);
@@ -793,7 +793,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
             MAX_SELL_YIELD,
             MAX_CONTINUOUS_FEE_CBPS,
             0,
-            maxOfferSize
+            maxMakeOfferSize
         );
 
         vm.stopPrank();
@@ -1196,7 +1196,7 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
             MAX_SELL_YIELD,
             MAX_CONTINUOUS_FEE_CBPS,
             0,
-            maxOfferSize
+            maxMakeOfferSize
         );
         rateLimits.setRateLimitData(
             mainnetController.midnight_getBuyRateLimitKey(otherId), rateLimit, 0
