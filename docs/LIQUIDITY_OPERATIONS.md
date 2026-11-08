@@ -142,15 +142,15 @@ This provides guarantees that at most `X` can be at risk per whitelisted (rate l
 
 ### OTC Swap Conditions
 
-For an OTC swap to be performed, `isOtcSwapReady(exchange)` must return `true`. This function has two main components:
+For an OTC swap to be performed, `getIsSwapReady(exchange)` (`otc_getIsSwapReady` on the `Controller`) must return `true`. This function has two main components:
 
 #### Slippage
 
-`maxSlippages` mapped on `exchange`, used consistently with other parts of the controller. This value calculates a minimum viable amount to be returned from a swap for it to be considered complete.
+The `maxSlippage` configured for the `exchange` (`setMaxSlippage` / `getMaxSlippage`), used consistently with other parts of the controller. This value calculates a minimum viable amount to be returned from a swap for it to be considered complete.
 
 #### Recharge Rate
 
-The OTC struct contains a `rechargeRate` value expressed in 18 decimals of token per second. This value increases over time after the initial swap is sent.
+The OTC state contains a recharge rate (`normalizedRate`, set with `setRechargeRate` and read with `getRechargeRate`) expressed in 18 decimals of token per second. This value increases over time after the initial swap is sent.
 
 **Purpose:** Prevents the configuration from bricking swapping functionality if an exchange returns an amount of funds that is materially below the configured `maxSlippage`. The mechanism allows the amount that can be sent as part of an OTC swap to virtually "recharge" over time, to respond to deviations in recent expected claims.
 
@@ -162,7 +162,7 @@ $$claimedAmount + (blockTimestamp - sentTimestamp) \times rechargeRate \ge sentA
 
 ### OTC Buffer Configuration
 
-OTC buffers require infinite allowance (`type(uint256).max`) to the ALMProxy. This allows atomic fund pulling during swap completion. `otcClaim` always attempts to transfer the entire buffer balance for a whitelisted (via rate limit) asset; with finite allowances, an attacker can donate a small amount to push balance above allowance, causing claim reverts and blocking OTC readiness when recharge is zero/low. See [Operational Requirements](./OPERATIONAL_REQUIREMENTS.md#otc-buffer-deployment) for deployment checklist.
+OTC buffers require infinite allowance (`type(uint256).max`) to the ALMProxy. This allows atomic fund pulling during swap completion. `claim` always attempts to transfer the entire buffer balance for a whitelisted (via rate limit) asset; with finite allowances, an attacker can donate a small amount to push balance above allowance, causing claim reverts and blocking OTC readiness when recharge is zero/low. See [Operational Requirements](./OPERATIONAL_REQUIREMENTS.md#otc-buffer-deployment) for deployment checklist.
 
 ---
 

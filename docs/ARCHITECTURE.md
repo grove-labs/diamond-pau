@@ -152,6 +152,8 @@ The system uses a facet-based architecture where each protocol integration is en
 | `LayerZeroFacet`     | LayerZero v2 cross-chain messaging             |
 | `MapleFacet`         | Maple token redemptions                        |
 | `MerklFacet`         | Merkl operator toggles                         |
+| `NFATHaloFacet`      | NFAT facility issuance and repayments          |
+| `NFATPrimeFacet`     | NFAT facility subscribe/withdraw/collect       |
 | `OTCFacet`           | Over-the-counter swap buffering                |
 | `PendleFacet`        | Pendle PT redemptions                          |
 | `PSM3Facet`          | PSM3 deposit/withdraw                          |

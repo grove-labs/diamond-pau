@@ -69,9 +69,10 @@ Governance (via a spell to set rate limits for deposits to such Maple Pools) sho
 When deploying a new OTC buffer:
 
 1. Deploy the `OTCBuffer` contract
-2. **Critical:** `initialize` the contract to set up the access controls and set infinite allowance (`type(uint256).max`) to the `ALMProxy`
-3. Configure the OTC buffer address in the controller
-4. Set appropriate rate limits and slippage parameters
+2. `initialize` the contract to set the admin and the `ALMProxy` address (this does not set any allowance)
+3. **Critical:** as the buffer admin, call `approve(asset, type(uint256).max)` for each asset that will be swapped, to give the `ALMProxy` infinite allowance
+4. Configure the OTC buffer address in the controller
+5. Set appropriate rate limits and slippage parameters
 
 **Failure to set infinite allowance will cause OTC swap completions to fail.**
 
