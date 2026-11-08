@@ -94,7 +94,7 @@ See [Liquidity Operations](./LIQUIDITY_OPERATIONS.md) for OTC mechanics.
 **Security:**
 
 - `ALMProxy.doCallWithValue` is gated by the `CONTROLLER` role, which is held only by the `Controller` contract. A compromised allocator can therefore only reach this function indirectly through facets wired into the `Controller`, where rate limits and per-facet logic apply.
-- `ALMProxyFreezable.doCallWithValue` is gated by the `RELAYER` role directly and is callable by a compromised relayer. `ALMProxyFreezable` is not intended to hold funds, and the `FREEZER` role can revoke a compromised relayer via `removeRelayer` to halt further calls.
+- `ALMProxyFreezable.doCallWithValue` is gated by the `ALLOCATOR_ROLE` directly and is callable by a compromised allocator. `ALMProxyFreezable` is not intended to hold funds, and the `FREEZER_ROLE` can revoke a compromised allocator via `removeAllocator` to halt further calls.
 - Facet functionality gated by the `ALLOCATOR_ROLE` is protected by rate limits and other safeguards.
 - `wrapAll` is accessible to allocators but only converts ETH to WETH within the `ALMProxy`, keeping funds in the system.
 
