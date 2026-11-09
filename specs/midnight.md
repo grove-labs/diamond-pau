@@ -161,9 +161,8 @@ departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLim
 
 ## Operational requirements
 
-Order: `touchMarket` on Midnight, `setMarketConfig`, rate-limit keys, then for maker mode
-`setRatifierAuthorization`, strategy keys, `setMarketConfig` again with a non-zero
-`maxMakeOfferSize` (every call restates the whole config; the market must exist on Midnight). The
-fork tests
-need an EVM with CLZ (`evm_version = 'osaka'`), which is a repository setting outside this facet
-PR. Deploy scripts are out of scope.
+Order: `touchMarket` on Midnight, `setMarketConfig`, rate-limit keys, then for maker mode strategy
+keys, `setMarketConfig` again with a non-zero `maxMakeOfferSize` unless the first call set it
+(every call restates the whole config; the market must exist on Midnight), and
+`setRatifierAuthorization` last. The fork tests need an EVM with CLZ (`evm_version = 'osaka'`),
+which is a repository setting outside this facet PR. Deploy scripts are out of scope.
