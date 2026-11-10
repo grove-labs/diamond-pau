@@ -118,12 +118,13 @@ Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
 
 Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
 
-Take and make keep three differences in their price checks, because the logic forces them. A take
-prices the offer tick plus or minus the settlement fee before the trade, while `fundFill` checks
-the booked `assets` per `units` after the fill. The sell fee per unit comes from the position
-before the trade on a take, and from the position after the fill on a make, capped by the
-reported `pendingFee` (`_sellFeePerUnit`). The balance and credit delta post-checks run on the
-take only.
+Take and make keep three differences in their price checks, because the logic forces them. Both
+modes take the time to maturity from the cached `config.maturity`. A take prices the offer tick plus
+or minus the settlement fee before the trade, while `fundFill` checks the booked `assets` per
+`units` after the fill. The sell fee per unit comes from the position before the trade on a take,
+and from the position after the fill on a make, capped by the reported `pendingFee`
+(`_sellFeePerUnit`), because the callback only sees the result. The balance and credit delta
+post-checks run on the take only, because a make callback has no pre-fill hook.
 
 ## Fund-exit map
 
