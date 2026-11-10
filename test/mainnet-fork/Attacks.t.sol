@@ -9,8 +9,6 @@ import { ReentrancyGuard } from "../../lib/openzeppelin-contracts/contracts/util
 
 import { SafeERC20, IERC20 } from "../../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import { ReentrancyGuard } from "../../lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
-
 import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
 
 import { Ethereum as GroveEthereum } from "../../lib/grove-address-registry/src/Ethereum.sol";
