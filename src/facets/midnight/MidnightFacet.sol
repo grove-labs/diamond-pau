@@ -676,7 +676,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (TakeContext memory ctx)
     {
-        // This market comes from calldata and its maturity feeds the caller's price bounds, so both
+        // This market comes from calldata and feeds the position and balance reads, so both
         // the venue and the id are bound here, before anything is derived from it.
         require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
         require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
