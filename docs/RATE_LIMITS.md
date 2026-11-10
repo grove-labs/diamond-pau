@@ -121,6 +121,30 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 - Pool dynamics are slower-moving compared to DEX liquidity
 - Lower risk of rapid value extraction
 
+#### Midnight Integration (No Restoration)
+
+**Decision:** No Midnight operation restores (increases) a Midnight rate limit.
+
+| Operation              | Rate Limit Behavior                                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `buy`                  | Decreases `LIMIT_MIDNIGHT_BUY` by assets spent                                                        |
+| `sell`                 | Decreases `LIMIT_MIDNIGHT_SELL` by assets received                                                    |
+| `redeem`               | Decreases `LIMIT_MIDNIGHT_REDEEM` by assets withdrawn                                                 |
+| `fundFill`, buying     | Decreases `LIMIT_MIDNIGHT_STRATEGY_BUY`, then `LIMIT_MIDNIGHT_BUY`, by assets paid to the strategy    |
+| `fundFill`, not buying | Decreases `LIMIT_MIDNIGHT_STRATEGY_SELL`, then `LIMIT_MIDNIGHT_SELL`, by assets the fill reports      |
+
+**Rationale:**
+
+- Each leg spends only its own key, so exiting a position never reopens room to enter a new one
+- Credit is a fixed-term claim, and selling or redeeming it returns assets the buy limit already accounted for; restoring that room would let a single approved budget be recycled repeatedly within one refill period
+- Entry room returns only from the buy key's refill slope, which bounds exposure per period however often positions are cycled
+- Keys are per-market (`keccak256(abi.encode(LIMIT_MIDNIGHT_BUY, marketId))`), so each market is budgeted separately and a drained market cannot borrow room from another
+- Maker fills share the taker keys and additionally spend a per-strategy key for their direction (`keccak256(abi.encode(LIMIT_MIDNIGHT_STRATEGY_BUY, strategy, marketId))`, likewise for sells). The strategy keys are the strategy whitelist: a non-zero `maxAmount` onboards a strategy for one market and one direction, and zeroing it offboards it. One per-market budget per direction bounds taker and maker flow together, and each strategy is bounded on its own within it
+- A maker exit settles in a third party's transaction, so an exit key sized too tightly reverts the taker's fill rather than a call of ours; `cancelOfferGroup` retires the book instead of leaving it failing
+- A strategy key at `type(uint256).max` is unlimited by design: it is never debited and still counts as set, so the strategy stays onboarded and only `maxMakeOfferSize` per fill and the market key bound it
+- The market buy key is kept finite, the intended configuration: unlimited keys stay technically possible, but unlimited buy keys plus a faulty strategy expose the proxy's whole loan-token balance
+- A strategy holding `ALLOCATOR_ROLE` spends the keys of every venue its sourcing touches, the same keys human allocators spend, at a time the taker chooses
+
 ## Gate-Check Pattern
 
 Some operations verify a rate limit is configured (`maxAmount > 0`) without decreasing it. This serves as an implicit whitelist: if the rate limit key was never set by governance, the operation reverts. Examples:
