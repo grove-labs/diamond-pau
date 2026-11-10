@@ -458,7 +458,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         _setConfig(uint16(aboveTick), TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
         _takeExpectRevert(
-            _makerOffer(true, aboveTick, seedUnits), seedUnits / 4, "MidnightFacet/fill-price-too-high"
+            _makerOffer(true, aboveTick, seedUnits), seedUnits / 4, "MidnightFacet/fill-yield-too-low"
         );
 
         Offer memory buy = _makerOffer(true, betweenTick, seedUnits);
@@ -469,7 +469,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
 
         _setContinuousFee(MidnightUtils.continuousFeePerSecond(MAX_CONTINUOUS_FEE_CBPS));
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-price-too-high");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-yield-too-low");
     }
 
     function test_makerBuy_offerCapExhausted() external {
@@ -533,7 +533,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
 
         _setYields(5_00, MAX_SELL_YIELD);
 
-        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-price-too-high");
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/fill-yield-too-low");
     }
 
     function test_disablingMakeKillsRestingOffer() external {
@@ -631,7 +631,7 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         // At 180 days a 1% exit yield floors above the offer's tick price.
         _setYields(MIN_BUY_YIELD, 1_00);
 
-        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-price-too-low");
+        _takeExpectRevert(sell, seedUnits / 4, "MidnightFacet/fill-yield-too-high");
     }
 
     function test_zeroingStrategyKeysRevokesBothLegs() external {
@@ -1473,7 +1473,7 @@ contract MainnetController_MidnightMaker_PendingFee_Tests is Midnight_Maker_Pend
         assertLt(MidnightTickLib.tickToPrice(below), zeroFloor);
 
         _takeExpectRevert(
-            _makerOffer(false, below, credit), credit, "MidnightFacet/fill-price-too-low"
+            _makerOffer(false, below, credit), credit, "MidnightFacet/fill-yield-too-high"
         );
 
         uint256 tick = _tickAtOrAbove(zeroFloor);
@@ -1508,7 +1508,7 @@ contract MainnetController_MidnightMaker_PendingFee_Tests is Midnight_Maker_Pend
         _takeExpectRevert(
             _makerOffer(market, address(inflating), false, cheap, units, SELL_GROUP),
             units,
-            "MidnightFacet/fill-price-too-low"
+            "MidnightFacet/fill-yield-too-high"
         );
 
         uint256 fair = _tickAtOrAbove((heldFloor + _exitFloor(0)) / 2);
@@ -1570,7 +1570,7 @@ contract MainnetController_MidnightMaker_NestedFill_Tests is Midnight_Maker_Pend
 
         bytes memory ratifierData = _ratifierData(sell);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         taker.take(sell, ratifierData, seedUnits / 2, data);
     }
 

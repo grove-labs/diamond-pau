@@ -1747,7 +1747,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         uint256 honest = _honestAssets(FILL_UNITS);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.expectRevert("MidnightFacet/fill-yield-too-low");
         vm.prank(strategy);
         controller.fundFill(_marketId(), true, honest + 1, FILL_UNITS, 0);
 
@@ -1776,7 +1776,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertGt(assets * MidnightUtils.WAD, FILL_UNITS * ceilingBound);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.expectRevert("MidnightFacet/fill-yield-too-low");
         vm.prank(strategy);
         controller.fundFill(_marketId(), true, assets + 1, FILL_UNITS, 0);
 
@@ -1787,7 +1787,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         _mockContinuousFee(CONTINUOUS_FEE);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        vm.expectRevert("MidnightFacet/fill-yield-too-low");
         vm.prank(strategy);
         controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
     }
@@ -1827,7 +1827,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         uint256 honest =
             (FILL_UNITS * floorPrice + MidnightUtils.WAD - 1) / MidnightUtils.WAD;
 
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, honest - 1, FILL_UNITS, 0);
 
@@ -1972,7 +1972,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertLt(floorWithRelief, honest);
 
         // Below the quarter the fill reported, even though the venue would corroborate a half.
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, floorWithRelief - 1, FILL_UNITS, FILL_UNITS / 4);
 
@@ -2001,7 +2001,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         uint256 floor = (FILL_UNITS * unencumbered + MidnightUtils.WAD - 1) / MidnightUtils.WAD;
 
         // Claiming a unit of fee per unit would drive the yield rail to zero if it were trusted.
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, floor - 1, FILL_UNITS, FILL_UNITS - 1);
 
@@ -2028,7 +2028,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         uint256 floor = (FILL_UNITS * unencumbered + MidnightUtils.WAD - 1) / MidnightUtils.WAD;
 
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, floor - 1, FILL_UNITS, FILL_UNITS / 2);
 
@@ -2046,7 +2046,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         uint256 honest = _honestAssets(units);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-high");
+        // On a small fill one wei over the yield ceiling is also over the tick ceiling.
+        vm.expectRevert(_fillRevert(true, honest + 1, units, MidnightTickLib.tickToPrice(TICK_99)));
         vm.prank(strategy);
         controller.fundFill(_marketId(), true, honest + 1, units, 0);
 
@@ -2116,7 +2117,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertEq(funded, assets * MidnightUtils.WAD <= units * combined);
 
-        if (!funded) assertEq(reason, _errorData("MidnightFacet/fill-price-too-high"));
+        if (!funded) {
+            assertEq(
+                reason, _fillRevert(true, assets, units, MidnightTickLib.tickToPrice(maxBuyTick))
+            );
+        }
     }
 
     function testFuzz_fundFill_sell_passesIffCombinedBound(
@@ -2170,7 +2175,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         assertEq(funded, assets * MidnightUtils.WAD >= units * combined);
 
-        if (!funded) assertEq(reason, _errorData("MidnightFacet/fill-price-too-low"));
+        if (!funded) {
+            assertEq(
+                reason, _fillRevert(false, assets, units, MidnightTickLib.tickToPrice(minSellTick))
+            );
+        }
     }
 
     // The facet's earlier exit fee per unit, which read the position itself.
@@ -2208,6 +2217,27 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             abi.encodeCall(
                 IControllerLike.fundFill, (_marketId(), buying, assets, units, pendingFee)
             )
+        );
+    }
+
+    // The tick check runs first, so it names the revert whenever the tick bound fails.
+    function _fillRevert(bool buying, uint256 assets, uint256 units, uint256 tickBound)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        if (buying) {
+            return _errorData(
+                assets * MidnightUtils.WAD > units * tickBound
+                    ? "MidnightFacet/fill-price-too-high"
+                    : "MidnightFacet/fill-yield-too-low"
+            );
+        }
+
+        return _errorData(
+            assets * MidnightUtils.WAD < units * tickBound
+                ? "MidnightFacet/fill-price-too-low"
+                : "MidnightFacet/fill-yield-too-high"
         );
     }
 
@@ -2624,7 +2654,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.warp(marketMaturity + 1 days);
 
-        vm.expectRevert("MidnightFacet/fill-price-too-low");
+        vm.expectRevert("MidnightFacet/fill-yield-too-high");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, FILL_UNITS - 1, FILL_UNITS, 0);
 

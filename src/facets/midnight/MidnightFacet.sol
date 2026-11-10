@@ -564,9 +564,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( uint256 tickBound, uint256 yieldBound ) =
             _buyBounds(config, _timeToMaturity(config.maturity), continuousFee);
 
-        uint256 bound = yieldBound < tickBound ? yieldBound : tickBound;
-
-        require(assets * MidnightUtils.WAD <= units * bound, "MidnightFacet/fill-price-too-high");
+        require(
+            assets * MidnightUtils.WAD <= units * tickBound,
+            "MidnightFacet/fill-price-too-high"
+        );
+        require(
+            assets * MidnightUtils.WAD <= units * yieldBound,
+            "MidnightFacet/fill-yield-too-low"
+        );
 
         _decreaseRateLimit(getStrategyBuyRateLimitKey(msg.sender, marketId), assets);
         _decreaseRateLimit(getBuyRateLimitKey(marketId),                     assets);
@@ -607,9 +612,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( uint256 tickBound, uint256 yieldBound ) =
             _sellBounds(config, _timeToMaturity(config.maturity), feePerUnit);
 
-        uint256 floor = yieldBound > tickBound ? yieldBound : tickBound;
-
-        require(assets * MidnightUtils.WAD >= units * floor, "MidnightFacet/fill-price-too-low");
+        require(
+            assets * MidnightUtils.WAD >= units * tickBound,
+            "MidnightFacet/fill-price-too-low"
+        );
+        require(
+            assets * MidnightUtils.WAD >= units * yieldBound,
+            "MidnightFacet/fill-yield-too-high"
+        );
 
         // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
         _requireDebtFree(marketId, proxy);
