@@ -280,6 +280,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Clear the approval in case Midnight did not pull the full amount.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
 
+        // Deltas around take() are measurable only here; a make callback has no pre-fill hook.
         assetsSpent = ctx.balanceBefore - IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy);
 
         // Loan token arriving during the take shrinks the measured delta, so charge the higher of
@@ -404,6 +405,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         // Scoped to free the price locals before the take; sell is at the stack limit.
         {
+            // The position before trading; a make callback only sees it after the fill.
             uint256 feePerUnit = ctx.pendingFeeBefore * MidnightUtils.WAD / ctx.creditBefore;
 
             ( uint256 tickBound, uint256 yieldBound ) =
@@ -564,6 +566,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( uint256 tickBound, uint256 yieldBound ) =
             _buyBounds(config, _timeToMaturity(config.maturity), continuousFee);
 
+        // Already booked: check the all-in price paid; a take prices the offer tick first.
         require(
             assets * MidnightUtils.WAD <= units * tickBound,
             "MidnightFacet/fill-price-too-high"
@@ -607,11 +610,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ( uint256 creditPost, uint256 carriedFee ) =
             _credit(IMidnightLike(midnight).toMarket(marketId), marketId, proxy);
 
+        // Post-fill position only, capped by the reported fee; a take reads the position first.
         uint256 feePerUnit = _sellFeePerUnit(creditPost, carriedFee, units, pendingFee);
 
         ( uint256 tickBound, uint256 yieldBound ) =
             _sellBounds(config, _timeToMaturity(config.maturity), feePerUnit);
 
+        // Already booked: check the net price received; a take prices the offer tick first.
         require(
             assets * MidnightUtils.WAD >= units * tickBound,
             "MidnightFacet/fill-price-too-low"
