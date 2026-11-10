@@ -489,13 +489,23 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     // Mirrors fundFill's bound with the live fee at the ceiling, as _mockMarketExists sets it.
-    function _maxFillPrice() internal view returns (uint256 bound) {
-        bound = MidnightTickLib.tickToPrice(TICK_99);
+    function _maxFillPrice() internal view returns (uint256) {
+        return _maxFillPrice(
+            TICK_99, MIN_BUY_YIELD, MidnightUtils.continuousFeePerSecond(CONTINUOUS_FEE)
+        );
+    }
+
+    function _maxFillPrice(uint16 maxBuyTick, uint16 minBuyYield, uint256 continuousFee)
+        internal
+        view
+        returns (uint256 bound)
+    {
+        bound = MidnightTickLib.tickToPrice(maxBuyTick);
 
         uint256 yieldBound = MidnightUtils.maxBuyPrice(
-            MIN_BUY_YIELD,
+            minBuyYield,
             marketMaturity - block.timestamp,
-            MidnightUtils.continuousFeePerSecond(CONTINUOUS_FEE)
+            continuousFee
         );
 
         if (yieldBound < bound) bound = yieldBound;
@@ -506,14 +516,22 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     }
 
     // Same shape on the exit side, and on the unencumbered basis a ratifier can commit to.
-    function _minFillPrice() internal view returns (uint256 bound) {
-        bound = MidnightTickLib.tickToPrice(TICK_98);
+    function _minFillPrice() internal view returns (uint256) {
+        return _minFillPrice(TICK_98, MAX_SELL_YIELD, 0);
+    }
+
+    function _minFillPrice(uint16 minSellTick, uint16 maxSellYield, uint256 feePerUnit)
+        internal
+        view
+        returns (uint256 bound)
+    {
+        bound = MidnightTickLib.tickToPrice(minSellTick);
 
         uint256 yieldBound = MidnightUtils.minSellPrice(
-            MAX_SELL_YIELD,
+            maxSellYield,
             marketMaturity - block.timestamp,
             MidnightUtils.WAD,
-            0
+            feePerUnit
         );
 
         if (yieldBound > bound) bound = yieldBound;
@@ -2052,6 +2070,149 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, honest, units, 0);
+    }
+
+    function testFuzz_fundFill_passesIffCombinedBound(
+        uint256 assets,
+        uint256 units,
+        uint16  maxBuyTick,
+        uint16  minBuyYield,
+        uint256 liveFee,
+        bool    nearEdge
+    )
+        external
+    {
+        units      = bound(units, 1, 2 * MAX_OFFER_SIZE);
+        maxBuyTick = uint16(bound(maxBuyTick, 0, MAX_TICK));
+        liveFee    = bound(liveFee, 0, MidnightUtils.continuousFeePerSecond(CONTINUOUS_FEE));
+
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _market(),
+            maxBuyTick,
+            TICK_98,
+            minBuyYield,
+            MAX_SELL_YIELD,
+            CONTINUOUS_FEE,
+            0,
+            MAX_OFFER_SIZE
+        );
+
+        vm.mockCall(
+            midnight,
+            abi.encodeCall(IMidnightMock.continuousFee, (_marketId())),
+            abi.encode(liveFee)
+        );
+
+        uint256 combined = _maxFillPrice(maxBuyTick, minBuyYield, liveFee);
+
+        assets = _assetsAround(assets, units * combined / MidnightUtils.WAD, nearEdge);
+
+        ( bool funded, bytes memory reason ) = _tryFundFill(true, assets, units, 0);
+
+        assertEq(funded, assets * MidnightUtils.WAD <= units * combined);
+
+        if (!funded) assertEq(reason, _errorData("MidnightFacet/fill-price-too-high"));
+    }
+
+    function testFuzz_fundFill_sell_passesIffCombinedBound(
+        uint256           assets,
+        uint256           units,
+        uint16            minSellTick,
+        uint16            maxSellYield,
+        uint256[3] memory position,
+        bool              nearEdge
+    )
+        external
+    {
+        units        = bound(units, 1, 2 * MAX_OFFER_SIZE);
+        minSellTick  = uint16(bound(minSellTick, 1, MAX_TICK));
+        maxSellYield = uint16(bound(maxSellYield, 1, type(uint16).max));
+
+        // creditPost, carriedFee, reportedFee
+        position[0] = bound(position[0], 0, type(uint128).max);
+        position[1] = bound(position[1], 0, position[0]);
+        position[2] = bound(position[2], 0, type(uint128).max);
+
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+
+        vm.prank(admin);
+        controller.setMarketConfig(
+            _market(),
+            TICK_99,
+            minSellTick,
+            MIN_BUY_YIELD,
+            maxSellYield,
+            CONTINUOUS_FEE,
+            0,
+            MAX_OFFER_SIZE
+        );
+
+        _mockPosition(uint128(position[0]), uint128(position[1]));
+
+        uint256 combined = _minFillPrice(
+            minSellTick,
+            maxSellYield,
+            _exitFeePerUnit(position[0], position[1], units, position[2])
+        );
+
+        assets = _assetsAround(
+            assets, (units * combined + MidnightUtils.WAD - 1) / MidnightUtils.WAD, nearEdge
+        );
+
+        ( bool funded, bytes memory reason ) = _tryFundFill(false, assets, units, position[2]);
+
+        assertEq(funded, assets * MidnightUtils.WAD >= units * combined);
+
+        if (!funded) assertEq(reason, _errorData("MidnightFacet/fill-price-too-low"));
+    }
+
+    // The facet's earlier exit fee per unit, which read the position itself.
+    function _exitFeePerUnit(uint256 credit, uint256 carried, uint256 units, uint256 pendingFee)
+        internal
+        pure
+        returns (uint256 feePerUnit)
+    {
+        feePerUnit = pendingFee * MidnightUtils.WAD / units;
+
+        uint256 carriedPerUnit = credit == 0 ? 0 : carried * MidnightUtils.WAD / credit;
+
+        if (carriedPerUnit < feePerUnit) feePerUnit = carriedPerUnit;
+    }
+
+    function _assetsAround(uint256 seed, uint256 edge, bool nearEdge)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (!nearEdge) return bound(seed, 1, MAX_OFFER_SIZE);
+
+        uint256 hi = edge + 2 < MAX_OFFER_SIZE ? edge + 2 : MAX_OFFER_SIZE;
+        uint256 lo = edge > 2 ? edge - 2 : 1;
+
+        return bound(seed, lo < hi ? lo : hi, hi);
+    }
+
+    function _tryFundFill(bool buying, uint256 assets, uint256 units, uint256 pendingFee)
+        internal
+        returns (bool, bytes memory)
+    {
+        vm.prank(strategy);
+        return address(controller).call(
+            abi.encodeCall(
+                IControllerLike.fundFill, (_marketId(), buying, assets, units, pendingFee)
+            )
+        );
+    }
+
+    function _errorData(string memory message) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature("Error(string)", message);
     }
 
     // The 1 wei fill the open market accepts is the control leg.

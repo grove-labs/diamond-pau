@@ -388,6 +388,28 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         if (price > 1) assertLt((price - 2) * credit * denominator, exact);
     }
 
+    function testFuzz_minSellPrice_feePerUnitFormMatchesPosition(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        credit         = bound(credit, 1, type(uint128).max);
+        pendingFee     = bound(pendingFee, 0, credit);
+
+        assertEq(
+            harness.minSellPrice(
+                yieldBp, timeToMaturity, MidnightUtils.WAD, pendingFee * MidnightUtils.WAD / credit
+            ),
+            harness.minSellPrice(yieldBp, timeToMaturity, credit, pendingFee)
+        );
+    }
+
     // A lien that does not divide evenly into the position is where the truncation shows.
     function test_minSellPrice_lienDoesNotDivideEvenly() external view {
         assertEq(harness.minSellPrice(4_00,  180 days, 3, 1), 653770374350707506);
