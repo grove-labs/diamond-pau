@@ -73,6 +73,10 @@ contract MidnightUtilsTestBase is Test {
 
 contract MidnightUtils_TickToPrice_Tests is MidnightUtilsTestBase {
 
+    // From grove-morpho-midnight-periphery test/unit/UpstreamTickPrices.t.sol test_upstreamTickToPrice_allTicksHash.
+    bytes32 internal constant UPSTREAM_TICK_PRICES_HASH =
+        0xa5a7c8c6d9b7dbf9ef3ad44c33a38b599bcb2d9487361c5bf80af8e02871d215;
+
     // The grid is centered on a price of one half at the middle tick and capped at par.
     function test_tickToPrice_anchors() external view {
         assertEq(harness.tickToPrice(0),                      0);
@@ -131,6 +135,17 @@ contract MidnightUtils_TickToPrice_Tests is MidnightUtilsTestBase {
     function test_tickToPrice_outOfRange() external {
         vm.expectRevert("MidnightTickLib/tick-out-of-range");
         harness.tickToPrice(MAX_TICK + 1);
+    }
+
+    function test_tickToPrice_allTicksMatchUpstreamHash() external view {
+        uint256[] memory prices = new uint256[](MAX_TICK + 1);
+
+        for (uint256 tick = 0; tick <= MAX_TICK; ++tick) {
+            prices[tick] = harness.tickToPrice(tick);
+        }
+
+        assertEq(MAX_TICK, 6744);
+        assertEq(keccak256(abi.encodePacked(prices)), UPSTREAM_TICK_PRICES_HASH);
     }
 
     function test_tickToPrice_roundedToStep() external view {
@@ -371,6 +386,28 @@ contract MidnightUtils_YieldPrice_Tests is MidnightUtilsTestBase {
         assertGe(price * credit * denominator, exact);
 
         if (price > 1) assertLt((price - 2) * credit * denominator, exact);
+    }
+
+    function testFuzz_minSellPrice_feePerUnitFormMatchesPosition(
+        uint256 yieldBp,
+        uint256 timeToMaturity,
+        uint256 credit,
+        uint256 pendingFee
+    )
+        external
+        view
+    {
+        yieldBp        = bound(yieldBp, 0, type(uint16).max);
+        timeToMaturity = bound(timeToMaturity, 0, MAX_TIME_TO_MATURITY);
+        credit         = bound(credit, 1, type(uint128).max);
+        pendingFee     = bound(pendingFee, 0, credit);
+
+        assertEq(
+            harness.minSellPrice(
+                yieldBp, timeToMaturity, MidnightUtils.WAD, pendingFee * MidnightUtils.WAD / credit
+            ),
+            harness.minSellPrice(yieldBp, timeToMaturity, credit, pendingFee)
+        );
     }
 
     // A lien that does not divide evenly into the position is where the truncation shows.

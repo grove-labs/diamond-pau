@@ -1062,7 +1062,7 @@ library BeaconConfig {
      * @param  facet  Address of the deployed MidnightFacet contract.
      */
     function setMidnightIntegration(address beacon, address facet) internal {
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](10);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](17);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_setMarketConfig.selector,
@@ -1112,6 +1112,41 @@ library BeaconConfig {
         wires[9] = IEnumerableIntegrations.Wire(
             IMidnightController.midnight_VERSION.selector,
             IFacet.VERSION.selector
+        );
+
+        wires[10] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_disableMake.selector,
+            IMidnightFacet.disableMake.selector
+        );
+
+        wires[11] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_setRatifierAuthorization.selector,
+            IMidnightFacet.setRatifierAuthorization.selector
+        );
+
+        wires[12] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_cancelOfferGroup.selector,
+            IMidnightFacet.cancelOfferGroup.selector
+        );
+
+        wires[13] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_fundFill.selector,
+            IMidnightFacet.fundFill.selector
+        );
+
+        wires[14] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_isCallbackAllowed.selector,
+            IMidnightFacet.isCallbackAllowed.selector
+        );
+
+        wires[15] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getStrategyBuyRateLimitKey.selector,
+            IMidnightFacet.getStrategyBuyRateLimitKey.selector
+        );
+
+        wires[16] = IEnumerableIntegrations.Wire(
+            IMidnightController.midnight_getStrategySellRateLimitKey.selector,
+            IMidnightFacet.getStrategySellRateLimitKey.selector
         );
 
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config({

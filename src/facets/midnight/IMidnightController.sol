@@ -2,20 +2,35 @@
 pragma solidity ^0.8.34;
 
 import { IMidnightFacet } from "./IMidnightFacet.sol";
-import { Offer } from "./MidnightInterfaces.sol";
+import { Market, Offer } from "./MidnightInterfaces.sol";
 
 interface IMidnightController {
 
     function midnight_VERSION() external pure returns (string memory);
 
     function midnight_setMarketConfig(
+        Market calldata market,
+        uint16          maxBuyTick,
+        uint16          minSellTick,
+        uint16          minBuyYield,
+        uint16          maxSellYield,
+        uint16          maxContinuousFee,
+        uint128         maxLossFactor,
+        uint256         maxMakeOfferSize
+    ) external;
+
+    function midnight_setRatifierAuthorization(address ratifier, bool authorized) external;
+
+    function midnight_cancelOfferGroup(bytes32 group) external;
+
+    function midnight_disableMake(bytes32 marketId) external;
+
+    function midnight_fundFill(
         bytes32 marketId,
-        uint16  maxBuyTick,
-        uint16  minSellTick,
-        uint16  minBuyYield,
-        uint16  maxSellYield,
-        uint16  maxContinuousFee,
-        uint128 maxLossFactor
+        bool    buy,
+        uint256 assets,
+        uint256 units,
+        uint256 pendingFee
     ) external;
 
     function midnight_buy(
@@ -52,6 +67,21 @@ interface IMidnightController {
     function midnight_getRedeemRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     function midnight_getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    function midnight_getStrategyBuyRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_getStrategySellRateLimitKey(address strategy, bytes32 marketId)
+        external
+        pure
+        returns (bytes32 key);
+
+    function midnight_isCallbackAllowed(bytes32 marketId, address callback, bool buy)
+        external
+        view
+        returns (bool allowed);
 
     function midnight_midnight() external view returns (address);
 
