@@ -80,9 +80,12 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
   for the market, both enforcing decreases of `assets`; selling: `LIMIT_MIDNIGHT_STRATEGY_SELL`
   then `LIMIT_MIDNIGHT_SELL`
 - **Refill:** none
-- **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * maxFillPrice`, the
-  yield bound priced at the live `continuousFee`; exit `assets * WAD >= units * minFillPrice`;
-  fee and loss-factor gates on entry; zero debt on exit
+- **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * tickBound`
+  (`fill-price-too-high`), then `assets * WAD <= units * yieldBound` (`fill-yield-too-low`), the
+  yield bound priced at the live `continuousFee`; exit `assets * WAD >= units * tickBound`
+  (`fill-price-too-low`), then `assets * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
+  and loss-factor gates on entry; zero debt on exit. The gate (`_validateBuyMarketState`) and the
+  bounds (`_buyBounds`, `_sellBounds`) are the ones `buy` and `sell` use, tick then yield
 - **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`
 - **Zero-amount semantics:** zero `assets` or `units` revert
 
@@ -115,14 +118,21 @@ Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
 
 Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
 
+Take and make keep three differences in their price checks, because the logic forces them. A take
+prices the offer tick plus or minus the settlement fee before the trade, while `fundFill` checks
+the booked `assets` per `units` after the fill. The sell fee per unit comes from the position
+before the trade on a take, and from the position after the fill on a make, capped by the
+reported `pendingFee` (`_sellFeePerUnit`). The balance and credit delta post-checks run on the
+take only.
+
 ## Fund-exit map
 
 | # | Path | Destination | Bounded by |
 |---|------|-------------|------------|
 | 1 | `buy`: approval + `take` | offer maker (seller); proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
-| 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price ceiling at the live continuous fee |
+| 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price and yield ceilings, the yield ceiling at the live continuous fee |
 | 3 | `sell`: `take` | credit units to the offer maker; loan token to the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
-| 4 | maker sell fill (units taken by Midnight before `fundFill`) | offer taker | strategy sell key, then `LIMIT_MIDNIGHT_SELL`; config price floor |
+| 4 | maker sell fill (units taken by Midnight before `fundFill`) | offer taker | strategy sell key, then `LIMIT_MIDNIGHT_SELL`; config price and yield floors |
 | 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
 
 ## Storage & constructor
