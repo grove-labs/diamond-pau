@@ -36,6 +36,7 @@ import { FarmFacet }          from "../../src/facets/farm/FarmFacet.sol";
 import { LayerZeroFacet }     from "../../src/facets/layer-zero/LayerZeroFacet.sol";
 import { MapleFacet }         from "../../src/facets/maple/MapleFacet.sol";
 import { MerklFacet }         from "../../src/facets/merkl/MerklFacet.sol";
+import { MidnightFacet }      from "../../src/facets/midnight/MidnightFacet.sol";
 import { NFATHaloFacet }      from "../../src/facets/nfat-halo/NFATHaloFacet.sol";
 import { NFATPrimeFacet }     from "../../src/facets/nfat-prime/NFATPrimeFacet.sol";
 import { OTCFacet }           from "../../src/facets/otc/OTCFacet.sol";
@@ -147,6 +148,8 @@ abstract contract ForkTestBase is DssTest {
     address constant CCTP_MESSENGER = Ethereum.CCTP_TOKEN_MESSENGER;
     address constant DAI_USDS       = Ethereum.DAI_USDS;
     address constant ETHENA_MINTER  = Ethereum.ETHENA_MINTER;
+    // Not in the address registries yet; https://docs.morpho.org/get-started/resources/addresses
+    address constant MIDNIGHT       = 0x471686c42792F93528B000beF54bC10E3aa2045f;
     address constant PAUSE_PROXY    = Ethereum.PAUSE_PROXY;
     address constant SPARK_PROXY    = Ethereum.SPARK_PROXY;
 
@@ -282,6 +285,7 @@ abstract contract ForkTestBase is DssTest {
         _onboardLayerZero();
         _onboardMaple();
         _onboardMerkl();
+        _onboardMidnight();
         _onboardNFATHalo();
         _onboardNFATPrime();
         _onboardOTC();
@@ -315,7 +319,7 @@ abstract contract ForkTestBase is DssTest {
         //       logic that calls into AccessControls to perform grants and revocations.
         accessControls.setRoleAdmin(ALLOCATOR_ROLE, ALLOCATOR_ADMIN_ROLE);
 
-        bytes32[] memory integrationIds = new bytes32[](28);
+        bytes32[] memory integrationIds = new bytes32[](29);
         integrationIds[0]  = "AAVE_FACET";
         integrationIds[1]  = "BASIN_FACET";
         integrationIds[2]  = "CCTP_FACET";
@@ -344,6 +348,7 @@ abstract contract ForkTestBase is DssTest {
         integrationIds[25] = "NFAT_HALO_FACET";
         integrationIds[26] = "NFAT_PRIME_FACET";
         integrationIds[27] = "AAVE_V4_FACET";
+        integrationIds[28] = "MIDNIGHT_FACET";
 
         mainnetController.updateIntegrations(integrationIds);
 
@@ -510,6 +515,12 @@ abstract contract ForkTestBase is DssTest {
         address merklFacet = address(new MerklFacet());
         vm.label(merklFacet, "MerklFacet");
         BeaconConfig.setMerklIntegration(address(beacon), merklFacet);
+    }
+
+    function _onboardMidnight() internal {
+        address midnightFacet = address(new MidnightFacet(MIDNIGHT));
+        vm.label(midnightFacet, "MidnightFacet");
+        BeaconConfig.setMidnightIntegration(address(beacon), midnightFacet);
     }
 
     function _onboardNFATHalo() internal {

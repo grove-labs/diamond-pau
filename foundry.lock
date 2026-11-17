@@ -15,7 +15,7 @@
     "rev": "6a51b96aa920b4b45b5c70e2e76f0529bd4f4103"
   },
   "lib/grove-basin": {
-    "rev": "be08b03f57ec475939049779c5824b3611ae4f7a"
+    "rev": "a79269a3f5f0253110e9cbca15d79aa9ffb62c4d"
   },
   "lib/grove-xchain-helpers": {
     "branch": {
@@ -42,7 +42,7 @@
     "rev": "9505c85a251afc57ecced90a6076f2c661ee2404"
   },
   "lib/spark-address-registry": {
-    "rev": "b1eafa11c133f9356b0950f351e87c6f6f387beb"
+    "rev": "5a6c42ccb5ad4a5dcf033bd48307d8fe0a344d2b"
   },
   "lib/spark-psm": {
     "rev": "6a5a579cb503a461df254007064370f732fcd19d"
