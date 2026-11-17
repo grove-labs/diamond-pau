@@ -6,14 +6,9 @@ import { Market } from "./MidnightInterfaces.sol";
 
 // Modified from src/libraries/IdLib.sol in
 // https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932
-//
-// The singleton exposes no toId view. The id is the full CREATE2 hash (salt 0) of the market config
-// stored as bytecode; its low 20 bytes are the address the config lives at. It is a pure function
-// of the full config, so an address-derivation helper would never match.
 
 library MidnightIdLib {
 
-    // Creation code prefix that deploys the appended data as runtime bytecode.
     bytes internal constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
 
     function toId(Market memory market) internal pure returns (bytes32) {

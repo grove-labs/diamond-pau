@@ -4,9 +4,6 @@ pragma solidity ^0.8.34;
 
 // Modified from src/libraries/TickLib.sol in
 // https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932
-//
-// The singleton exposes no tickToPrice view, and bounding offer prices on-chain needs the exact
-// conversion it uses internally. The unchecked blocks are kept as upstream wrote them, for parity.
 
 int256  constant LN_ONE_PLUS_DELTA   = 0.004987541511039073e18;  // floor(ln(1.005)e18)
 uint256 constant MAX_TICK            = 6744;

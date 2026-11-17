@@ -255,7 +255,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(!offer.buy, "MidnightFacet/invalid-offer-direction");
         require(units != 0, "MidnightFacet/zero-units");
 
-        // Scoped to free the price locals before the take; buy is at the stack limit.
         {
             ( uint256 tickBound, uint256 yieldBound ) =
                 _buyBounds(config, ctx.timeToMaturity, continuousFee);
@@ -267,7 +266,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             require(price + ctx.settlementFee <= yieldBound, "MidnightFacet/buy-yield-too-low");
         }
 
-        // Paying ourselves nets the transfer out, so the balance delta stops tracking the fill.
+        // Paying the proxy would net out the transfer and hide the spend from the rate limit.
         require(
             offer.receiverIfMakerIsSeller != ctx.proxy,
             "MidnightFacet/invalid-offer-receiver"
@@ -277,21 +276,17 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         uint256 buyerAssets = _take(ctx, offer, ratifierData, units, address(0));
 
-        // Clear the approval in case Midnight did not pull the full amount.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
 
         // Deltas around take() are measurable only here; a make callback has no pre-fill hook.
         assetsSpent = ctx.balanceBefore - IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy);
 
-        // Loan token arriving during the take shrinks the measured delta, so charge the higher of
-        // what the balance moved and what Midnight says the buyer paid.
         if (buyerAssets > assetsSpent) assetsSpent = buyerAssets;
 
         require(assetsSpent <= maxAssetsIn, "MidnightFacet/max-assets-in-exceeded");
 
         ( uint256 creditAfter, ) = _credit(ctx.market, marketId, ctx.proxy);
 
-        // The proxy never holds debt, so a buy increases credit by exactly the units taken.
         require(
             creditAfter == ctx.creditBefore + units,
             "MidnightFacet/credit-delta-mismatch"
@@ -334,7 +329,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(ALLOCATOR_ROLE)
         returns (uint256 assetsWithdrawn)
     {
-        // Redemption reads no config value, but an onboarded config is what authenticates the id.
         require(
             _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
             "MidnightFacet/market-not-onboarded"
@@ -345,7 +339,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         Market memory market = IMidnightLike(midnight).toMarket(marketId);
 
-        // Redemption is at par out of repayments, so units are capped by both sides of the pool.
         ( uint256 credit, ) = _credit(market, marketId, proxy);
 
         uint256 withdrawable = IMidnightLike(midnight).withdrawable(marketId);
@@ -362,7 +355,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             abi.encodeCall(IMidnightLike.withdraw, (market, units, proxy, proxy))
         );
 
-        // Measure the loan token actually received rather than trusting the units requested.
         assetsWithdrawn = IERC20Like(market.loanToken).balanceOf(proxy) - balanceBefore;
 
         require(assetsWithdrawn >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
@@ -398,7 +390,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(offer.buy,  "MidnightFacet/invalid-offer-direction");
         require(units != 0, "MidnightFacet/zero-units");
 
-        // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
         if (units > ctx.creditBefore) units = ctx.creditBefore;
 
         require(units != 0, "MidnightFacet/no-credit-to-sell");
@@ -420,7 +411,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         _take(ctx, offer, ratifierData, units, ctx.proxy);
 
-        // Loan token arriving during the take only inflates this, which over-charges the sell key.
         assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy) - ctx.balanceBefore;
 
         require(assetsReceived >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
@@ -645,7 +635,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         internal
         returns (uint256 buyerAssets)
     {
-        // Midnight requires the unused receiver to be zero; taker mode uses no taker callback.
         bytes memory result = IALMProxy(ctx.proxy).doCall(
             midnight,
             abi.encodeCall(
@@ -662,8 +651,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             )
         );
 
-        // NOTE: Midnight is immutable, and the buy only lets this raise the metered spend above
-        //       the balance delta, never lower it.
         ( buyerAssets, ) = abi.decode(result, (uint256, uint256));
     }
 
@@ -760,7 +747,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (uint256 credit, uint256 pendingFee)
     {
-        // Stored credit is stale, so slashing and fee accrual come from the protocol's own view.
         ( credit, pendingFee, ) =
             IMidnightLike(midnight).updatePositionView(market, marketId, user);
     }
