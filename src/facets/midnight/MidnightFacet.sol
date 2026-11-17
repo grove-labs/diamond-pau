@@ -88,7 +88,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /*** Structs                                                                                ***/
     /**********************************************************************************************/
 
-    // Per-call state kept in memory so buy and sell stay within the stack.
     struct TakeContext {
         address proxy;
         Market  market;
@@ -146,7 +145,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // Zero is meaningful: no maxBuyTick kills entries, no minSellTick means not onboarded.
         require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
         require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
         require(
@@ -154,7 +152,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
                 <= MidnightUtils.MAX_CONTINUOUS_FEE,
             "MidnightFacet/max-continuous-fee-oob"
         );
-        // A zero sell yield would only clear at par and brick the exit, so one must be named.
         require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
 
         _getFacetStorage().marketConfigs[marketId] = MarketConfig({
@@ -204,13 +201,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         uint256 continuousFee = IMidnightLike(midnight).continuousFee(marketId);
 
-        // Entering fixes the market's current rate onto the new units for their whole term.
         require(
             continuousFee <= MidnightUtils.continuousFeePerSecond(config.maxContinuousFee),
             "MidnightFacet/continuous-fee-too-high"
         );
 
-        // A non-zero loss factor means this market's lenders have already been slashed.
         require(
             IMidnightLike(midnight).lossFactor(marketId) <= config.maxLossFactor,
             "MidnightFacet/loss-factor-too-high"
@@ -219,11 +214,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(!offer.buy, "MidnightFacet/invalid-offer-direction");
         require(units != 0, "MidnightFacet/zero-units");
 
-        // Scoped to free the price locals before the take; buy is at the stack limit.
         {
             uint256 price = MidnightTickLib.tickToPrice(offer.tick);
 
-            // The fee is paid on top of the price, so both ceilings bind on the all-in cost.
             require(
                 price + ctx.settlementFee <= MidnightTickLib.tickToPrice(config.maxBuyTick),
                 "MidnightFacet/buy-price-too-high"
@@ -238,7 +231,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             );
         }
 
-        // Paying ourselves nets the transfer out, so the balance delta stops tracking the fill.
+        // Paying the proxy would net out the transfer and hide the spend from the rate limit.
         require(
             offer.receiverIfMakerIsSeller != ctx.proxy,
             "MidnightFacet/invalid-offer-receiver"
@@ -248,20 +241,16 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         uint256 buyerAssets = _take(ctx, offer, ratifierData, units, address(0));
 
-        // Clear the approval in case Midnight did not pull the full amount.
         ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
 
         assetsSpent = ctx.balanceBefore - IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy);
 
-        // Loan token arriving during the take shrinks the measured delta, so charge the higher of
-        // what the balance moved and what Midnight says the buyer paid.
         if (buyerAssets > assetsSpent) assetsSpent = buyerAssets;
 
         require(assetsSpent <= maxAssetsIn, "MidnightFacet/max-assets-in-exceeded");
 
         ( uint256 creditAfter, ) = _credit(ctx.market, marketId, ctx.proxy);
 
-        // The proxy never holds debt, so a buy increases credit by exactly the units taken.
         require(
             creditAfter == ctx.creditBefore + units,
             "MidnightFacet/credit-delta-mismatch"
@@ -282,7 +271,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(ALLOCATOR_ROLE)
         returns (uint256 assetsWithdrawn)
     {
-        // Redemption reads no config value, but an onboarded config is what authenticates the id.
         require(
             _getFacetStorage().marketConfigs[marketId].minSellTick != 0,
             "MidnightFacet/market-not-onboarded"
@@ -293,7 +281,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         Market memory market = IMidnightLike(midnight).toMarket(marketId);
 
-        // Redemption is at par out of repayments, so units are capped by both sides of the pool.
         ( uint256 credit, ) = _credit(market, marketId, proxy);
 
         uint256 withdrawable = IMidnightLike(midnight).withdrawable(marketId);
@@ -310,7 +297,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             abi.encodeCall(IMidnightLike.withdraw, (market, units, proxy, proxy))
         );
 
-        // Measure the loan token actually received rather than trusting the units requested.
         assetsWithdrawn = IERC20Like(market.loanToken).balanceOf(proxy) - balanceBefore;
 
         require(assetsWithdrawn >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
@@ -346,14 +332,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
         require(offer.buy,  "MidnightFacet/invalid-offer-direction");
         require(units != 0, "MidnightFacet/zero-units");
 
-        // Credit drifts down with fee accrual and slashing; the excess would be naked debt.
         if (units > ctx.creditBefore) units = ctx.creditBefore;
 
         require(units != 0, "MidnightFacet/no-credit-to-sell");
 
         uint256 price = MidnightTickLib.tickToPrice(offer.tick);
 
-        // The fee is taken out of the proceeds, so both floors bind on the gross price.
         require(
             price >= MidnightTickLib.tickToPrice(config.minSellTick) + ctx.settlementFee,
             "MidnightFacet/sell-price-too-low"
@@ -370,7 +354,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         _take(ctx, offer, ratifierData, units, ctx.proxy);
 
-        // Loan token arriving during the take only inflates this, which over-charges the sell key.
         assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy) - ctx.balanceBefore;
 
         require(assetsReceived >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
@@ -432,7 +415,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         internal
         returns (uint256 buyerAssets)
     {
-        // Midnight requires the unused receiver to be zero; taker mode uses no taker callback.
         bytes memory result = IALMProxy(ctx.proxy).doCall(
             midnight,
             abi.encodeCall(
@@ -449,8 +431,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             )
         );
 
-        // NOTE: Midnight is immutable, and the buy only lets this raise the metered spend above
-        //       the balance delta, never lower it.
         ( buyerAssets, ) = abi.decode(result, (uint256, uint256));
     }
 
@@ -463,8 +443,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (TakeContext memory ctx)
     {
-        // This market comes from calldata and its maturity feeds the caller's price bounds, so both
-        // the venue and the id are bound here, before anything is derived from it.
         require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
         require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
 
@@ -473,7 +451,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         ctx.timeToMaturity = market.maturity > block.timestamp
             ? market.maturity - block.timestamp
             : 0;
-        // Reverts on a market that has never been touched (`touchMarket`, permissionless, once).
         ctx.settlementFee  = IMidnightLike(midnight).settlementFee(marketId, ctx.timeToMaturity);
         ctx.balanceBefore  = IERC20Like(market.loanToken).balanceOf(ctx.proxy);
 
@@ -485,7 +462,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (uint256 credit, uint256 pendingFee)
     {
-        // Stored credit is stale, so slashing and fee accrual come from the protocol's own view.
         ( credit, pendingFee, ) =
             IMidnightLike(midnight).updatePositionView(market, marketId, user);
     }

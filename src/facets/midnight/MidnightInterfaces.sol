@@ -4,9 +4,6 @@ pragma solidity ^0.8.34;
 
 // Modified from src/interfaces/IMidnight.sol in
 // https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932
-//
-// Vendored verbatim because the market id is a hash over abi.encode(market): any layout drift
-// silently changes every id.
 
 struct CollateralParams {
     address token;
