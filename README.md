@@ -104,10 +104,6 @@ Audit reports are available in the [`audits/`](./audits/) directory. The system 
 - ChainSecurity
 - Unvariant
 
-## Licensing
-
-This repository is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0); see the [LICENSE](LICENSE) file. The vendored Morpho Midnight files (`src/facets/midnight/MidnightIdLib.sol`, `src/facets/midnight/MidnightInterfaces.sol` and `src/facets/midnight/MidnightTickLib.sol`) keep upstream's [GPL-2.0-or-later](https://spdx.org/licenses/GPL-2.0-or-later.html) license (license text: https://spdx.org/licenses/GPL-2.0-or-later.html).
-
 ---
 
 <p align="center">
