@@ -189,6 +189,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
         sellKey_ = mainnetController.midnight_getStrategySellRateLimitKey(strategy_, marketId);
 
         vm.startPrank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setStrategy(strategy_, true);
         rateLimits.setRateLimitData(buyKey_,  rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(sellKey_, rateLimit, rateLimit / 1 days);
         vm.stopPrank();
@@ -662,6 +663,34 @@ contract MainnetController_MidnightMaker_Retroactivity_Tests is Midnight_Maker_T
         _take(sell, units);
     }
 
+    function test_keyedStrategyFundsNothingUntilEnabled() external {
+        MockFundingStrategy other =
+            new MockFundingStrategy(MIDNIGHT, address(almProxy), address(mainnetController));
+
+        bytes32 otherBuyKey =
+            mainnetController.midnight_getStrategyBuyRateLimitKey(address(other), marketId);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(otherBuyKey, rateLimit, 0);
+
+        assertFalse(mainnetController.midnight_isStrategyEnabled(address(other)));
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, address(other), true));
+
+        Offer memory buy =
+            _makerOffer(market, address(other), true, MAKER_BUY_TICK, seedUnits, BUY_GROUP);
+
+        _takeExpectRevert(buy, seedUnits / 4, "MidnightFacet/strategy-not-enabled");
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setStrategy(address(other), true);
+
+        assertTrue(mainnetController.midnight_isCallbackAllowed(marketId, address(other), true));
+
+        ( uint256 buyerAssets, ) = _take(buy, seedUnits / 4);
+
+        assertEq(rateLimits.getCurrentRateLimit(otherBuyKey), rateLimit - buyerAssets);
+    }
+
     // Each maker leg is bounded by the taker meter for its own direction, and by nothing else.
     function test_exhaustingADirectionLimitStopsThatLegOnly() external {
         _seedCredit();
@@ -1031,6 +1060,102 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         ( , uint256 sellerAssets ) = _take(sell, seedUnits / 8);
 
         assertGt(sellerAssets, 0);
+    }
+
+    function test_midnightFreezerDisablingStrategyStopsItOnEveryMarket() external {
+        _seedCredit();
+
+        Market memory other = market;
+        other.maturity += 30 days;
+
+        bytes32 otherId = midnight.touchMarket(other);
+
+        deal(address(weth), maker, COLLATERAL_SUPPLY);
+
+        vm.prank(maker);
+        midnight.supplyCollateral(other, 0, COLLATERAL_SUPPLY, maker);
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMarketConfig(
+            other,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            maxMakeOfferSize
+        );
+        rateLimits.setRateLimitData(
+            mainnetController.midnight_getBuyRateLimitKey(otherId), rateLimit, 0
+        );
+        rateLimits.setRateLimitData(
+            mainnetController.midnight_getStrategyBuyRateLimitKey(address(strategy), otherId),
+            rateLimit,
+            0
+        );
+        vm.stopPrank();
+
+        Offer memory buy      = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits);
+        Offer memory sell     = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
+        Offer memory otherBuy = _makerOffer(
+            other, address(strategy), true, MAKER_BUY_TICK, seedUnits, keccak256("other.buy")
+        );
+
+        uint256 units = seedUnits / 8;
+
+        _take(buy,      units);
+        _take(sell,     units);
+        _take(otherBuy, units);
+
+        address freezer = GroveEthereum.ALM_FREEZER;
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+
+        vm.expectEmit(address(mainnetController));
+        emit IMidnightFacet.MidnightStrategySet(address(strategy), false);
+
+        vm.prank(freezer);
+        mainnetController.midnight_disableStrategy(address(strategy));
+
+        assertFalse(mainnetController.midnight_isStrategyEnabled(address(strategy)));
+
+        address strategy_ = address(strategy);
+
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, strategy_, true));
+        assertFalse(mainnetController.midnight_isCallbackAllowed(marketId, strategy_, false));
+        assertFalse(mainnetController.midnight_isCallbackAllowed(otherId,  strategy_, true));
+
+        _takeExpectRevert(buy,      units, "MidnightFacet/strategy-not-enabled");
+        _takeExpectRevert(sell,     units, "MidnightFacet/strategy-not-enabled");
+        _takeExpectRevert(otherBuy, units, "MidnightFacet/strategy-not-enabled");
+
+        vm.prank(address(strategy));
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        mainnetController.midnight_fundFill(otherId, true, 1e6, 1e6, 0);
+
+        assertEq(
+            mainnetController.midnight_getMarketConfig(marketId).maxMakeOfferSize, maxMakeOfferSize
+        );
+        assertEq(
+            mainnetController.midnight_getMarketConfig(otherId).maxMakeOfferSize, maxMakeOfferSize
+        );
+
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            freezer,
+            bytes32(0)
+        ));
+        vm.prank(freezer);
+        mainnetController.midnight_setStrategy(address(strategy), true);
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setStrategy(address(strategy), true);
+
+        _take(buy,      units);
+        _take(sell,     units);
+        _take(otherBuy, units);
     }
 
     function test_makeDisableLeavesTheTakerPathWorking() external {

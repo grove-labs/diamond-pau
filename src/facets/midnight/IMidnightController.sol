@@ -21,9 +21,13 @@ interface IMidnightController {
 
     function midnight_setRatifierAuthorization(address ratifier, bool authorized) external;
 
+    function midnight_setStrategy(address strategy, bool enabled) external;
+
     function midnight_cancelOfferGroup(bytes32 group) external;
 
     function midnight_disableMake(bytes32 marketId) external;
+
+    function midnight_disableStrategy(address strategy) external;
 
     function midnight_fundFill(
         bytes32 marketId,
@@ -82,6 +86,8 @@ interface IMidnightController {
         external
         view
         returns (bool allowed);
+
+    function midnight_isStrategyEnabled(address strategy) external view returns (bool enabled);
 
     function midnight_midnight() external view returns (address);
 

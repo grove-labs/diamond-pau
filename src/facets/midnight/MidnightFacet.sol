@@ -79,6 +79,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @custom:storage-location erc7201:sky.pau.storage.MidnightFacet.v1
     struct FacetStorage {
         mapping (bytes32 marketId => MarketConfig config) marketConfigs;
+        mapping (address strategy => bool enabled)        enabledStrategies;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -152,6 +153,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
     }
 
     /// @inheritdoc IMidnightFacet
+    function disableStrategy(address strategy)
+        external
+        override
+        nonReentrant
+        onlyRole(MIDNIGHT_FREEZER_ROLE)
+    {
+        _getFacetStorage().enabledStrategies[strategy] = false;
+
+        emit MidnightStrategySet(strategy, false);
+    }
+
+    /// @inheritdoc IMidnightFacet
     function setMarketConfig(
         Market calldata market,
         uint16          maxBuyTick,
@@ -220,6 +233,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
 
         emit MidnightRatifierAuthorizationSet(ratifier, authorized);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function setStrategy(address strategy, bool enabled)
+        external
+        override
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        _getFacetStorage().enabledStrategies[strategy] = enabled;
+
+        emit MidnightStrategySet(strategy, enabled);
     }
 
     /**********************************************************************************************/
@@ -438,6 +463,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
         override
         nonReentrant
     {
+        require(
+            _getFacetStorage().enabledStrategies[msg.sender],
+            "MidnightFacet/strategy-not-enabled"
+        );
+
         MarketConfig storage config = _getFacetStorage().marketConfigs[marketId];
 
         require(config.maxMakeOfferSize != 0, "MidnightFacet/make-not-enabled");
@@ -512,6 +542,8 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Hard-coded: a key funded for address(0) by mistake would let unmetered offers through.
         if (callback == address(0)) return false;
 
+        if (!_getFacetStorage().enabledStrategies[callback]) return false;
+
         MarketConfig storage config = _getFacetStorage().marketConfigs[marketId];
 
         if (config.maxMakeOfferSize == 0) return false;
@@ -525,6 +557,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
         bytes32 marketKey = buying ? getBuyRateLimitKey(marketId) : getSellRateLimitKey(marketId);
 
         return _rateLimitExists(strategyKey) && _rateLimitExists(marketKey);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function isStrategyEnabled(address strategy) external view override returns (bool) {
+        return _getFacetStorage().enabledStrategies[strategy];
     }
 
     /**********************************************************************************************/

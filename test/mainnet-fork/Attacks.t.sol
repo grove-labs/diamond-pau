@@ -1474,6 +1474,35 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         greedy.pull(marketId, true, floorAssets, units, 0);
     }
 
+    function test_attack_disabledStrategyCannotFabricateFills_makeMidnight() external {
+        _onboardStrategy(address(greedy));
+
+        address freezer = GroveEthereum.ALM_FREEZER;
+
+        vm.prank(Ethereum.SPARK_PROXY);
+        accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
+
+        vm.prank(freezer);
+        mainnetController.midnight_disableStrategy(address(greedy));
+
+        uint256 units  = seedUnits;
+        uint256 assets = units * MidnightTickLib.tickToPrice(TICK_98) / 1e18;
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        greedy.pull(marketId, true, assets, units, 0);
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        greedy.pull(marketId, false, assets, units, 0);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
+        assertEq(loanToken.balanceOf(address(greedy)),   0);
+
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),  rateLimit);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit);
+    }
+
     // Midnight has no zero-unit guard and a fully filled offer still passes its cap at zero
     // units, so the callback fires; a strategy that forwards it meets the facet's zero guards.
     function test_attack_zeroUnitTakeOfFilledOffer_makeMidnight() external {

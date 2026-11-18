@@ -13,9 +13,9 @@ import { Market, Offer } from "./MidnightInterfaces.sol";
  *         and redeems them at par once repayments land. Every market is identified by its id, a
  *         hash committing to the full market config including the Midnight venue address.
  * @dev    As a maker the proxy rests its own signed offers. A fill reaches `fundFill` through the
- *         funding strategy named as the offer's callback. A strategy holds no role: it is
- *         onboarded per market and direction by its own rate limit key, so no standing token
- *         approval is needed.
+ *         funding strategy named as the offer's callback. A strategy holds no role: the admin
+ *         enables it with `setStrategy`, and it is onboarded per market and direction by its own
+ *         rate limit key, so no standing token approval is needed.
  */
 interface IMidnightFacet is IFacet {
 
@@ -157,6 +157,13 @@ interface IMidnightFacet is IFacet {
      */
     event MidnightSell(bytes32 indexed marketId, uint256 units, uint256 assetsReceived);
 
+    /**
+     * @notice Emitted when a funding strategy is enabled or disabled.
+     * @param  strategy Funding strategy whose status changed.
+     * @param  enabled  Whether the strategy may now settle fills.
+     */
+    event MidnightStrategySet(address indexed strategy, bool enabled);
+
     /**********************************************************************************************/
     /*** Interactive Functions                                                                  ***/
     /**********************************************************************************************/
@@ -216,12 +223,25 @@ interface IMidnightFacet is IFacet {
     function disableMake(bytes32 marketId) external;
 
     /**
+     * @notice Disables a funding strategy on every market.
+     * @dev    Sets the strategy's enabled flag to false and changes nothing else, so it works on
+     *         any address and repeating it only emits again. Every `fundFill` call from the
+     *         strategy then reverts, fills of offers already published included. Only
+     *         `DEFAULT_ADMIN_ROLE` can enable it again, through `setStrategy`.
+     * @dev    Callable by `MIDNIGHT_FREEZER_ROLE` only. Any other caller reverts with
+     *         `AccessControlUnauthorizedAccount` for `MIDNIGHT_FREEZER_ROLE`.
+     * @param  strategy Funding strategy to disable.
+     */
+    function disableStrategy(address strategy) external;
+
+    /**
      * @notice Settles a fill of one of the proxy's resting offers, funding it when the proxy buys.
      * @dev    Called by the funding strategy named as the offer's callback, from inside Midnight's
-     *         settlement. Carries no role on purpose: the caller's own strategy key for the market
-     *         and direction is the authorization, so an unset key reverts with
-     *         `RateLimits/zero-maxAmount` before anything moves, and zeroing it offboards the
-     *         strategy for offers already published.
+     *         settlement. Carries no role on purpose: the first check is that the caller is a
+     *         strategy enabled with `setStrategy`, and its own strategy key for the market and
+     *         direction meters it, so an unset key reverts with `RateLimits/zero-maxAmount`
+     *         before anything moves, and zeroing it offboards the strategy for offers already
+     *         published.
      * @dev    On a buy the loan token is sent to the caller, which is what Midnight then pulls. The
      *         fill must clear the configured loss factor, meet the configured fee ceiling against
      *         the market's live continuous fee, and price at or below the stricter of the
@@ -342,12 +362,23 @@ interface IMidnightFacet is IFacet {
      */
     function setRatifierAuthorization(address ratifier, bool authorized) external;
 
+    /**
+     * @notice Enables or disables a funding strategy on every market.
+     * @dev    `fundFill` only accepts a caller enabled here, and `isCallbackAllowed` answers
+     *         false for any other callback. Enabling does not onboard the strategy on a market:
+     *         its strategy keys for that market still have to be set.
+     * @param  strategy Funding strategy to enable or disable.
+     * @param  enabled  Whether the strategy may settle fills.
+     */
+    function setStrategy(address strategy, bool enabled) external;
+
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
     /**********************************************************************************************/
 
     /// @notice Role identifier for accounts that may disable making on a market with
-    ///         `disableMake` and cancel an offer group with `cancelOfferGroup`, and nothing else.
+    ///         `disableMake`, disable a strategy with `disableStrategy` and cancel an offer group
+    ///         with `cancelOfferGroup`, and nothing else.
     function MIDNIGHT_FREEZER_ROLE() external pure returns (bytes32);
 
     /// @notice Address of the Midnight singleton entries are pinned to (immutable).
@@ -410,10 +441,11 @@ interface IMidnightFacet is IFacet {
 
     /**
      * @notice Returns whether an offer callback may settle fills in one direction on a market.
-     * @dev    True only for a non-zero callback on a market with a non-zero `maxMakeOfferSize`
-     *         whose strategy key and per-market key for that direction both have a non-zero
-     *         `maxAmount`, and for a buy only while the market's `maxBuyTick` is non-zero. Reads
-     *         the configured ceilings, not the capacity left, so a drained key still answers true.
+     * @dev    True only for a non-zero callback enabled with `setStrategy`, on a market with a
+     *         non-zero `maxMakeOfferSize` whose strategy key and per-market key for that
+     *         direction both have a non-zero `maxAmount`, and for a buy only while the market's
+     *         `maxBuyTick` is non-zero. Reads the configured ceilings, not the capacity left, so a
+     *         drained key still answers true.
      * @param  marketId Identifier of the Midnight market.
      * @param  callback Offer callback address.
      * @param  buying   True for a buy offer, whose fills reach the callback's `onBuy`.
@@ -423,5 +455,12 @@ interface IMidnightFacet is IFacet {
         external
         view
         returns (bool allowed);
+
+    /**
+     * @notice Returns whether a funding strategy is enabled.
+     * @param  strategy Funding strategy to look up.
+     * @return enabled  Whether the strategy may settle fills.
+     */
+    function isStrategyEnabled(address strategy) external view returns (bool enabled);
 
 }

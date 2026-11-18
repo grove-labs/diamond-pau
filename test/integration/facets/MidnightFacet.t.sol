@@ -46,7 +46,11 @@ interface IControllerLike {
 
     function disableMake(bytes32 marketId) external;
 
+    function disableStrategy(address strategy) external;
+
     function setRatifierAuthorization(address ratifier, bool authorized) external;
+
+    function setStrategy(address strategy, bool enabled) external;
 
     function cancelOfferGroup(bytes32 group) external;
 
@@ -83,6 +87,8 @@ interface IControllerLike {
         external
         view
         returns (bool);
+
+    function isStrategyEnabled(address strategy) external view returns (bool);
 
     function midnight() external view returns (address);
 
@@ -248,7 +254,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](13);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](16);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -315,6 +321,21 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             IMidnightFacet.getStrategySellRateLimitKey.selector
         );
 
+        wires[13] = IEnumerableIntegrations.Wire(
+            IControllerLike.setStrategy.selector,
+            IMidnightFacet.setStrategy.selector
+        );
+
+        wires[14] = IEnumerableIntegrations.Wire(
+            IControllerLike.disableStrategy.selector,
+            IMidnightFacet.disableStrategy.selector
+        );
+
+        wires[15] = IEnumerableIntegrations.Wire(
+            IControllerLike.isStrategyEnabled.selector,
+            IMidnightFacet.isStrategyEnabled.selector
+        );
+
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config(facet, wires);
 
         vm.prank(beaconAdmin);
@@ -325,6 +346,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(admin);
         controller.updateIntegrations(integrationIds);
+
+        _setStrategy(strategy, true);
     }
 
     // Restates the current maxMakeOfferSize, since the setter writes every field.
@@ -449,6 +472,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _setStrategyBuyLimit(strategy, maxAmount);
         _setStrategySellLimit(strategy, maxAmount);
         _setBuyLimit(maxAmount);
+    }
+
+    function _setStrategy(address strategy_, bool enabled) internal {
+        vm.prank(admin);
+        controller.setStrategy(strategy_, enabled);
     }
 
     // Key resolved before the prank: an external call in the argument list would consume it.
@@ -1078,7 +1106,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         IEnumerableIntegrations.Wire[] memory wires =
             IEnumerableIntegrations(address(controller)).getConfig("MIDNIGHT_FACET").wires;
 
-        assertEq(wires.length, 17);
+        assertEq(wires.length, 20);
 
         bytes4[2] memory forbidden = [
             IMidnightForbidden.supplyCollateral.selector,
@@ -1323,7 +1351,124 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _expectAdminRoleRevert(freezer);
         controller.setRatifierAuthorization(ratifier, false);
 
+        _expectAdminRoleRevert(freezer);
+        controller.setStrategy(strategy, true);
+
         vm.stopPrank();
+    }
+
+    /**********************************************************************************************/
+    /*** disableStrategy Tests                                                                  ***/
+    /**********************************************************************************************/
+
+    function test_disableStrategy_reentrancy() external {
+        address freezer = _grantFreezer();
+
+        _setEntered(address(controller));
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        vm.prank(freezer);
+        controller.disableStrategy(strategy);
+    }
+
+    function test_disableStrategy_unauthorizedAccount() external {
+        address[4] memory callers = [address(this), admin, allocator, unauthorized];
+
+        for (uint256 i; i < callers.length; ++i) {
+            _expectFreezerRoleRevert(callers[i]);
+            vm.prank(callers[i]);
+            controller.disableStrategy(strategy);
+        }
+
+        assertEq(controller.isStrategyEnabled(strategy), true);
+    }
+
+    function test_disableStrategy() external {
+        address freezer = _grantFreezer();
+
+        assertEq(controller.isStrategyEnabled(strategy), true);
+
+        vm.record();
+        vm.recordLogs();
+
+        vm.prank(freezer);
+        controller.disableStrategy(strategy);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        assertEq(logs.length,       1);
+        assertEq(logs[0].emitter,   address(controller));
+        assertEq(logs[0].topics[0], IMidnightFacet.MidnightStrategySet.selector);
+        assertEq(logs[0].topics[1], bytes32(uint256(uint160(strategy))));
+        assertEq(logs[0].data,      abi.encode(false));
+
+        assertEq(controller.isStrategyEnabled(strategy), false);
+    }
+
+    function test_disableStrategy_onlyDisables() external {
+        address freezer = _grantFreezer();
+        address other   = makeAddr("otherStrategy");
+
+        for (uint256 i; i < 2; ++i) {
+            vm.expectEmit(address(controller));
+            emit IMidnightFacet.MidnightStrategySet(other, false);
+
+            vm.prank(freezer);
+            controller.disableStrategy(other);
+
+            assertEq(controller.isStrategyEnabled(other), false);
+        }
+    }
+
+    function test_disableStrategy_blocksFundFillAndFlipsTheView() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        address freezer = _grantFreezer();
+
+        assertTrue(controller.isCallbackAllowed(_marketId(), strategy, true));
+        assertTrue(controller.isCallbackAllowed(_marketId(), strategy, false));
+
+        vm.prank(freezer);
+        controller.disableStrategy(strategy);
+
+        assertFalse(controller.isCallbackAllowed(_marketId(), strategy, true));
+        assertFalse(controller.isCallbackAllowed(_marketId(), strategy, false));
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, _honestAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        assertEq(controller.getMarketConfig(_marketId()).maxMakeOfferSize, MAX_OFFER_SIZE);
+    }
+
+    function test_disableStrategy_onlyTheAdminReEnables() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+
+        address freezer = _grantFreezer();
+
+        vm.prank(freezer);
+        controller.disableStrategy(strategy);
+
+        _expectAdminRoleRevert(freezer);
+        vm.prank(freezer);
+        controller.setStrategy(strategy, true);
+
+        assertFalse(controller.isCallbackAllowed(_marketId(), strategy, true));
+
+        _setStrategy(strategy, true);
+
+        assertTrue(controller.isCallbackAllowed(_marketId(), strategy, true));
+        assertTrue(controller.isCallbackAllowed(_marketId(), strategy, false));
     }
     /**********************************************************************************************/
     /*** setRatifierAuthorization Tests                                                         ***/
@@ -1375,6 +1520,57 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setRatifierAuthorization(ratifier, false);
     }
 
+    /**********************************************************************************************/
+    /*** setStrategy Tests                                                                      ***/
+    /**********************************************************************************************/
+
+    function test_setStrategy_reentrancy() external {
+        _setEntered(address(controller));
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        vm.prank(admin);
+        controller.setStrategy(strategy, true);
+    }
+
+    function test_setStrategy_unauthorizedAccount() external {
+        address freezer = _grantFreezer();
+        address other   = makeAddr("otherStrategy");
+
+        address[4] memory callers = [address(this), allocator, freezer, unauthorized];
+
+        for (uint256 i; i < callers.length; ++i) {
+            _expectAdminRoleRevert(callers[i]);
+            vm.prank(callers[i]);
+            controller.setStrategy(other, true);
+        }
+
+        assertEq(controller.isStrategyEnabled(other), false);
+    }
+
+    function test_setStrategy() external {
+        address other = makeAddr("otherStrategy");
+
+        assertEq(controller.isStrategyEnabled(other), false);
+
+        vm.record();
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightStrategySet(other, true);
+
+        vm.prank(admin);
+        controller.setStrategy(other, true);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        assertEq(controller.isStrategyEnabled(other), true);
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightStrategySet(other, false);
+
+        vm.prank(admin);
+        controller.setStrategy(other, false);
+
+        assertEq(controller.isStrategyEnabled(other), false);
+    }
     /**********************************************************************************************/
     /*** cancelOfferGroup Tests                                                                 ***/
     /**********************************************************************************************/
@@ -1519,11 +1715,50 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.fundFill(MARKET_ID, true, 1, 1, 0);
     }
 
-    // No role gates fundFill; the caller's own strategy key is the whole authorization.
+    function test_fundFill_strategyNotEnabled() external {
+        _onboardAndEnableMake(0);
+        _onboardStrategy(MAX_OFFER_SIZE);
+        _setSellLimit(MAX_OFFER_SIZE);
+        _mockLossFactor(0);
+
+        _setStrategy(strategy, false);
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, _honestAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        _setStrategy(strategy, true);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), true, _honestAssets(FILL_UNITS), FILL_UNITS, 0);
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, _honestSellAssets(FILL_UNITS), FILL_UNITS, 0);
+    }
+
+    function test_fundFill_strategyNotEnabledBeforeMakeNotEnabled() external {
+        vm.expectRevert("MidnightFacet/strategy-not-enabled");
+        vm.prank(unauthorized);
+        controller.fundFill(MARKET_ID, true, 0, 0, 0);
+
+        vm.expectRevert("MidnightFacet/make-not-enabled");
+        vm.prank(strategy);
+        controller.fundFill(MARKET_ID, true, 0, 0, 0);
+    }
+
+    // No role gates fundFill; an enabled caller still needs its own strategy key.
     function test_fundFill_zeroStrategyBuyKey() external {
         _onboardAndEnableMake(0);
         _setBuyLimit(MAX_OFFER_SIZE);
         _mockLossFactor(0);
+
+        address other = makeAddr("otherStrategy");
+
+        _setStrategy(other, true);
 
         uint256 assets = _honestAssets(FILL_UNITS);
 
@@ -1534,7 +1769,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _setStrategyBuyLimit(strategy, MAX_OFFER_SIZE);
 
         vm.expectRevert("RateLimits/zero-maxAmount");
-        vm.prank(unauthorized);
+        vm.prank(other);
         controller.fundFill(_marketId(), true, assets, FILL_UNITS, 0);
 
         vm.prank(strategy);
@@ -2571,6 +2806,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         address other = makeAddr("otherStrategy");
 
+        _setStrategy(other, true);
         _setStrategyBuyLimit(other, MAX_OFFER_SIZE);
 
         bytes32 buyKey      = controller.getBuyRateLimitKey(_marketId());
@@ -2701,6 +2937,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     // A zero callback never reaches fundFill, so no key configuration can make it allowed.
     function test_isCallbackAllowed_zeroCallback() external {
         _onboardForView();
+        _setStrategy(address(0), true);
         _setStrategyBuyLimit(address(0), MAX_OFFER_SIZE);
         _setStrategySellLimit(address(0), MAX_OFFER_SIZE);
 
@@ -2757,6 +2994,20 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(controller.isCallbackAllowed(_marketId(), other, false), false);
     }
 
+    function test_isCallbackAllowed_strategyNotEnabled() external {
+        _onboardForView();
+
+        _setStrategy(strategy, false);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, true),  false);
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, false), false);
+
+        _setStrategy(strategy, true);
+
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, true),  true);
+        assertEq(controller.isCallbackAllowed(_marketId(), strategy, false), true);
+    }
+
     function test_isCallbackAllowed_buyRequiresMaxBuyTick() external {
         _onboardForView();
 
@@ -2790,6 +3041,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     // transfer. The zero callback is also excluded: the view hard-codes false for it.
     function testFuzz_isCallbackAllowed_matchesFundFillGates(
         bool    buying,
+        bool    strategyEnabled,
         bool    makeEnabled,
         bool    strategyKeySet,
         bool    marketKeySet,
@@ -2820,6 +3072,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         if (zeroMaxBuyTick) _closeBuyEntry();
 
+        _setStrategy(strategy, strategyEnabled);
+
         _setViewKeys(
             buying,
             strategyKeySet        ? keyAmount : 0,
@@ -2837,7 +3091,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(allowed, funded);
         assertEq(
             allowed,
-            makeEnabled && strategyKeySet && marketKeySet && !(buying && zeroMaxBuyTick)
+            strategyEnabled &&
+            makeEnabled &&
+            strategyKeySet &&
+            marketKeySet &&
+            !(buying && zeroMaxBuyTick)
         );
     }
 
@@ -2869,7 +3127,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
     bytes32 internal constant INTEGRATION = "MIDNIGHT_FACET";
 
     // Bumping this is the step that forces a new controller alias to be paired below.
-    uint256 internal constant WIRE_COUNT = 17;
+    uint256 internal constant WIRE_COUNT = 20;
 
     address internal midnight = makeAddr("midnight");
 
@@ -2948,6 +3206,15 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
 
         calls[16]     = IMidnightController.midnight_getStrategySellRateLimitKey.selector;
         delegates[16] = IMidnightFacet.getStrategySellRateLimitKey.selector;
+
+        calls[17]     = IMidnightController.midnight_setStrategy.selector;
+        delegates[17] = IMidnightFacet.setStrategy.selector;
+
+        calls[18]     = IMidnightController.midnight_disableStrategy.selector;
+        delegates[18] = IMidnightFacet.disableStrategy.selector;
+
+        calls[19]     = IMidnightController.midnight_isStrategyEnabled.selector;
+        delegates[19] = IMidnightFacet.isStrategyEnabled.selector;
     }
 
     // The periphery calls these two by selector, so they are pinned to literals, not derived.
@@ -3001,6 +3268,20 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         assertEq(
             IMidnightFacet.MidnightMakeDisabled.selector,
             0xe52b976e8352922cbd082842e7bc4497979a5a01536c7ce29c79c3e74080720e
+        );
+    }
+
+    function test_midnightWiring_strategySelectorsAndTopic() external pure {
+        assertEq(IMidnightFacet.setStrategy.selector,                     bytes4(0xbaa82a34));
+        assertEq(IMidnightController.midnight_setStrategy.selector,       bytes4(0x4f0abfe4));
+        assertEq(IMidnightFacet.disableStrategy.selector,                 bytes4(0x98425ee1));
+        assertEq(IMidnightController.midnight_disableStrategy.selector,   bytes4(0x65888b20));
+        assertEq(IMidnightFacet.isStrategyEnabled.selector,               bytes4(0xea49ba97));
+        assertEq(IMidnightController.midnight_isStrategyEnabled.selector, bytes4(0x8640b0fd));
+
+        assertEq(
+            IMidnightFacet.MidnightStrategySet.selector,
+            0x0792fbfd61d328d854018d20d2c34e988b53befd7d8cc708d30fe0433e638cef
         );
     }
 
@@ -3108,12 +3389,20 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
 
         vm.startPrank(admin);
         alias_.midnight_setMarketConfig(market, 1, 1, 0, 1, 0, 0, 1);
+        alias_.midnight_setStrategy(callback, true);
         limits.setRateLimitData(strategyKey, 1, 0);
         limits.setRateLimitData(marketKey,   1, 0);
         vm.stopPrank();
 
         ( bool ok, bytes memory data ) = controller.staticcall(
             abi.encodeCall(IMidnightController.midnight_isCallbackAllowed, (marketId, callback, true))
+        );
+
+        assertTrue(ok);
+        assertTrue(abi.decode(data, (bool)));
+
+        ( ok, data ) = controller.staticcall(
+            abi.encodeCall(IMidnightController.midnight_isStrategyEnabled, (callback))
         );
 
         assertTrue(ok);
