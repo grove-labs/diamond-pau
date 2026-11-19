@@ -146,7 +146,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
-        require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
+        require(
+            minSellTick != 0
+                && minSellTick <= MAX_TICK
+                && MidnightTickLib.tickToPrice(minSellTick) != 0,
+            "MidnightFacet/min-sell-tick-oob"
+        );
         require(
             MidnightUtils.continuousFeePerSecond(maxContinuousFee)
                 <= MidnightUtils.MAX_CONTINUOUS_FEE,
