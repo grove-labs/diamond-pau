@@ -286,6 +286,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         Market memory market = IMidnightLike(midnight).toMarket(marketId);
 
+        require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
+        require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
+
         ( uint256 credit, ) = _credit(market, marketId, proxy);
 
         uint256 withdrawable = IMidnightLike(midnight).withdrawable(marketId);
