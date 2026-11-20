@@ -97,9 +97,6 @@ contract MockFundingStrategy {
         require(msg.sender == midnight, "MockFundingStrategy/not-midnight");
         require(buyer      == proxy,    "MockFundingStrategy/buyer-not-proxy");
 
-        // A zero-unit take or a dust fill rounds the price to nothing, which fundFill rejects.
-        if (buyerAssets == 0) return CALLBACK_SUCCESS;
-
         IMidnightController(controller).midnight_fundFill({
             marketId   : marketId,
             buy        : true,
@@ -129,8 +126,6 @@ contract MockFundingStrategy {
         require(msg.sender == midnight,      "MockFundingStrategy/not-midnight");
         require(seller     == proxy,         "MockFundingStrategy/seller-not-proxy");
         require(receiver   == address(this), "MockFundingStrategy/receiver-not-strategy");
-
-        if (units == 0) return CALLBACK_SUCCESS;
 
         IERC20OZ loanToken = IERC20OZ(market.loanToken);
 
@@ -1371,41 +1366,30 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
         assertEq(rateLimits.getCurrentRateLimit(buyKey),         rateLimit);
     }
 
-    // A fill small enough to price at zero reaches the strategy with nothing to fund. It
-    // short-circuits, so the proxy gains the dust credit without drawing on any key.
-    function test_makerBuy_dustFillIsUnmetered() external {
+    // A fill small enough to price at zero still reaches fundFill, which refuses it, so the take
+    // reverts and nothing is metered or moved.
+    function test_makerBuy_dustFillRevertsZeroAssets() external {
         Offer memory buy = _makerOffer(true, MAKER_BUY_TICK, seedUnits);
 
         assertEq(_makerBuyerAssets(1, MAKER_BUY_TICK), 0);
 
-        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
-        uint256[5] memory before = _limits();
+        vm.expectCall(
+            address(mainnetController),
+            abi.encodeWithSelector(
+                IMidnightController.midnight_fundFill.selector, marketId, true, 0, 1
+            ),
+            1
+        );
 
-        ( uint256 buyerAssets, uint256 sellerAssets ) = _take(buy, 1);
-
-        assertEq(buyerAssets,  0);
-        assertEq(sellerAssets, 0);
-
-        assertEq(_credit(), 1);
-        assertEq(midnight.consumed(address(almProxy), BUY_GROUP), 1);
-
-        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
-        assertEq(loanToken.balanceOf(address(strategy)), 0);
-
-        _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
+        _takeExpectRevert(buy, 1, "MidnightFacet/zero-assets");
     }
 
-    // Midnight calls back on a zero-unit take, and the strategy returns without calling fundFill,
-    // so nothing is metered or moved. A cancel sets consumed to the uint128 maximum, above this
-    // offer's maxUnits, so it then refuses even a zero-unit take.
-    function test_makerSell_zeroUnitTakeIsUnmetered() external {
+    // Midnight calls back on a zero-unit take, and fundFill refuses it. A cancel sets consumed to
+    // the uint128 maximum, above this offer's maxUnits, so it then refuses the take before onSell.
+    function test_makerSell_zeroUnitTakeRevertsZeroAssets() external {
         _seedCredit();
 
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
-
-        uint256 creditBefore  = _credit();
-        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
-        uint256[5] memory before = _limits();
 
         vm.expectCall(
             address(strategy),
@@ -1415,25 +1399,18 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
 
         vm.expectCall(
             address(mainnetController),
-            abi.encodeWithSelector(IMidnightController.midnight_fundFill.selector),
-            0
+            abi.encodeWithSelector(
+                IMidnightController.midnight_fundFill.selector, marketId, false, 0, 0
+            ),
+            1
         );
 
-        ( uint256 buyerAssets, uint256 sellerAssets ) = _take(sell, 0);
-
-        assertEq(buyerAssets,  0);
-        assertEq(sellerAssets, 0);
+        _takeExpectRevert(sell, 0, "MidnightFacet/zero-assets");
 
         vm.prank(allocator);
         mainnetController.midnight_cancelOfferGroup(SELL_GROUP);
 
         _takeExpectRevert(sell, 0, abi.encodeWithSignature("ConsumedUnits()"));
-
-        assertEq(_credit(),                              creditBefore);
-        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore);
-        assertEq(loanToken.balanceOf(address(strategy)), 0);
-
-        _assertSpent(before, [uint256(0), 0, 0, 0, 0]);
     }
 
     // Midnight rounds a maker sell's assets up, so only an offer priced at zero (tick 0) pays
@@ -2041,8 +2018,6 @@ contract MidnightJITFundingStrategy {
         require(msg.sender == midnight, "MidnightJITFundingStrategy/not-midnight");
         require(buyer      == proxy,    "MidnightJITFundingStrategy/buyer-not-proxy");
 
-        if (buyerAssets == 0) return CALLBACK_SUCCESS;
-
         IJITControllerLike(controller).psm_swapUSDSToUSDC(buyerAssets);
 
         IMidnightController(controller).midnight_fundFill({
@@ -2136,6 +2111,26 @@ contract MainnetController_MidnightMaker_JustInTime_Tests is Midnight_Maker_Test
 
         assertEq(midnight.consumed(address(almProxy), BUY_GROUP), units);
         assertEq(midnight.debt(marketId, address(almProxy)),      0);
+    }
+
+    function test_makerBuy_justInTimeDustFillRevertsZeroAssets() external {
+        vm.prank(allocatorAdmin);
+        accessControls.grantRole(ALLOCATOR_ROLE, address(jit));
+
+        Offer memory buy =
+            _makerOffer(market, address(jit), true, MAKER_BUY_TICK, seedUnits, BUY_GROUP);
+
+        assertEq(_makerBuyerAssets(1, MAKER_BUY_TICK), 0);
+
+        vm.expectCall(
+            address(mainnetController),
+            abi.encodeWithSelector(
+                IMidnightController.midnight_fundFill.selector, marketId, true, 0, 1
+            ),
+            1
+        );
+
+        _takeExpectRevert(buy, 1, "MidnightFacet/zero-assets");
     }
 
 }
