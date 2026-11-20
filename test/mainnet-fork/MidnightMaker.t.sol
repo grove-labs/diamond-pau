@@ -112,7 +112,7 @@ contract MockFundingStrategy {
 
     function onSell(
         bytes32       marketId,
-        Market memory,
+        Market memory market,
         uint256       sellerAssets,
         uint256       units,
         uint256       pendingFeeDecrease,
@@ -123,11 +123,14 @@ contract MockFundingStrategy {
         external
         returns (bytes32)
     {
-        require(msg.sender == midnight, "MockFundingStrategy/not-midnight");
-        require(seller     == proxy,    "MockFundingStrategy/seller-not-proxy");
-        require(receiver   == proxy,    "MockFundingStrategy/receiver-not-proxy");
+        require(msg.sender == midnight,      "MockFundingStrategy/not-midnight");
+        require(seller     == proxy,         "MockFundingStrategy/seller-not-proxy");
+        require(receiver   == address(this), "MockFundingStrategy/receiver-not-strategy");
 
-        // Midnight has already paid the proxy, so this only reports the fill for metering.
+        IERC20OZ loanToken = IERC20OZ(market.loanToken);
+
+        SafeERC20.forceApprove(loanToken, proxy, loanToken.balanceOf(address(this)));
+
         IMidnightController(controller).midnight_fundFill({
             marketId   : marketId,
             buy        : false,
@@ -224,7 +227,7 @@ abstract contract Midnight_Maker_TestBase is Midnight_TestBase {
             group                   : group,
             callback                : callback,
             callbackData            : new bytes(0),
-            receiverIfMakerIsSeller : buy ? address(0) : address(almProxy),
+            receiverIfMakerIsSeller : buy ? address(0) : callback,
             ratifier                : SETTER_RATIFIER,
             reduceOnly              : !buy,
             maxUnits                : uint128(maxUnits),
@@ -350,8 +353,9 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
 
         /*** Strategy conduit ***/
 
-        assertEq(loanToken.balanceOf(address(strategy)),             0);
-        assertEq(loanToken.allowance(address(strategy), MIDNIGHT),   0);
+        assertEq(loanToken.balanceOf(address(strategy)),                   0);
+        assertEq(loanToken.allowance(address(strategy), MIDNIGHT),         0);
+        assertEq(loanToken.allowance(address(strategy), address(almProxy)), 0);
 
         assertEq(midnight.debt(marketId, address(almProxy)), 0);
     }
@@ -401,7 +405,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
                     units,
                     uint256(0),
                     address(almProxy),
-                    address(almProxy),
+                    address(strategy),
                     new bytes(0)
                 )
             )
@@ -483,7 +487,7 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         strategy.onBuy(marketId, market, 1, 1, 0, address(almProxy), "");
 
         vm.expectRevert("MockFundingStrategy/not-midnight");
-        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), address(almProxy), "");
+        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), address(strategy), "");
 
         vm.startPrank(MIDNIGHT);
 
@@ -491,10 +495,10 @@ contract MainnetController_MidnightMaker_Lifecycle_Tests is Midnight_Maker_TestB
         strategy.onBuy(marketId, market, 1, 1, 0, maker, "");
 
         vm.expectRevert("MockFundingStrategy/seller-not-proxy");
-        strategy.onSell(marketId, market, 1, 1, 0, maker, address(almProxy), "");
+        strategy.onSell(marketId, market, 1, 1, 0, maker, address(strategy), "");
 
-        vm.expectRevert("MockFundingStrategy/receiver-not-proxy");
-        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), maker, "");
+        vm.expectRevert("MockFundingStrategy/receiver-not-strategy");
+        strategy.onSell(marketId, market, 1, 1, 0, address(almProxy), address(almProxy), "");
 
         vm.stopPrank();
     }
@@ -958,9 +962,9 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         );
     }
 
-    // A proxy freeze leaves the authorization on Midnight in place, so exits keep settling and
-    // the group cancel and ratifier deauthorization that would stop them can no longer run.
-    function test_proxyFreezeAloneLeavesMakerSellsLive() external {
+    // The authorization on Midnight stays in place, but both legs move the loan token through the
+    // proxy, so a freeze stops them, as well as the group cancel and the ratifier deauthorization.
+    function test_proxyFreezeStopsMakerFills() external {
         _seedCredit();
 
         Offer memory buy  = _makerOffer(true,  MAKER_BUY_TICK,  seedUnits / 4);
@@ -977,14 +981,12 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
             controllerRole
         );
 
-        _takeExpectRevert(buy, seedUnits / 8, frozen);
-
         uint256 creditBefore = _credit();
 
-        ( , uint256 sellerAssets ) = _take(sell, seedUnits / 8);
+        _takeExpectRevert(buy,  seedUnits / 8, frozen);
+        _takeExpectRevert(sell, seedUnits / 8, frozen);
 
-        assertGt(sellerAssets, 0);
-        assertEq(_credit(), creditBefore - seedUnits / 8);
+        assertEq(_credit(), creditBefore);
 
         vm.prank(allocator);
         vm.expectRevert(frozen);
@@ -997,21 +999,31 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
         assertTrue(midnight.isAuthorized(address(almProxy), SETTER_RATIFIER));
     }
 
-    function test_midnightFreezerStopsMakerSellsAfterProxyFreeze() external {
+    function test_midnightFreezerDisablesMakeAfterProxyFreeze() external {
         _seedCredit();
 
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits / 4);
 
         address freezer = GroveEthereum.ALM_FREEZER;
 
+        bytes32 controllerRole = almProxy.CONTROLLER();
+
         vm.startPrank(Ethereum.SPARK_PROXY);
         accessControls.grantRole(keccak256("MIDNIGHT_FREEZER_ROLE"), freezer);
-        almProxy.revokeRole(almProxy.CONTROLLER(), address(mainnetController));
+        almProxy.revokeRole(controllerRole, address(mainnetController));
         vm.stopPrank();
 
-        assertFalse(almProxy.hasRole(almProxy.CONTROLLER(), address(mainnetController)));
+        assertFalse(almProxy.hasRole(controllerRole, address(mainnetController)));
 
-        _take(sell, seedUnits / 8);
+        _takeExpectRevert(
+            sell,
+            seedUnits / 8,
+            abi.encodeWithSignature(
+                "AccessControlUnauthorizedAccount(address,bytes32)",
+                address(mainnetController),
+                controllerRole
+            )
+        );
 
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightMakeDisabled(marketId);
@@ -1052,9 +1064,15 @@ contract MainnetController_MidnightMaker_KillSwitch_Tests is Midnight_Maker_Test
 
         assertEq(midnight.consumed(address(almProxy), SELL_GROUP), 0);
 
-        ( , uint256 sellerAssets ) = _take(sell, seedUnits / 8);
-
-        assertGt(sellerAssets, 0);
+        _takeExpectRevert(
+            sell,
+            seedUnits / 8,
+            abi.encodeWithSignature(
+                "AccessControlUnauthorizedAccount(address,bytes32)",
+                address(mainnetController),
+                controllerRole
+            )
+        );
     }
 
     function test_midnightFreezerDisablingStrategyStopsItOnEveryMarket() external {
@@ -1408,22 +1426,78 @@ contract MainnetController_MidnightMaker_RateLimit_Tests is Midnight_Maker_TestB
     }
 }
 
-// Reports every exit's lien at a multiple of what the fill actually shed.
-contract MidnightInflatingStrategy {
+// Takes a proxy sell offer and pays the proxy from its own buyer callback, mid-fill.
+contract MidnightProxyDonatingTaker {
 
     bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
 
-    uint256 public constant FACTOR = 10;
+    address public immutable midnight;
+    address public immutable proxy;
 
+    constructor(address midnight_, address proxy_) {
+        midnight = midnight_;
+        proxy    = proxy_;
+    }
+
+    function approve(address token) external {
+        IERC20(token).approve(midnight, type(uint256).max);
+    }
+
+    function take(
+        Offer memory offer,
+        bytes memory ratifierData,
+        uint256      units,
+        uint256      donation
+    )
+        external
+        returns (uint256 buyerAssets, uint256 sellerAssets)
+    {
+        return ITakeLike(midnight).take(
+            offer,
+            ratifierData,
+            units,
+            address(this),
+            address(0),
+            address(this),
+            abi.encode(donation)
+        );
+    }
+
+    function onBuy(
+        bytes32,
+        Market memory market,
+        uint256,
+        uint256,
+        uint256,
+        address,
+        bytes  memory data
+    )
+        external
+        returns (bytes32)
+    {
+        IERC20(market.loanToken).transfer(proxy, abi.decode(data, (uint256)));
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+// Reports one wei more for every exit than Midnight paid it.
+contract MidnightOverReportingStrategy {
+
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    address public immutable proxy;
     address public immutable controller;
 
-    constructor(address controller_) {
+    constructor(address proxy_, address controller_) {
+        proxy      = proxy_;
         controller = controller_;
     }
 
     function onSell(
         bytes32       marketId,
-        Market memory,
+        Market memory market,
         uint256       sellerAssets,
         uint256       units,
         uint256       pendingFeeDecrease,
@@ -1434,6 +1508,219 @@ contract MidnightInflatingStrategy {
         external
         returns (bytes32)
     {
+        IERC20OZ loanToken = IERC20OZ(market.loanToken);
+
+        SafeERC20.forceApprove(loanToken, proxy, loanToken.balanceOf(address(this)));
+
+        IMidnightController(controller).midnight_fundFill({
+            marketId   : marketId,
+            buy        : false,
+            assets     : sellerAssets + 1,
+            units      : units,
+            pendingFee : pendingFeeDecrease
+        });
+
+        return CALLBACK_SUCCESS;
+    }
+
+}
+
+contract MainnetController_MidnightMaker_Proceeds_Tests is Midnight_Maker_TestBase {
+
+    uint256 internal units;
+    uint256 internal proceeds;
+
+    function setUp() public override {
+        super.setUp();
+
+        _seedCredit();
+
+        units    = seedUnits / 4;
+        proceeds = _makerSellerAssets(units, MAKER_SELL_TICK);
+
+        vm.startPrank(Ethereum.SPARK_PROXY);
+        rateLimits.setRateLimitData(sellKey,         rateLimit, 0);
+        rateLimits.setRateLimitData(strategySellKey, rateLimit, 0);
+        vm.stopPrank();
+    }
+
+    function test_makerSell_proceedsLandInTheStrategy() external {
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, units);
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        vm.expectCall(
+            address(loanToken),
+            abi.encodeCall(IERC20.transferFrom, (address(strategy), address(almProxy), proceeds))
+        );
+
+        ( , uint256 sellerAssets ) = _take(sell, units);
+
+        assertEq(sellerAssets, proceeds);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + proceeds);
+        assertEq(loanToken.balanceOf(address(strategy)), 0);
+
+        assertEq(loanToken.allowance(address(strategy), address(almProxy)), 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - proceeds);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - proceeds);
+    }
+
+    function test_makerSell_proxyInflowDuringFillIsNotCounted() external {
+        MidnightProxyDonatingTaker taker =
+            new MidnightProxyDonatingTaker(MIDNIGHT, address(almProxy));
+
+        uint256 donation = 1_000 * loanUnit;
+
+        deal(address(loanToken), address(taker), proxyBalance);
+
+        taker.approve(address(loanToken));
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, units);
+
+        bytes memory ratifierData = _ratifierData(sell);
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        ( , uint256 sellerAssets ) = taker.take(sell, ratifierData, units, donation);
+
+        assertEq(sellerAssets, proceeds);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + donation + proceeds);
+        assertEq(loanToken.balanceOf(address(strategy)), 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - proceeds);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - proceeds);
+    }
+
+    function test_makerSell_strategyDonationIsCounted() external {
+        uint256 donation = 1_000 * loanUnit;
+
+        deal(address(loanToken), address(strategy), donation);
+
+        Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, units);
+
+        uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
+
+        vm.expectCall(
+            address(loanToken),
+            abi.encodeCall(
+                IERC20.transferFrom, (address(strategy), address(almProxy), proceeds + donation)
+            )
+        );
+
+        ( , uint256 sellerAssets ) = _take(sell, units);
+
+        assertEq(sellerAssets, proceeds);
+
+        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore + proceeds + donation);
+        assertEq(loanToken.balanceOf(address(strategy)), 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - proceeds - donation);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - proceeds - donation);
+    }
+
+    function test_makerSell_proceedsBelowReportedBoundary() external {
+        MidnightOverReportingStrategy over =
+            new MidnightOverReportingStrategy(address(almProxy), address(mainnetController));
+
+        _onboardStrategy(address(over));
+
+        Offer memory sell =
+            _makerOffer(market, address(over), false, MAKER_SELL_TICK, units, SELL_GROUP);
+
+        _takeExpectRevert(sell, units, "MidnightFacet/proceeds-below-reported");
+
+        deal(address(loanToken), address(over), 1);
+
+        _take(sell, units);
+    }
+
+    function test_makerSell_donationDoesNotRelaxTickFloor() external {
+        uint256 floorPrice = MidnightTickLib.tickToPrice(TICK_98);
+        uint256 tick       = _tickBelow(floorPrice);
+
+        uint256 reported = _makerSellerAssets(units, tick);
+        uint256 donation = _divUp(units * floorPrice, 1e18) - reported;
+
+        deal(address(loanToken), address(strategy), donation);
+
+        _takeExpectRevert(
+            _makerOffer(false, tick, units), units, "MidnightFacet/fill-price-too-low"
+        );
+
+        ( , uint256 sellerAssets ) = _take(_makerOffer(false, TICK_98, units), units);
+
+        uint256 spent = sellerAssets + donation;
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - spent);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - spent);
+    }
+
+    function test_makerSell_donationDoesNotRelaxYieldFloor() external {
+        _setConfig(
+            TICK_99, TICK_SPACING, MIN_BUY_YIELD, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0
+        );
+
+        assertEq(_pendingFee(), 0);
+
+        uint256 floorPrice = _sellFloor(MAX_SELL_YIELD);
+        uint256 tick       = _tickBelow(floorPrice);
+
+        assertGt(floorPrice, MidnightTickLib.tickToPrice(TICK_SPACING));
+
+        uint256 reported = _makerSellerAssets(units, tick);
+        uint256 donation = _divUp(units * floorPrice, 1e18) - reported;
+
+        deal(address(loanToken), address(strategy), donation);
+
+        _takeExpectRevert(
+            _makerOffer(false, tick, units), units, "MidnightFacet/fill-yield-too-high"
+        );
+
+        ( , uint256 sellerAssets ) =
+            _take(_makerOffer(false, _tickAtOrAbove(floorPrice), units), units);
+
+        uint256 spent = sellerAssets + donation;
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - spent);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - spent);
+    }
+
+}
+// Reports every exit's lien at a multiple of what the fill actually shed.
+contract MidnightInflatingStrategy {
+
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+
+    uint256 public constant FACTOR = 10;
+
+    address public immutable proxy;
+    address public immutable controller;
+
+    constructor(address proxy_, address controller_) {
+        proxy      = proxy_;
+        controller = controller_;
+    }
+
+    function onSell(
+        bytes32       marketId,
+        Market memory market,
+        uint256       sellerAssets,
+        uint256       units,
+        uint256       pendingFeeDecrease,
+        address,
+        address,
+        bytes  memory
+    )
+        external
+        returns (bytes32)
+    {
+        IERC20OZ loanToken = IERC20OZ(market.loanToken);
+
+        SafeERC20.forceApprove(loanToken, proxy, loanToken.balanceOf(address(this)));
+
         IMidnightController(controller).midnight_fundFill({
             marketId   : marketId,
             buy        : false,
@@ -1548,7 +1835,7 @@ contract MainnetController_MidnightMaker_PendingFee_Tests is Midnight_Maker_Pend
                     units,
                     shed,
                     address(almProxy),
-                    address(almProxy),
+                    address(strategy),
                     new bytes(0)
                 )
             )
@@ -1592,7 +1879,7 @@ contract MainnetController_MidnightMaker_PendingFee_Tests is Midnight_Maker_Pend
     // buy a lower floor: a price the inflated report would justify is still refused.
     function test_makerSell_inflatedPendingFeeHasNoEffect() external {
         MidnightInflatingStrategy inflating =
-            new MidnightInflatingStrategy(address(mainnetController));
+            new MidnightInflatingStrategy(address(almProxy), address(mainnetController));
 
         _onboardStrategy(address(inflating));
 

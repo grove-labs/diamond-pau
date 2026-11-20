@@ -1296,6 +1296,10 @@ contract MidnightGreedyStrategy {
             .midnight_fundFill(marketId, buy, assets, units, pendingFee);
     }
 
+    function approve(address token, address spender, uint256 amount) external {
+        IERC20Like(token).approve(spender, amount);
+    }
+
 }
 
 // A funding strategy that forwards every buy callback to fundFill, dust included.
@@ -1387,8 +1391,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         Offer memory sell = _makerOffer(false, MAKER_SELL_TICK, seedUnits);
 
-        // Caught by the facet's own anti-self-dealing check before it reaches the singleton.
-        vm.expectRevert("MidnightFacet/invalid-offer-receiver");
+        vm.expectRevert(abi.encodeWithSignature("SelfTake()"));
         vm.prank(allocator);
         mainnetController.midnight_buy(
             marketId,
@@ -1437,8 +1440,9 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
         assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - bound);
     }
 
-    // A keyed strategy can report an exit that never happened, but neither leg restores
-    // anything, so a fabricated exit buys no entry room and the entry meter alone bounds the game.
+    // A keyed strategy can report an exit that never happened, but it has to hand the reported
+    // assets to the proxy, and neither leg restores anything, so a fabricated exit buys no entry
+    // room and the entry meter alone bounds the game.
     function test_attack_strategyCannotFakeExitsForEntryRoom_makeMidnight() external {
         _onboardStrategy(address(greedy));
 
@@ -1450,17 +1454,21 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         assertEq(rateLimits.getCurrentRateLimit(buyKey), rateLimit - floorAssets);
 
-        uint256 proxyBalanceBefore  = loanToken.balanceOf(address(almProxy));
-        uint256 greedyBalanceBefore = loanToken.balanceOf(address(greedy));
+        uint256 proxyBalanceBefore = loanToken.balanceOf(address(almProxy));
 
+        greedy.approve(address(loanToken), address(almProxy), floorAssets);
         greedy.pull(marketId, false, floorAssets, units, 0);
 
-        // The fabricated exit moved nothing, burned exit room, and returned no entry room.
+        // The fabricated exit returned what the entry paid, burned exit room, and returned no
+        // entry room.
         assertEq(rateLimits.getCurrentRateLimit(buyKey),  rateLimit - floorAssets);
         assertEq(rateLimits.getCurrentRateLimit(sellKey), rateLimit - floorAssets);
 
-        assertEq(loanToken.balanceOf(address(greedy)),   greedyBalanceBefore);
-        assertEq(loanToken.balanceOf(address(almProxy)), proxyBalanceBefore);
+        assertEq(loanToken.balanceOf(address(greedy)),   0);
+        assertEq(loanToken.balanceOf(address(almProxy)), proxyBalanceBefore + floorAssets);
+
+        vm.expectRevert("MidnightFacet/proceeds-below-reported");
+        greedy.pull(marketId, false, floorAssets, units, 0);
 
         // With the entry meter emptied, no number of fabricated exits reopens it.
         vm.prank(Ethereum.SPARK_PROXY);
@@ -1468,6 +1476,7 @@ contract MainnetController_MidnightMaker_Attack_Tests is Midnight_Maker_TestBase
 
         greedy.pull(marketId, true, floorAssets, units, 0);
 
+        greedy.approve(address(loanToken), address(almProxy), floorAssets);
         greedy.pull(marketId, false, floorAssets, units, 0);
 
         vm.expectRevert("RateLimits/rate-limit-exceeded");

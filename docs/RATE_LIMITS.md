@@ -131,7 +131,7 @@ Note that setting the rate limit data creates a boundary where the remaining rat
 | `sell`                 | Decreases `LIMIT_MIDNIGHT_SELL` by assets received                                                    |
 | `redeem`               | Decreases `LIMIT_MIDNIGHT_REDEEM` by assets withdrawn                                                 |
 | `fundFill`, buying     | Decreases `LIMIT_MIDNIGHT_STRATEGY_BUY`, then `LIMIT_MIDNIGHT_BUY`, by assets paid to the strategy    |
-| `fundFill`, not buying | Decreases `LIMIT_MIDNIGHT_STRATEGY_SELL`, then `LIMIT_MIDNIGHT_SELL`, by assets the fill reports      |
+| `fundFill`, not buying | Decreases `LIMIT_MIDNIGHT_STRATEGY_SELL`, then `LIMIT_MIDNIGHT_SELL`, by the strategy's balance       |
 
 **Rationale:**
 

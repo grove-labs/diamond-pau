@@ -68,6 +68,8 @@ interface IERC20Like {
 
     function transfer(address to, uint256 amount) external returns (bool);
 
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
 }
 
 contract MidnightFacet is IMidnightFacet, Facet {
@@ -619,6 +621,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
     {
         address proxy = _getSharedControllerStorage().proxy;
 
+        uint256 measured = IERC20Like(config.loanToken).balanceOf(msg.sender);
+
+        require(measured >= assets, "MidnightFacet/proceeds-below-reported");
+
         ( uint256 creditPost, uint256 carriedFee ) =
             _credit(IMidnightLike(midnight).toMarket(marketId), marketId, proxy);
 
@@ -639,10 +645,20 @@ contract MidnightFacet is IMidnightFacet, Facet {
         // Upstream only checks the proxy is healthy, which collateral alone can satisfy.
         _requireDebtFree(marketId, proxy);
 
-        _decreaseRateLimit(getStrategySellRateLimitKey(msg.sender, marketId), assets);
-        _decreaseRateLimit(getSellRateLimitKey(marketId),                     assets);
+        _decreaseRateLimit(getStrategySellRateLimitKey(msg.sender, marketId), measured);
+        _decreaseRateLimit(getSellRateLimitKey(marketId),                     measured);
 
-        emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
+        bytes memory returnData = IALMProxy(proxy).doCall(
+            config.loanToken,
+            abi.encodeCall(IERC20Like.transferFrom, (msg.sender, proxy, measured))
+        );
+
+        require(
+            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
+            "MidnightFacet/transferFrom-failed"
+        );
+
+        emit MidnightFillFunded(marketId, msg.sender, false, measured, units);
     }
 
     function _take(
