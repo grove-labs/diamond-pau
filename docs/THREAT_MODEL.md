@@ -45,8 +45,9 @@ The system is designed with the assumption that an actor with `ALLOCATOR_ROLE` c
     - Exception: Asynchronous integrations (e.g., BUIDL, Ethena) where funds go to whitelisted addresses
     - Exception: Morpho Midnight maker mode, where the entry leg transits loan tokens through
       an immutable funding strategy, a periphery contract deployed from outside this repository
-      that holds no balance between settlements and is drained by the singleton inside the same
-      `take` that funded it
+      that adds no balance of its own; the singleton pulls what the strategy was sent inside the
+      same `take` that funded it, and a leftover or a donation stays in the strategy until anyone
+      calls `rescue`, which sweeps it to the proxy
 
 2. **Losses bounded by rate limits** - Any single attack is limited to the current rate limit capacity
     - Morpho Midnight maker fills are metered through `fundFill` in both directions, on the
