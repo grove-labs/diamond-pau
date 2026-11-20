@@ -658,7 +658,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/transfer-failed"
         );
 
-        emit MidnightFillFunded(marketId, msg.sender, false, assets, units);
+        emit MidnightFillFunded(marketId, msg.sender, false, measured, units);
     }
 
     function _take(

@@ -275,7 +275,7 @@ Called by a funding strategy enabled with `setStrategy` and keyed for the market
 3. Read the proxy's position after the fill and take `feePerUnit` from `_sellFeePerUnit(creditPost, carried, units, pendingFee)`, which is `min(pendingFee * WAD / units, carried * WAD / creditPost)`. Take `tickBound = tickToPrice(minSellTick)` and `yieldBound = minSellPrice(maxSellYield, timeToMaturity, WAD, feePerUnit)` from `_sellBounds`, as on `sell`. Require `measured * WAD >= units * tickBound` (`MidnightFacet/fill-price-too-low`), then `measured * WAD >= units * yieldBound` (`MidnightFacet/fill-yield-too-high`). A full exit (`creditPost == 0`) uses a zero fee per unit, so its floor is the zero-fee yield floor. So does a near-full exit whose carried fee rounds to zero: Midnight rounds the fee a fill sheds up, so a position left with dust credit can carry no fee at all. Both only tighten the floor, but a quoter that prices such an exit at the fee-adjusted floor will see the taker's fill revert on the yield floor (`fill-yield-too-high`). Neither the loss factor nor the live fee is checked: a slashed market is when an exit matters most, and an exit only moves loan token into the proxy.
 4. Require `debt(marketId, proxy) == 0` (`MidnightFacet/debt-not-zero`), so an exit can shed credit but never open a short. Positions are already written when `onSell` fires, so this reads the result of the fill being reported.
 5. Decrement the caller's `LIMIT_MIDNIGHT_STRATEGY_SELL` key for `marketId`, then `LIMIT_MIDNIGHT_SELL` keyed `marketId`, the same market key a taker `sell` spends, each by `measured`. Nothing is restored on any leg.
-6. `doCall` `loanToken.transferFrom(msg.sender, proxy, measured)` as the last step, against the allowance the strategy granted the proxy, and require it to return nothing or `true` (`MidnightFacet/transfer-failed`). The event still reports the caller's `assets`.
+6. `doCall` `loanToken.transferFrom(msg.sender, proxy, measured)` as the last step, against the allowance the strategy granted the proxy, and require it to return nothing or `true` (`MidnightFacet/transfer-failed`). The event reports `measured`.
 
 Every price comparison is cross-multiplied rather than divided, so no bound is loosened by a wei of flooring.
 
@@ -291,7 +291,7 @@ Every price comparison is cross-multiplied rather than divided, so no bound is l
 
 **Exits can be metered to a stop.** The strategy and market sell keys gate a maker sell, and a fill that exceeds either reverts the *taker's* transaction, not ours. Sizing them too tightly therefore makes a resting sell offer look broken to the outside. `cancelOfferGroup` on the groups the sell offers use is the control to use when the exit budget is nearly spent, since it retires the book instead of leaving it failing.
 
-**Event:** `MidnightFillFunded(marketId, strategy, buy, assets, units)`
+**Event:** `MidnightFillFunded(marketId, strategy, buy, assets, units)`, where `assets` is the loan token sent on an entry and the measured balance pulled on an exit.
 
 **Maker entry is priced at the live fee.** `fundFill` prices the entry yield bound at the market's live continuous fee, read once in step 2, the same rate `buy` prices with; `maxContinuousFee` only caps how high that rate may be.
 

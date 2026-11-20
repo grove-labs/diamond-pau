@@ -2862,7 +2862,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _fundStrategySell(measured);
 
         vm.expectEmit(address(controller));
-        emit IMidnightFacet.MidnightFillFunded(_marketId(), strategy, false, assets, FILL_UNITS);
+        emit IMidnightFacet.MidnightFillFunded(_marketId(), strategy, false, measured, FILL_UNITS);
 
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);

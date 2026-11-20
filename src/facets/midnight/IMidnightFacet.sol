@@ -80,8 +80,8 @@ interface IMidnightFacet is IFacet {
      * @param  marketId Identifier of the Midnight market.
      * @param  strategy Funding strategy, named as the offer's callback, that reported the fill.
      * @param  buy      True when the proxy was the buyer, in which case the loan token was sent.
-     * @param  assets   Loan token sent to the strategy on a buy, or reported by the strategy on a
-     *                  sell, where the proxy pulls the strategy's whole balance, at least this.
+     * @param  assets   Loan token sent to the strategy on a buy, or pulled from the strategy into
+     *                  the proxy on a sell.
      * @param  units    Credit units the fill moves for the proxy.
      */
     event MidnightFillFunded(
