@@ -89,6 +89,12 @@ interface IMidnightFacet is IFacet {
      */
     event MidnightSell(bytes32 indexed marketId, uint256 units, uint256 assetsReceived);
 
+    /**
+     * @notice Emitted when the take buffer is set.
+     * @param  buffer Address of the take buffer.
+     */
+    event MidnightTakeBufferSet(address indexed buffer);
+
     /**********************************************************************************************/
     /*** Interactive Functions                                                                  ***/
     /**********************************************************************************************/
@@ -186,6 +192,14 @@ interface IMidnightFacet is IFacet {
         uint128 maxLossFactor
     ) external;
 
+    /**
+     * @notice Sets the take buffer that buy, sell and redeem route the loan token through.
+     * @dev    Reverts on the zero address. Loan tokens onboarded before a change are approved on
+     *         the new buffer by calling its `approve` for each of them, or by onboarding again.
+     * @param  buffer Address of the take buffer.
+     */
+    function setTakeBuffer(address buffer) external;
+
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
     /**********************************************************************************************/
@@ -224,5 +238,11 @@ interface IMidnightFacet is IFacet {
      * @return key      Derived rate limit key.
      */
     function getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    /**
+     * @notice Returns the take buffer that buy, sell and redeem route the loan token through.
+     * @return buffer Address of the take buffer, zero while unset.
+     */
+    function takeBuffer() external view returns (address buffer);
 
 }

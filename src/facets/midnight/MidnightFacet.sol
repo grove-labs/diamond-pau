@@ -72,6 +72,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @custom:storage-location erc7201:sky.pau.storage.MidnightFacet.v1
     struct FacetStorage {
         mapping (bytes32 marketId => MarketConfig config) marketConfigs;
+        address takeBuffer;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -177,6 +178,20 @@ contract MidnightFacet is IMidnightFacet, Facet {
             maxContinuousFee,
             maxLossFactor
         );
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function setTakeBuffer(address buffer)
+        external
+        override
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(buffer != address(0), "MidnightFacet/zero-take-buffer");
+
+        _getFacetStorage().takeBuffer = buffer;
+
+        emit MidnightTakeBufferSet(buffer);
     }
 
     /**********************************************************************************************/
@@ -407,6 +422,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @inheritdoc IMidnightFacet
     function getSellRateLimitKey(bytes32 marketId) public pure override returns (bytes32) {
         return makeBytes32Key(_LIMIT_SELL, marketId);
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function takeBuffer() external view override returns (address) {
+        return _getFacetStorage().takeBuffer;
     }
 
     /**********************************************************************************************/

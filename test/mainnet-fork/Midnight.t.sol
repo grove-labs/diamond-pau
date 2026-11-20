@@ -21,6 +21,8 @@ import { MAX_TICK, MidnightTickLib } from "../../src/facets/midnight/MidnightTic
 
 import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
+import { MidnightTakeBuffer } from "../mocks/MidnightTakeBuffer.sol";
+
 import { ForkTestBase } from "./ForkTestBase.t.sol";
 
 // The parts of the singleton the tests drive directly or read, most of which the facet never calls.
@@ -229,6 +231,8 @@ abstract contract Midnight_TestBase is ForkTestBase {
     IERC20     internal weth = IERC20(Ethereum.WETH);
     MockOracle internal oracle;
 
+    MidnightTakeBuffer internal takeBuffer;
+
     address internal maker      = makeAddr("maker");
     address internal liquidator = makeAddr("liquidator");
 
@@ -295,11 +299,15 @@ abstract contract Midnight_TestBase is ForkTestBase {
         sellKey   = mainnetController.midnight_getSellRateLimitKey(marketId);
         redeemKey = mainnetController.midnight_getRedeemRateLimitKey(marketId);
 
+        takeBuffer = new MidnightTakeBuffer(address(almProxy), MIDNIGHT);
+
         vm.startPrank(Ethereum.SPARK_PROXY);
 
         rateLimits.setRateLimitData(buyKey,    rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(sellKey,   rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
+
+        mainnetController.midnight_setTakeBuffer(address(takeBuffer));
 
         mainnetController.midnight_setMarketConfig(
             marketId,

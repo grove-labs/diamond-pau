@@ -11,6 +11,8 @@ import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
 import { MAX_TICK, MidnightTickLib } from "../../../src/facets/midnight/MidnightTickLib.sol";
 
+import { MidnightTakeBuffer } from "../../mocks/MidnightTakeBuffer.sol";
+
 import { Integration_TestBase } from "../TestBase.t.sol";
 
 interface IControllerLike {
@@ -38,6 +40,12 @@ interface IControllerLike {
 
     function midnight() external view returns (address);
 
+    function proxy() external view returns (address);
+
+    function setTakeBuffer(address buffer) external;
+
+    function takeBuffer() external view returns (address);
+
     function updateIntegrations(bytes32[] memory integrationIds) external;
 
 }
@@ -61,6 +69,8 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
     IControllerLike internal controller;
 
+    address internal takeBuffer;
+
     function setUp() external {
         controller = IControllerLike(_deploy());
 
@@ -68,7 +78,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](6);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](8);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -100,6 +110,16 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             IMidnightFacet.midnight.selector
         );
 
+        wires[6] = IEnumerableIntegrations.Wire(
+            IControllerLike.setTakeBuffer.selector,
+            IMidnightFacet.setTakeBuffer.selector
+        );
+
+        wires[7] = IEnumerableIntegrations.Wire(
+            IControllerLike.takeBuffer.selector,
+            IMidnightFacet.takeBuffer.selector
+        );
+
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config(facet, wires);
 
         vm.prank(beaconAdmin);
@@ -110,6 +130,11 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(admin);
         controller.updateIntegrations(integrationIds);
+
+        takeBuffer = address(new MidnightTakeBuffer(controller.proxy(), midnight));
+
+        vm.prank(admin);
+        controller.setTakeBuffer(takeBuffer);
     }
 
     function _setConfig(
@@ -295,6 +320,57 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             MARKET_ID, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
         );
         _assertConfig(otherMarketId, TICK_98, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, 0, 0);
+    }
+
+    /**********************************************************************************************/
+    /*** setTakeBuffer Tests                                                                    ***/
+    /**********************************************************************************************/
+
+    function test_setTakeBuffer_reentrancy() external {
+        _setEntered(address(controller));
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        controller.setTakeBuffer(takeBuffer);
+    }
+
+    function test_setTakeBuffer_unauthorized() external {
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            address(this),
+            DEFAULT_ADMIN_ROLE
+        ));
+        controller.setTakeBuffer(takeBuffer);
+    }
+
+    function test_setTakeBuffer_zeroAddress() external {
+        vm.expectRevert("MidnightFacet/zero-take-buffer");
+        vm.prank(admin);
+        controller.setTakeBuffer(address(0));
+    }
+
+    function test_setTakeBuffer() external {
+        assertEq(IMidnightFacet.setTakeBuffer.selector, bytes4(keccak256("setTakeBuffer(address)")));
+        assertEq(IMidnightFacet.takeBuffer.selector,    bytes4(keccak256("takeBuffer()")));
+
+        assertEq(
+            IMidnightFacet.MidnightTakeBufferSet.selector,
+            keccak256("MidnightTakeBufferSet(address)")
+        );
+
+        address newBuffer = makeAddr("newBuffer");
+
+        assertEq(controller.takeBuffer(), takeBuffer);
+
+        vm.record();
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightTakeBufferSet(newBuffer);
+
+        vm.prank(admin);
+        controller.setTakeBuffer(newBuffer);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        assertEq(controller.takeBuffer(), newBuffer);
     }
 
     /**********************************************************************************************/
