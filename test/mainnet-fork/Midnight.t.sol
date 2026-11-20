@@ -747,7 +747,6 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         marketId = MidnightIdLib.toId(offer.market);
 
-        // Onboarding reads the market from the singleton, which does not know it yet.
         vm.mockCall(
             MIDNIGHT,
             abi.encodeCall(IMidnightLike.toMarket, (marketId)),
