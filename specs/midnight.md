@@ -90,8 +90,8 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * tickBound`
   (`fill-price-too-high`), then `assets * WAD <= units * yieldBound` (`fill-yield-too-low`), the
   yield bound priced at the live `continuousFee`; exit `measured >= assets`
-  (`proceeds-below-reported`), then `measured * WAD >= units * tickBound` (`fill-price-too-low`),
-  then `measured * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
+  (`proceeds-below-reported`), then `assets * WAD >= units * tickBound` (`fill-price-too-low`),
+  then `assets * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
   and loss-factor gates on entry; zero debt on exit. The gate (`_validateBuyMarketState`) and the
   bounds (`_buyBounds`, `_sellBounds`) are the ones `buy` and `sell` use, tick then yield
 - **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`;
@@ -148,12 +148,12 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 
 Take and make keep three differences in their price checks, because the logic forces them. Both
 modes take the time to maturity from the cached `config.maturity`. A take prices the offer tick plus
-or minus the settlement fee before the trade, while `fundFill` checks the booked `assets` on an
-entry, or the strategy's measured balance on an exit, per `units` after the fill. The sell fee per
-unit comes from the position before the trade on a take, and from the position after the fill on a
-make, capped by the reported `pendingFee` (`_sellFeePerUnit`), because the callback only sees the
-result. The balance and credit delta post-checks run on the take only, because a make callback has
-no pre-fill hook; a make exit measures the strategy's balance instead.
+or minus the settlement fee before the trade, while `fundFill` checks the reported `assets` per
+`units` after the fill, in both directions. The sell fee per unit comes from the position before
+the trade on a take, and from the position after the fill on a make, capped by the reported
+`pendingFee` (`_sellFeePerUnit`), because the callback only sees the result. The balance and credit
+delta post-checks run on the take only, because a make callback has no pre-fill hook; a make exit
+measures the strategy's balance for the keys and the pull instead.
 
 ## Fund-exit map
 
@@ -162,7 +162,7 @@ no pre-fill hook; a make exit measures the strategy's balance instead.
 | 1 | `buy`: `transfer` to the take buffer + `take` | offer maker (seller), pulled from the take buffer, the rest back to the proxy; proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
 | 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy enabled with `setStrategy`; strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price and yield ceilings, the yield ceiling at the live continuous fee |
 | 3 | `sell`: `take` | credit units to the offer maker; loan token to the take buffer, then the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
-| 4 | maker sell fill (units taken by Midnight before `fundFill`; proceeds paid to the calling strategy, then pulled into the proxy) | offer taker | strategy enabled with `setStrategy`; the strategy's balance must cover the reported `assets`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`, by that measured balance; config price and yield floors on it |
+| 4 | maker sell fill (units taken by Midnight before `fundFill`; proceeds paid to the calling strategy, then pulled into the proxy) | offer taker | strategy enabled with `setStrategy`; the strategy's balance must cover the reported `assets`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`, by that measured balance; config price and yield floors on the reported `assets` |
 | 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
 | 6 | take buffer's allowance to Midnight | Midnight, as payment for a take by the proxy | the buffer's `onBuy` refuses any other buyer; every `buy`, `sell` and `redeem` returns the buffer's whole balance to the proxy |
 
