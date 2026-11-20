@@ -63,6 +63,12 @@ interface IERC20Like {
 
 }
 
+interface IMidnightTakeBufferLike {
+
+    function approve(address token) external;
+
+}
+
 contract MidnightFacet is IMidnightFacet, Facet {
 
     /**********************************************************************************************/
@@ -159,6 +165,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/max-continuous-fee-oob"
         );
         require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
+
+        address buffer = _getFacetStorage().takeBuffer;
+
+        require(buffer != address(0), "MidnightFacet/take-buffer-not-set");
+
+        IMidnightTakeBufferLike(buffer).approve(
+            IMidnightLike(midnight).toMarket(marketId).loanToken
+        );
 
         _getFacetStorage().marketConfigs[marketId] = MarketConfig({
             maxBuyTick       : maxBuyTick,

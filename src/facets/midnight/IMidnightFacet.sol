@@ -171,7 +171,8 @@ interface IMidnightFacet is IFacet {
      * @dev    Reverts unless `maxBuyTick` and `minSellTick` are within Midnight's tick range,
      *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
      *         Midnight's ceiling. Setting `maxBuyTick` to zero blocks new entries while leaving
-     *         exits open.
+     *         exits open. Also reverts while the take buffer is unset or the market does not exist
+     *         on Midnight, since it approves the market's loan token on the take buffer.
      * @param  marketId         Identifier of the Midnight market.
      * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
      * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).

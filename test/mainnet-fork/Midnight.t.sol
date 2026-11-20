@@ -572,6 +572,35 @@ contract MainnetController_Midnight_Utils_Tests is Midnight_TestBase {
 
 }
 
+contract MainnetController_Midnight_Onboarding_Tests is Midnight_TestBase {
+
+    function test_setMarketConfig_marketNotCreated() external {
+        marketId = keccak256("never-created");
+
+        vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+    }
+
+    function test_setMarketConfig_approvesLoanToken() external {
+        IERC20 usds = IERC20(Ethereum.USDS);
+
+        market.loanToken = address(usds);
+        marketId         = midnight.touchMarket(market);
+
+        assertEq(usds.allowance(address(takeBuffer), address(almProxy)), 0);
+        assertEq(usds.allowance(address(takeBuffer), MIDNIGHT),          0);
+
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        assertEq(usds.allowance(address(takeBuffer), address(almProxy)), type(uint256).max);
+        assertEq(usds.allowance(address(takeBuffer), MIDNIGHT),          type(uint256).max);
+
+        assertEq(loanToken.allowance(address(takeBuffer), address(almProxy)), type(uint256).max);
+        assertEq(loanToken.allowance(address(takeBuffer), MIDNIGHT),          type(uint256).max);
+    }
+
+}
+
 // NOTE: Only testing USDC for non-rate-limit failures as the revert path is asset-agnostic.
 
 contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
@@ -692,7 +721,16 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         marketId = MidnightIdLib.toId(offer.market);
 
+        // Onboarding reads the market from the singleton, which does not know it yet.
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeCall(IMidnightLike.toMarket, (marketId)),
+            abi.encode(offer.market)
+        );
+
         _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        vm.clearMockedCalls();
 
         vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
         _buy(offer, seedUnits, type(uint256).max);
@@ -1564,16 +1602,6 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/market-not-onboarded");
         vm.prank(allocator);
         mainnetController.midnight_redeem(keccak256("not-onboarded"), seedUnits, 1);
-    }
-
-    // An onboarded config authenticates the id, but the singleton still has to know the market.
-    function test_redeemMidnight_marketNotCreated() external {
-        marketId = keccak256("onboarded-but-never-created");
-
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
-
-        vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
-        _redeem(seedUnits, 1);
     }
 
     function test_redeemMidnight_invalidMidnight() external {
