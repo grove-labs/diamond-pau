@@ -188,7 +188,25 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         bytes32 location =
             keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff));
 
-        vm.store(address(controller), bytes32(uint256(location) + 1), bytes32(0));
+        bytes32 buffer = bytes32(uint256(uint160(controller.takeBuffer())));
+
+        assertNotEq(buffer, bytes32(0));
+
+        bytes32 slot;
+        uint256 matches;
+
+        for (uint256 i; i < 8; ++i) {
+            bytes32 candidate = bytes32(uint256(location) + i);
+
+            if (vm.load(address(controller), candidate) == buffer) {
+                slot = candidate;
+                ++matches;
+            }
+        }
+
+        assertEq(matches, 1);
+
+        vm.store(address(controller), slot, bytes32(0));
 
         assertEq(controller.takeBuffer(), address(0));
     }
