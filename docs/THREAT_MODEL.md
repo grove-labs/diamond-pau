@@ -43,10 +43,12 @@ The system is designed with the assumption that an actor with `ALLOCATOR_ROLE` c
 
 1. **Value cannot leave the system** - All operations must keep funds within the PAU system of contracts
     - Exception: Asynchronous integrations (e.g., BUIDL, Ethena) where funds go to whitelisted addresses
-    - Exception: Morpho Midnight maker mode, where the entry leg transits loan tokens through
-      an immutable funding strategy, a periphery contract deployed from outside this repository
-      that holds no balance between settlements and is drained by the singleton inside the same
-      `take` that funded it
+    - Exception: Morpho Midnight maker mode, where both legs transit loan tokens through an
+      immutable funding strategy, a periphery contract deployed from outside this repository that
+      adds no balance of its own: on a sell `fundFill` pulls the strategy's whole balance into the
+      proxy, and on a buy the singleton pulls what the strategy was sent inside the same `take`,
+      and a leftover or a donation stays in the strategy until anyone calls `rescue`, which
+      sweeps it to the proxy
 
 2. **Losses bounded by rate limits** - Any single attack is limited to the current rate limit capacity
     - Morpho Midnight maker fills are metered through `fundFill` in both directions, on the
