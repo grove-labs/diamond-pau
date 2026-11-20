@@ -302,12 +302,13 @@ abstract contract Midnight_TestBase is ForkTestBase {
         rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
 
         mainnetController.midnight_setMarketConfig(
-            marketId,
+            market,
             TICK_99,
             TICK_98,
             MIN_BUY_YIELD,
             MAX_SELL_YIELD,
             MAX_CONTINUOUS_FEE_CBPS,
+            0,
             0
         );
 
@@ -397,6 +398,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
         );
     }
 
+    // Restates the current maxMakeOfferSize, since the setter writes every field.
     function _setConfig(
         uint16  maxBuyTick,
         uint16  minSellTick,
@@ -407,15 +409,54 @@ abstract contract Midnight_TestBase is ForkTestBase {
     )
         internal
     {
-        vm.prank(Ethereum.SPARK_PROXY);
-        mainnetController.midnight_setMarketConfig(
-            marketId,
+        _setConfig(
             maxBuyTick,
             minSellTick,
             minBuyYield,
             maxSellYield,
             maxContinuousFee,
-            maxLossFactor
+            maxLossFactor,
+            mainnetController.midnight_getMarketConfig(marketId).maxMakeOfferSize
+        );
+    }
+
+    function _setConfig(
+        uint16  maxBuyTick,
+        uint16  minSellTick,
+        uint16  minBuyYield,
+        uint16  maxSellYield,
+        uint16  maxContinuousFee,
+        uint128 maxLossFactor,
+        uint256 maxMakeOfferSize
+    )
+        internal
+    {
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMarketConfig(
+            market,
+            maxBuyTick,
+            minSellTick,
+            minBuyYield,
+            maxSellYield,
+            maxContinuousFee,
+            maxLossFactor,
+            maxMakeOfferSize
+        );
+    }
+
+    // Restates the current bounds, since the setter writes every field.
+    function _setMakeOfferSize(uint256 maxMakeOfferSize) internal {
+        IMidnightFacet.MarketConfig memory config =
+            mainnetController.midnight_getMarketConfig(marketId);
+
+        _setConfig(
+            config.maxBuyTick,
+            config.minSellTick,
+            config.minBuyYield,
+            config.maxSellYield,
+            config.maxContinuousFee,
+            config.maxLossFactor,
+            maxMakeOfferSize
         );
     }
 
@@ -677,16 +718,27 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(offer, seedUnits, type(uint256).max);
     }
 
-    // A brand new market has to be touched once on Midnight, by anyone, before its fee resolves.
+    // A brand new market has to be touched once on Midnight, by anyone, before it can be onboarded.
     function test_buyMidnight_untouchedMarket() external {
         Offer memory offer = _offer(false, TICK_98, seedUnits);
         offer.market.maturity += 1 days;
 
         marketId = MidnightIdLib.toId(offer.market);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
-
         vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMarketConfig(
+            offer.market,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            0
+        );
+
+        vm.expectRevert("MidnightFacet/buy-not-enabled");
         _buy(offer, seedUnits, type(uint256).max);
     }
 
@@ -1558,13 +1610,27 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         mainnetController.midnight_redeem(keccak256("not-onboarded"), seedUnits, 1);
     }
 
-    // An onboarded config authenticates the id, but the singleton still has to know the market.
+    // Only a market the singleton knows can be onboarded, so an unknown id never reaches it.
     function test_redeemMidnight_marketNotCreated() external {
-        marketId = keccak256("onboarded-but-never-created");
+        Market memory unknown = market;
+        unknown.maturity += 1 days;
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+        marketId = MidnightIdLib.toId(unknown);
 
         vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        vm.prank(Ethereum.SPARK_PROXY);
+        mainnetController.midnight_setMarketConfig(
+            unknown,
+            TICK_99,
+            TICK_98,
+            MIN_BUY_YIELD,
+            MAX_SELL_YIELD,
+            MAX_CONTINUOUS_FEE_CBPS,
+            0,
+            0
+        );
+
+        vm.expectRevert("MidnightFacet/market-not-onboarded");
         _redeem(seedUnits, 1);
     }
 
@@ -2094,12 +2160,13 @@ contract MainnetController_Midnight_LiveMarket_Tests is Midnight_TestBase {
         rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
 
         mainnetController.midnight_setMarketConfig(
-            marketId,
+            market,
             TICK_99,
             TICK_98,
             MIN_BUY_YIELD,
             MAX_SELL_YIELD,
             MAX_CONTINUOUS_FEE_CBPS,
+            0,
             0
         );
 
