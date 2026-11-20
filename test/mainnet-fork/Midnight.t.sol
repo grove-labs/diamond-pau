@@ -21,6 +21,8 @@ import { MAX_TICK, MidnightTickLib } from "../../src/facets/midnight/MidnightTic
 
 import { MidnightUtils } from "../../src/facets/midnight/MidnightUtils.sol";
 
+import { MidnightTakeBuffer } from "../mocks/MidnightTakeBuffer.sol";
+
 import { ForkTestBase } from "./ForkTestBase.t.sol";
 
 // The parts of the singleton the tests drive directly or read, most of which the facet never calls.
@@ -229,6 +231,8 @@ abstract contract Midnight_TestBase is ForkTestBase {
     IERC20     internal weth = IERC20(Ethereum.WETH);
     MockOracle internal oracle;
 
+    MidnightTakeBuffer internal takeBuffer;
+
     address internal maker      = makeAddr("maker");
     address internal liquidator = makeAddr("liquidator");
 
@@ -295,11 +299,15 @@ abstract contract Midnight_TestBase is ForkTestBase {
         sellKey   = mainnetController.midnight_getSellRateLimitKey(marketId);
         redeemKey = mainnetController.midnight_getRedeemRateLimitKey(marketId);
 
+        takeBuffer = new MidnightTakeBuffer(address(almProxy), MIDNIGHT);
+
         vm.startPrank(Ethereum.SPARK_PROXY);
 
         rateLimits.setRateLimitData(buyKey,    rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(sellKey,   rateLimit, rateLimit / 1 days);
         rateLimits.setRateLimitData(redeemKey, rateLimit, rateLimit / 1 days);
+
+        mainnetController.midnight_setTakeBuffer(address(takeBuffer));
 
         mainnetController.midnight_setMarketConfig(
             marketId,
@@ -384,6 +392,37 @@ abstract contract Midnight_TestBase is ForkTestBase {
         return mainnetController.midnight_redeem(marketId, units, minAssetsOut);
     }
 
+    function _proxyBalance() internal view returns (uint256) {
+        return loanToken.balanceOf(address(almProxy));
+    }
+
+    function _clearTakeBuffer() internal {
+        bytes32 location =
+            keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff));
+
+        bytes32 buffer = bytes32(uint256(uint160(mainnetController.midnight_takeBuffer())));
+
+        assertNotEq(buffer, bytes32(0));
+
+        bytes32 slot;
+        uint256 matches;
+
+        for (uint256 i; i < 8; ++i) {
+            bytes32 candidate = bytes32(uint256(location) + i);
+
+            if (vm.load(address(mainnetController), candidate) == buffer) {
+                slot = candidate;
+                ++matches;
+            }
+        }
+
+        assertEq(matches, 1);
+
+        vm.store(address(mainnetController), slot, bytes32(0));
+
+        assertEq(mainnetController.midnight_takeBuffer(), address(0));
+    }
+
     function _setConfig(
         uint16  maxBuyTick,
         uint16  minSellTick,
@@ -425,7 +464,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
 
     // Buys units into the proxy at TICK_98 with no fees, so the exit paths have a position.
     function _seedCredit() internal returns (uint256 assetsSpent) {
-        return _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        return _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
     }
 
     /**********************************************************************************************/
@@ -564,6 +603,35 @@ contract MainnetController_Midnight_Utils_Tests is Midnight_TestBase {
 
 }
 
+contract MainnetController_Midnight_Onboarding_Tests is Midnight_TestBase {
+
+    function test_setMarketConfig_marketNotCreated() external {
+        marketId = keccak256("never-created");
+
+        vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+    }
+
+    function test_setMarketConfig_approvesLoanToken() external {
+        IERC20 usds = IERC20(Ethereum.USDS);
+
+        market.loanToken = address(usds);
+        marketId         = midnight.touchMarket(market);
+
+        assertEq(usds.allowance(address(takeBuffer), address(almProxy)), 0);
+        assertEq(usds.allowance(address(takeBuffer), MIDNIGHT),          0);
+
+        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        assertEq(usds.allowance(address(takeBuffer), address(almProxy)), type(uint256).max);
+        assertEq(usds.allowance(address(takeBuffer), MIDNIGHT),          type(uint256).max);
+
+        assertEq(loanToken.allowance(address(takeBuffer), address(almProxy)), type(uint256).max);
+        assertEq(loanToken.allowance(address(takeBuffer), MIDNIGHT),          type(uint256).max);
+    }
+
+}
+
 // NOTE: Only testing USDC for non-rate-limit failures as the revert path is asset-agnostic.
 
 contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
@@ -601,6 +669,15 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/max-assets-in-not-set");
         _buy(offer, seedUnits, 0);
+    }
+
+    function test_buyMidnight_takeBufferNotSet() external {
+        _clearTakeBuffer();
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+
+        vm.expectRevert("MidnightFacet/take-buffer-not-set");
+        _buy(offer, seedUnits, type(uint256).max);
     }
 
     function test_buyMidnight_invalidMidnight() external {
@@ -658,8 +735,10 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         Offer memory offer = _offer(false, TICK_98, seedUnits);
         offer.group = "never-ratified";
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert(abi.encodeWithSignature("NotRatified()"));
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, maxAssetsIn);
     }
 
     // The ratifier is consulted after the maker's authorization of it, so a ratifier that is
@@ -673,8 +752,10 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         Offer memory offer = _offer(false, TICK_98, seedUnits);
         offer.ratifier     = failing;
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert(abi.encodeWithSignature("RatifierFailed()"));
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, maxAssetsIn);
     }
 
     // A brand new market has to be touched once on Midnight, by anyone, before its fee resolves.
@@ -684,7 +765,15 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         marketId = MidnightIdLib.toId(offer.market);
 
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeCall(IMidnightLike.toMarket, (marketId)),
+            abi.encode(offer.market)
+        );
+
         _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+
+        vm.clearMockedCalls();
 
         vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
         _buy(offer, seedUnits, type(uint256).max);
@@ -697,8 +786,10 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert(abi.encodeWithSignature("CannotIncreaseDebtPostMaturity()"));
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, maxAssetsIn);
     }
 
     // The block is on the seller's debt increasing, not on maturity itself, so a maker who already
@@ -715,7 +806,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         uint256 creditBefore = _credit();
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         assertEq(_credit(), creditBefore + seedUnits);
     }
@@ -726,8 +817,10 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert("RateLimits/zero-maxAmount");
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, maxAssetsIn);
     }
 
     // One more unit rounds the spend up by one loan token wei, the smallest possible overshoot.
@@ -739,10 +832,12 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, seedUnits + 1);
 
-        vm.expectRevert("RateLimits/rate-limit-exceeded");
-        _buy(offer, seedUnits + 1, type(uint256).max);
+        uint256 maxAssetsIn = _proxyBalance();
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _buy(offer, seedUnits + 1, maxAssetsIn);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
     }
 
     // The config names an annual rate while the market stores a per second one, so the guard binds
@@ -761,7 +856,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         _setContinuousFee(perSec);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
     }
 
     function test_buyMidnight_usdc_lossFactorBoundary() external {
@@ -785,7 +880,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, lossFactor);
 
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, _proxyBalance());
     }
 
     // The ceiling binds on the all-in cost, so a maxBuyTick priced under the fee leaves nothing
@@ -806,7 +901,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
 
         _setConfig(tick, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
-        _buy(_offer(false, 0, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, 0, seedUnits), seedUnits, _proxyBalance());
     }
 
     // The tick bound is on the all-in price, so a live fee pushes the highest fillable offer
@@ -824,7 +919,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/buy-price-too-high");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _buy(_offer(false, tick, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, tick, seedUnits), seedUnits, _proxyBalance());
     }
 
     // The yield floor is on the all-in price too, so a live fee pushes the highest fillable offer
@@ -844,7 +939,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         vm.expectRevert("MidnightFacet/buy-yield-too-low");
         _buy(offer, seedUnits, type(uint256).max);
 
-        _buy(_offer(false, tick, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, tick, seedUnits), seedUnits, _proxyBalance());
     }
 
     // The floor is measured on what a unit returns, so the continuous fee it will pay over the
@@ -852,7 +947,7 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
     function test_buyMidnight_usdc_buyYieldNetsContinuousFee() external {
         _setYields(4_00, MAX_SELL_YIELD);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         _setContinuousFee(MAX_CONTINUOUS_FEE);
 
@@ -862,13 +957,13 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         _buy(offer, seedUnits, type(uint256).max);
     }
 
-    // The bound doubles as the allowance, so Midnight's pull fails before the facet's own check.
+    // The bound is all the take buffer holds, so Midnight's pull fails before the facet's own check.
     function test_buyMidnight_usdc_maxAssetsInBoundary() external {
         uint256 expected = _buyerAssets(seedUnits, TICK_98);
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
-        vm.expectRevert("ERC20: transfer amount exceeds allowance");
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
         _buy(offer, seedUnits, expected - 1);
 
         _buy(offer, seedUnits, expected);
@@ -900,12 +995,13 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightBuy(marketId, seedUnits, expected);
 
-        assertEq(_buy(offer, seedUnits, type(uint256).max), expected);
+        assertEq(_buy(offer, seedUnits, proxyBalance), expected);
 
         _assertReentrancyGuardWrittenToTwice();
 
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - expected);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),         0);
         assertEq(loanToken.balanceOf(maker),                       makerBalance + makerAssets);
         assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + expected - makerAssets);
         assertEq(_credit(),                                        seedUnits);
@@ -945,11 +1041,44 @@ contract MainnetController_Midnight_Buy_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - expected);
     }
 
+    function test_buyMidnight_bufferDonationBeforeTakeSwept() external {
+        uint256 expected = _buyerAssets(seedUnits, TICK_98);
+        uint256 donation = 1_000 * loanUnit;
+
+        deal(address(loanToken), address(takeBuffer), donation);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
+        _buy(offer, seedUnits, expected - donation - 1);
+
+        assertEq(_buy(offer, seedUnits, expected), expected);
+
+        assertEq(loanToken.balanceOf(address(almProxy)),   proxyBalance - expected + donation);
+        assertEq(loanToken.balanceOf(address(takeBuffer)), 0);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),   rateLimit - expected);
+    }
+
+    function test_buyMidnight_bufferTransferFailed() external {
+        uint256 expected = _buyerAssets(seedUnits, TICK_98);
+
+        Offer memory offer = _offer(false, TICK_98, seedUnits);
+
+        vm.mockCall(
+            address(loanToken),
+            abi.encodeCall(IERC20.transfer, (address(takeBuffer), expected)),
+            abi.encode(false)
+        );
+
+        vm.expectRevert("MidnightFacet/transfer-failed");
+        _buy(offer, seedUnits, expected);
+    }
+
     function test_buyMidnight_usdc_unlimitedRateLimit() external {
         vm.prank(Ethereum.SPARK_PROXY);
         rateLimits.setUnlimitedRateLimitData(buyKey);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         assertEq(_credit(),                                 seedUnits);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),   rateLimit);
@@ -1003,6 +1132,15 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         vm.expectRevert("MidnightFacet/min-assets-out-not-set");
         _sell(offer, seedUnits, 0);
+    }
+
+    function test_sellMidnight_takeBufferNotSet() external {
+        _clearTakeBuffer();
+
+        Offer memory offer = _offer(true, TICK_99, seedUnits);
+
+        vm.expectRevert("MidnightFacet/take-buffer-not-set");
+        _sell(offer, seedUnits, 1);
     }
 
     function test_sellMidnight_invalidMidnight() external {
@@ -1169,7 +1307,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         assertApproxEqAbs(_lienPerUnit(), _capLienPerUnit(), 1e18 / seedUnits);
 
@@ -1201,7 +1339,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
 
         // A second tranche bought under the live fee, so the position carries a real lien.
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         _assertLienIsHalfOfCap();
 
@@ -1234,7 +1372,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         _setYields(MIN_BUY_YIELD, 2_00);
         _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         _assertLienIsHalfOfCap();
 
@@ -1267,7 +1405,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         vm.prank(Ethereum.SPARK_PROXY);
         rateLimits.setRateLimitData(buyKey, limit, 0);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         assertEq(rateLimits.getCurrentRateLimit(buyKey), 0);
 
@@ -1277,8 +1415,10 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, seedUnits);
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert("RateLimits/rate-limit-exceeded");
-        _buy(offer, seedUnits, type(uint256).max);
+        _buy(offer, seedUnits, maxAssetsIn);
     }
 
     function test_sellMidnight_usdc_minAssetsOutBoundary() external {
@@ -1317,7 +1457,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
     function test_sellMidnight_usdc_postMaturityLienIsFullyAccrued() external {
         _setContinuousFee(MidnightUtils.MAX_CONTINUOUS_FEE);
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         assertGt(_pendingFee(), 0);
 
@@ -1460,6 +1600,7 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
 
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - seedSpent + expected);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),         0);
         assertEq(loanToken.balanceOf(maker),                       makerBalance - makerAssets);
         assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + makerAssets - expected);
         assertEq(_credit(),                                        seedUnits - units);
@@ -1468,6 +1609,41 @@ contract MainnetController_Midnight_Sell_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(buyKey),           rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),          rateLimit - expected);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),        rateLimit);
+    }
+
+    function test_sellMidnight_bufferDonationBeforeTakeSwept() external {
+        uint256 units    = seedUnits / 2;
+        uint256 expected = _sellerAssets(units, TICK_99);
+        uint256 donation = 1_000 * loanUnit;
+
+        deal(address(loanToken), address(takeBuffer), donation);
+
+        Offer memory offer = _offer(true, TICK_99, units);
+
+        vm.expectRevert("MidnightFacet/min-assets-out-not-met");
+        _sell(offer, units, expected + 1);
+
+        assertEq(_sell(offer, units, expected), expected);
+
+        assertEq(loanToken.balanceOf(address(almProxy)),   proxyBalance - seedSpent + expected + donation);
+        assertEq(loanToken.balanceOf(address(takeBuffer)), 0);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),  rateLimit - expected);
+    }
+
+    function test_sellMidnight_bufferPullFailed() external {
+        uint256 units    = seedUnits / 2;
+        uint256 expected = _sellerAssets(units, TICK_99);
+
+        Offer memory offer = _offer(true, TICK_99, units);
+
+        vm.mockCall(
+            address(loanToken),
+            abi.encodeCall(IERC20.transferFrom, (address(takeBuffer), address(almProxy), expected)),
+            abi.encode(false)
+        );
+
+        vm.expectRevert("MidnightFacet/transferFrom-failed");
+        _sell(offer, units, expected);
     }
 
     function test_sellMidnight_usdc_zeroBuyRateLimit() external {
@@ -1558,13 +1734,12 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         mainnetController.midnight_redeem(keccak256("not-onboarded"), seedUnits, 1);
     }
 
-    // An onboarded config authenticates the id, but the singleton still has to know the market.
-    function test_redeemMidnight_marketNotCreated() external {
-        marketId = keccak256("onboarded-but-never-created");
+    function test_redeemMidnight_takeBufferNotSet() external {
+        _repay(seedUnits);
 
-        _setConfig(TICK_99, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
+        _clearTakeBuffer();
 
-        vm.expectRevert(abi.encodeWithSignature("MarketNotCreated()"));
+        vm.expectRevert("MidnightFacet/take-buffer-not-set");
         _redeem(seedUnits, 1);
     }
 
@@ -1727,6 +1902,7 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         _assertReentrancyGuardWrittenToTwice();
 
         assertEq(loanToken.balanceOf(address(almProxy)),     proxyBalance - seedSpent + units);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),   0);
         assertEq(loanToken.balanceOf(maker),                 makerBalance - units);
         assertEq(loanToken.balanceOf(MIDNIGHT),              venueBalance);
         assertEq(_credit(),                                  seedUnits - units);
@@ -1735,6 +1911,24 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         assertEq(rateLimits.getCurrentRateLimit(buyKey),     rateLimit - seedSpent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),    rateLimit);
         assertEq(rateLimits.getCurrentRateLimit(redeemKey),  rateLimit - units);
+    }
+
+    function test_redeemMidnight_bufferDonationBeforeRedeemSwept() external {
+        uint256 units    = seedUnits / 2;
+        uint256 donation = 1_000 * loanUnit;
+
+        _repay(units);
+
+        deal(address(loanToken), address(takeBuffer), donation);
+
+        vm.expectRevert("MidnightFacet/min-assets-out-not-met");
+        _redeem(units, units + 1);
+
+        assertEq(_redeem(units, units), units);
+
+        assertEq(loanToken.balanceOf(address(almProxy)),    proxyBalance - seedSpent + units + donation);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),  0);
+        assertEq(rateLimits.getCurrentRateLimit(redeemKey), rateLimit - units);
     }
 
     function test_redeemMidnight_usdc_zeroBuyRateLimit() external {
@@ -1799,7 +1993,7 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
     function test_midnight_usdc_proxyAuthorizesNobody() external {
         uint256 sold = seedUnits / 2;
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
         _sell(_offer(true, TICK_99, sold), sold, 1);
         _repay(sold);
         _redeem(sold, 1);
@@ -1825,7 +2019,7 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
         rateLimits.setRateLimitData(redeemKey, rateLimit, 0);
         vm.stopPrank();
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
         _sell(_offer(true, TICK_99, units), units, 1);
         _repay(units);
         _redeem(units, 1);
@@ -1838,7 +2032,7 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
         assertLt(sellRoom,   rateLimit);
         assertLt(redeemRoom, rateLimit);
 
-        uint256 spent = _buy(_offer(false, TICK_98, units), units, type(uint256).max);
+        uint256 spent = _buy(_offer(false, TICK_98, units), units, _proxyBalance());
 
         assertEq(rateLimits.getCurrentRateLimit(buyKey),    buyRoom - spent);
         assertEq(rateLimits.getCurrentRateLimit(sellKey),   sellRoom);
@@ -1864,7 +2058,7 @@ contract MainnetController_Midnight_RoundTrip_Tests is Midnight_TestBase {
     function test_midnight_usdc_zeroMaxBuyTickClosesEntryOnly() external {
         uint256 units = seedUnits / 4;
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
 
         _setConfig(0, TICK_98, MAX_CONTINUOUS_FEE_CBPS, 0);
 
@@ -1899,10 +2093,12 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
 
         Offer memory offer = _offer(false, TICK_98, seedUnits + 1);
 
-        vm.expectRevert("RateLimits/rate-limit-exceeded");
-        _buy(offer, seedUnits + 1, type(uint256).max);
+        uint256 maxAssetsIn = _proxyBalance();
 
-        _buy(_offer(false, TICK_98, seedUnits), seedUnits, type(uint256).max);
+        vm.expectRevert("RateLimits/rate-limit-exceeded");
+        _buy(offer, seedUnits + 1, maxAssetsIn);
+
+        _buy(_offer(false, TICK_98, seedUnits), seedUnits, _proxyBalance());
     }
 
     function test_buyMidnight_usds() external {
@@ -1931,12 +2127,13 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightBuy(marketId, seedUnits, expected);
 
-        assertEq(_buy(offer, seedUnits, type(uint256).max), expected);
+        assertEq(_buy(offer, seedUnits, proxyBalance), expected);
 
         _assertReentrancyGuardWrittenToTwice();
 
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - expected);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),         0);
         assertEq(loanToken.balanceOf(maker),                       makerBalance + makerAssets);
         assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + expected - makerAssets);
         assertEq(_credit(),                                        seedUnits);
@@ -1999,6 +2196,7 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
 
         assertEq(loanToken.allowance(address(almProxy), MIDNIGHT), 0);
         assertEq(loanToken.balanceOf(address(almProxy)),           proxyBalance - seedSpent + expected);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),         0);
         assertEq(loanToken.balanceOf(maker),                       makerBalance - makerAssets);
         assertEq(loanToken.balanceOf(MIDNIGHT),                    venueBalance + makerAssets - expected);
         assertEq(_credit(),                                        seedUnits - units);
@@ -2054,6 +2252,7 @@ contract MainnetController_Midnight_USDS_Tests is Midnight_TestBase {
         _assertReentrancyGuardWrittenToTwice();
 
         assertEq(loanToken.balanceOf(address(almProxy)),     proxyBalance - seedSpent + units);
+        assertEq(loanToken.balanceOf(address(takeBuffer)),   0);
         assertEq(loanToken.balanceOf(maker),                 makerBalance - units);
         assertEq(loanToken.balanceOf(MIDNIGHT),              venueBalance);
         assertEq(_credit(),                                  seedUnits - units);

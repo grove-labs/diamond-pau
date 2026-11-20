@@ -89,6 +89,12 @@ interface IMidnightFacet is IFacet {
      */
     event MidnightSell(bytes32 indexed marketId, uint256 units, uint256 assetsReceived);
 
+    /**
+     * @notice Emitted when the take buffer is set.
+     * @param  buffer Address of the take buffer.
+     */
+    event MidnightTakeBufferSet(address indexed buffer);
+
     /**********************************************************************************************/
     /*** Interactive Functions                                                                  ***/
     /**********************************************************************************************/
@@ -99,15 +105,17 @@ interface IMidnightFacet is IFacet {
      *         offer, price at or below the configured `maxBuyTick` minus the current settlement
      *         fee, and clear `minBuyYield` once the settlement fee and the continuous fee for the
      *         remaining term are counted in. Reverts if the market's continuous fee or loss factor
-     *         exceeds the configured tolerances, or if the market has never been touched on
-     *         Midnight. The buy rate limit is decreased by the higher of the proxy's balance
-     *         delta and the assets Midnight reports the buyer paid.
+     *         exceeds the configured tolerances, if the market has never been touched on
+     *         Midnight, or while the take buffer is unset. Midnight pulls the payment from the take
+     *         buffer, which then returns its whole balance to the proxy. The buy rate limit is
+     *         decreased by the buffer's balance delta, which must equal the assets Midnight
+     *         reports the buyer paid.
      * @param  marketId     Identifier of the Midnight market.
      * @param  offer        Maker's sell offer to take.
      * @param  ratifierData Opaque data forwarded to the maker's ratifier.
      * @param  units        Credit units to take from the offer; must be non-zero.
-     * @param  maxAssetsIn  Upper bound on loan token spent; also the allowance granted to
-     *                      Midnight for the duration of the call.
+     * @param  maxAssetsIn  Upper bound on loan token spent; also the amount the proxy moves to the
+     *                      take buffer for the duration of the call.
      * @return assetsSpent  Loan token actually paid, fees included.
      */
     function buy(
@@ -124,8 +132,10 @@ interface IMidnightFacet is IFacet {
      * @notice Redeems credit units at par out of the market's repayments.
      * @dev    Units are capped at both the proxy's live credit and the market's withdrawable
      *         amount, so passing `type(uint256).max` redeems everything currently available.
-     *         The market is resolved from the id on the configured Midnight venue. The redeem
-     *         rate limit is decreased by the loan token actually received; nothing is restored.
+     *         The market is resolved from the id on the configured Midnight venue. Reverts while
+     *         the take buffer is unset. Midnight pays the take buffer, which then returns its
+     *         whole balance to the proxy. The redeem rate limit is decreased by the buffer's
+     *         balance delta; nothing is restored.
      * @param  marketId        Identifier of the Midnight market.
      * @param  units           Credit units to redeem before capping.
      * @param  minAssetsOut    Lower bound on loan token received.
@@ -141,8 +151,10 @@ interface IMidnightFacet is IFacet {
      *         offer, price at or above the configured `minSellTick` plus the current settlement
      *         fee, and give up no more than `maxSellYield` measured on the proceeds net of that
      *         fee. Units are capped at the proxy's live credit, and a position with none left to
-     *         sell reverts. The sell rate limit is decreased by the loan token actually received;
-     *         nothing is restored.
+     *         sell reverts, as does any sell while the take buffer is unset. Midnight pays the take
+     *         buffer, which then returns its whole balance to the proxy. The sell rate limit is
+     *         decreased by the buffer's balance delta, which must equal the assets Midnight
+     *         reports the seller received; nothing is restored.
      * @param  marketId       Identifier of the Midnight market.
      * @param  offer          Maker's buy offer to take.
      * @param  ratifierData   Opaque data forwarded to the maker's ratifier.
@@ -165,7 +177,8 @@ interface IMidnightFacet is IFacet {
      * @dev    Reverts unless `maxBuyTick` and `minSellTick` are within Midnight's tick range,
      *         `minSellTick` and `maxSellYield` are non-zero, and `maxContinuousFee` is within
      *         Midnight's ceiling. Setting `maxBuyTick` to zero blocks new entries while leaving
-     *         exits open.
+     *         exits open. Also reverts while the take buffer is unset or the market does not exist
+     *         on Midnight, since it approves the market's loan token on the take buffer.
      * @param  marketId         Identifier of the Midnight market.
      * @param  maxBuyTick       Highest offer tick a buy may pay (fee-adjusted at call time).
      * @param  minSellTick      Lowest offer tick a sell may accept (fee-adjusted at call time).
@@ -185,6 +198,14 @@ interface IMidnightFacet is IFacet {
         uint16  maxContinuousFee,
         uint128 maxLossFactor
     ) external;
+
+    /**
+     * @notice Sets the take buffer that buy, sell and redeem route the loan token through.
+     * @dev    Reverts on the zero address. Loan tokens onboarded before a change are approved on
+     *         the new buffer by calling its `approve` for each of them, or by onboarding again.
+     * @param  buffer Address of the take buffer.
+     */
+    function setTakeBuffer(address buffer) external;
 
     /**********************************************************************************************/
     /*** Variables                                                                              ***/
@@ -224,5 +245,11 @@ interface IMidnightFacet is IFacet {
      * @return key      Derived rate limit key.
      */
     function getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
+
+    /**
+     * @notice Returns the take buffer that buy, sell and redeem route the loan token through.
+     * @return buffer Address of the take buffer, zero while unset.
+     */
+    function takeBuffer() external view returns (address buffer);
 
 }
