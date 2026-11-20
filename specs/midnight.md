@@ -1,0 +1,216 @@
+---
+facet: MidnightFacet
+dir: midnight
+chains: [mainnet]
+integration_doc: MIDNIGHT_INTEGRATION.md
+dependencies: []
+---
+
+# Midnight Integration Spec
+
+## Summary
+
+MidnightFacet lets the ALMProxy lend in Morpho Midnight fixed-term markets: as a taker it buys
+fixed-maturity credit units, sells them back before maturity and redeems them at par after
+repayment; as a maker it funds fills of offers the proxy has published, through a funding strategy
+called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loan tokens.
+
+## External protocol
+
+- **Protocol:** Morpho Midnight, commit `70607569ac348e9880b512ffd3b574be55405932`.
+- **Contracts touched:** Midnight singleton `0x471686c42792F93528B000beF54bC10E3aa2045f`
+  (mainnet; not yet in the address registries); each market's loan token (ERC-20).
+- **Audited/battle-tested status:** OPEN (owner to supply links).
+- **Trust assumptions:** the singleton is immutable; its `configurator` appoints a `feeSetter`
+  who can move settlement and continuous fees within hard-coded ceilings; lender losses are
+  socialized through `lossFactor`; redemption is first come first served out of repayments;
+  maker callbacks run inside the proxy's `take`; authorizing an address on the singleton
+  (`setIsAuthorized`) is a blanket grant over the proxy's position.
+- **House-constraint check:** loan tokens onboarded per market by governance (`setMarketConfig`);
+  UNVERIFIED which loan tokens are intended (e.g. USDC, USDS). No oracle on the facet's legs.
+  Seeding: a market must have been touched on Midnight (`touchMarket`) before trading.
+
+## Functions
+
+### `buy(bytes32 marketId, Offer offer, bytes ratifierData, uint256 units, uint256 maxAssetsIn)`
+- **Role:** ALLOCATOR_ROLE
+- **Value direction:** outbound (loan token for credit units)
+- **Rate limit:** `LIMIT_MIDNIGHT_BUY`, `makeBytes32Key(_LIMIT_BUY, marketId)`; enforcing decrease
+  of the take buffer's balance delta, which must equal Midnight's reported `buyerAssets`
+- **Refill:** none
+- **Loss bounds:** `maxAssetsIn` (non-zero); admin `maxBuyTick` and `minBuyYield` on the all-in
+  price incl. settlement fee; `maxContinuousFee`, `maxLossFactor` gates
+- **External calls:** `transfer` of `maxAssetsIn` from the proxy to the take buffer, `take` via
+  `doCall` (taker = proxy, taker callback = the take buffer, which Midnight pulls the payment from),
+  then `transferFrom` of the buffer's whole balance back to the proxy; offer receiver may not be the
+  proxy; reverts while the take buffer is unset
+- **Zero-amount semantics:** `units == 0` reverts `MidnightFacet/zero-units`
+- **Opaque bytes:** `ratifierData` is passed to Midnight unchanged; it is read only by the
+  offer's ratifier (V-2 justification)
+
+### `sell(bytes32 marketId, Offer offer, bytes ratifierData, uint256 units, uint256 minAssetsOut)`
+- **Role:** ALLOCATOR_ROLE
+- **Value direction:** outbound units, loan token returns to the proxy
+- **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`; enforcing
+  decrease of the take buffer's balance delta, which must equal Midnight's reported `sellerAssets`
+- **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
+  are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
+  and sells past the budget.
+- **Loss bounds:** `minAssetsOut` (non-zero); admin `minSellTick` and `maxSellYield` (floor off
+  the fee the position carries); units capped at live credit
+- **External calls:** `take` via `doCall`, proceeds to the take buffer, then `transferFrom` of
+  the buffer's whole balance to the proxy; reverts while the take buffer is unset
+- **Zero-amount semantics:** zero units, or zero credit after the cap, revert
+
+### `redeem(bytes32 marketId, uint256 units, uint256 minAssetsOut)`
+- **Role:** ALLOCATOR_ROLE
+- **Value direction:** returning (to proxy)
+- **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`; enforcing
+  decrease of the take buffer's balance delta
+- **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
+  are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
+  and sells past the budget.
+- **Loss bounds:** `minAssetsOut` (non-zero); units capped at credit and `withdrawable`
+- **External calls:** `withdraw(market, units, proxy, takeBuffer)` via `doCall`, then
+  `transferFrom` of the buffer's whole balance to the proxy; reverts while the take buffer is unset
+
+### `fundFill(bytes32 marketId, bool buying, uint256 assets, uint256 units, uint256 pendingFee)`
+- **Role:** none; this departs from rulebook A-1, A-2 and V-3; no exception has been requested yet.
+  The caller must be enabled with `setStrategy`, checked first (`strategy-not-enabled`), and its
+  strategy key is the size limit.
+- **Value direction:** buying: outbound to the calling strategy; selling: inbound, the calling
+  strategy's loan-token balance (Midnight paid the proceeds to it, and has already taken the
+  proxy's units) is pulled into the proxy
+- **Rate limit:** buying: `LIMIT_MIDNIGHT_STRATEGY_BUY`,
+  `makeAddressBytes32Key(_LIMIT_STRATEGY_BUY, msg.sender, marketId)`, then `LIMIT_MIDNIGHT_BUY`
+  for the market, both enforcing decreases of `assets`; selling: `LIMIT_MIDNIGHT_STRATEGY_SELL`
+  then `LIMIT_MIDNIGHT_SELL`, both enforcing decreases of `measured`, the strategy's loan-token
+  balance
+- **Refill:** none
+- **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * tickBound`
+  (`fill-price-too-high`), then `assets * WAD <= units * yieldBound` (`fill-yield-too-low`), the
+  yield bound priced at the live `continuousFee`; exit `measured >= assets`
+  (`proceeds-below-reported`), then `assets * WAD >= units * tickBound` (`fill-price-too-low`),
+  then `assets * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
+  and loss-factor gates on entry; zero debt on exit. The gate (`_validateBuyMarketState`) and the
+  bounds (`_buyBounds`, `_sellBounds`) are the ones `buy` and `sell` use, tick then yield
+- **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`;
+  selling: `transferFrom(msg.sender, proxy, measured)` on the loan token via `doCall`, against the
+  allowance the strategy grants the proxy in its callback
+- **Zero-amount semantics:** zero `assets` or `units` revert
+
+### `cancelOfferGroup(bytes32 group)`
+- **Role:** ALLOCATOR_ROLE or `MIDNIGHT_FREEZER_ROLE`; this departs from rulebook A-1 and A-2; no
+  exception has been requested yet.
+- **Value direction:** config (risk-reducing, retires a group)
+- **External calls:** `setConsumed(group, type(uint128).max, proxy)` via `doCall`
+
+### `disableMake(bytes32 marketId)`
+- **Role:** `MIDNIGHT_FREEZER_ROLE`; this departs from rulebook A-1; no exception has been requested
+  yet.
+- **Value direction:** config (risk-reducing, sets `maxMakeOfferSize` to zero and nothing else)
+- **External calls:** none
+
+### `disableStrategy(address strategy)`
+- **Role:** `MIDNIGHT_FREEZER_ROLE`; this departs from rulebook A-1; no exception has been requested
+  yet.
+- **Value direction:** config (risk-reducing, sets the strategy's enabled flag to false on every
+  market and nothing else; only the admin enables it again, with `setStrategy`)
+- **External calls:** none
+
+### `setMarketConfig(Market market, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor, uint256 maxMakeOfferSize)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`;
+  `maxMakeOfferSize != 0` enables making and caps each fill); every call restates every field
+- **External calls:** `toMarket(marketId)` (view), which reverts unless the market exists on
+  Midnight, then `approve(loanToken)` on the take buffer, before the config is stored; reverts
+  while the take buffer is unset
+
+### `setTakeBuffer(address buffer)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (sets the take buffer that `buy`,
+  `sell` and `redeem` settle through; the zero address reverts)
+- **External calls:** none
+
+### `setRatifierAuthorization(address ratifier, bool authorized)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config, a blanket grant on the singleton
+- **External calls:** `setIsAuthorized(ratifier, authorized, proxy)` via `doCall`
+
+### `setStrategy(address strategy, bool enabled)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (enables or disables a funding strategy
+  on every market; its strategy keys stay the size limits per market and direction)
+- **External calls:** none
+
+Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
+`getStrategyBuyRateLimitKey`, `getStrategySellRateLimitKey`,
+`getMarketConfig`, `isCallbackAllowed`, `isStrategyEnabled`, `midnight`, `MIDNIGHT_FREEZER_ROLE`,
+`takeBuffer`, `VERSION`.
+
+Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
+
+Take and make keep three differences in their price checks, because the logic forces them. Both
+modes take the time to maturity from the cached `config.maturity`. A take prices the offer tick plus
+or minus the settlement fee before the trade, while `fundFill` checks the reported `assets` per
+`units` after the fill, in both directions. The sell fee per unit comes from the position before
+the trade on a take, and from the position after the fill on a make, capped by the reported
+`pendingFee` (`_sellFeePerUnit`), because the callback only sees the result. The balance and credit
+delta post-checks run on the take only, because a make callback has no pre-fill hook; a make exit
+measures the strategy's balance for the keys and the pull instead.
+
+## Fund-exit map
+
+| # | Path | Destination | Bounded by |
+|---|------|-------------|------------|
+| 1 | `buy`: `transfer` to the take buffer + `take` | offer maker (seller), pulled from the take buffer, the rest back to the proxy; proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
+| 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy enabled with `setStrategy`; strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price and yield ceilings, the yield ceiling at the live continuous fee |
+| 3 | `sell`: `take` | credit units to the offer maker; loan token to the take buffer, then the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
+| 4 | maker sell fill (units taken by Midnight before `fundFill`; proceeds paid to the calling strategy, then pulled into the proxy) | offer taker | strategy enabled with `setStrategy`; the strategy's balance must cover the reported `assets`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`, by that measured balance; config price and yield floors on the reported `assets` |
+| 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
+| 6 | take buffer's allowance to Midnight | Midnight, as payment for a take by the proxy | the buffer's `onBuy` refuses any other buyer; every `buy`, `sell` and `redeem` returns the buffer's whole balance to the proxy |
+
+## Storage & constructor
+
+- **ERC-7201 storage fields:** `marketConfigs` (per `marketId`), `enabledStrategies` (per
+  strategy), `takeBuffer`, namespace `sky.pau.storage.MidnightFacet.v1`.
+- **Immutables:** `midnight` (the singleton; zero-checked in the constructor).
+- **Auxiliary module:** none.
+
+## Standing approvals & declared exceptions
+
+No standing ERC-20 approval from the proxy. The take buffer grants each onboarded loan token's
+allowance to the proxy and to Midnight; Midnight can use it only to pay for a take by the proxy
+(row 6 above). Standing authorization:
+the ratifier's `setIsAuthorized` grant on the singleton (row 5 above). The role and callback design
+of `fundFill` departs from rulebook A-1, A-2 and V-3, that of `cancelOfferGroup` from A-1 and A-2,
+and that of `disableMake` and `disableStrategy` from A-1; no exception has been requested yet.
+
+## Dependencies
+
+None as a `lib/` submodule. The take buffer (`MidnightTakeBuffer`) ships from the periphery
+repository; the facet calls only its `approve`. Three source files are modified from
+`https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932`
+(`src/interfaces/IMidnight.sol`, `src/libraries/TickLib.sol`, `src/libraries/IdLib.sol`). They stay
+separate files with upstream's `GPL-2.0-or-later` licence. Line 1 is the SPDX identifier, line 2 the
+pragma, then the Morpho copyright. The `unchecked` blocks are kept as upstream wrote them. This
+departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLimitHelpers`: existing
+`makeBytes32Key` and `makeAddressBytes32Key`, no new shape.
+
+## Attack surface (drives T-4 required tests)
+
+- **Mutable third-party reads feeding keys/checks:** `continuousFee`, `settlementFee`, `lossFactor`,
+  `toMarket`, `updatePositionView`, `debt`, `withdrawable`; the offer's market hashes to the
+  governance-supplied `marketId`.
+- **Async/multi-step state a rogue allocator could grief:** resting maker offers, offer
+  groups, ratifier authorization.
+- **Value-manipulation surface:** loan token pushed into the proxy during a `take` (not counted,
+  because accounting reads the take buffer) or into the take buffer (reverts on the equality with
+  Midnight's reported amount); socialized losses through `lossFactor`; fee changes between
+  configuration and trade.
+
+## Operational requirements
+
+Order: `touchMarket` on Midnight, `setTakeBuffer` with the proxy's own take buffer,
+`setMarketConfig`, rate-limit keys, then for maker mode
+`setStrategy` for each strategy followed by its strategy keys, `setMarketConfig` again with a
+non-zero `maxMakeOfferSize` unless the first call set it
+(every call restates the whole config; the market must exist on Midnight), and
+`setRatifierAuthorization` last. The fork tests need an EVM with CLZ (`evm_version = 'osaka'`),
+which is a repository setting outside this facet PR. Deploy scripts are out of scope.

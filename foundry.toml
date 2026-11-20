@@ -10,7 +10,8 @@ fs_permissions = [
     { access = "read", path = "./script/input/"},
     { access = "read-write", path = "./script/output/"}
 ]
-evm_version = 'cancun'
+# Morpho Midnight's health check uses CLZ, so the fork tests need an EVM that has it.
+evm_version = 'osaka'
 remappings = [
     '@layerzerolabs/lz-evm-messagelib-v2/=lib/layerzero-v2/packages/layerzero-v2/evm/messagelib/',
     '@layerzerolabs/lz-evm-protocol-v2/=lib/layerzero-v2/packages/layerzero-v2/evm/protocol',
