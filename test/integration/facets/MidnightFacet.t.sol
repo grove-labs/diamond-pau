@@ -2919,13 +2919,13 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.mockCall(loanToken, transferFromCall, abi.encode(false));
 
-        vm.expectRevert("MidnightFacet/transfer-failed");
+        vm.expectRevert("MidnightFacet/transferFrom-failed");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
 
         vm.mockCall(loanToken, transferFromCall, abi.encode(true, true));
 
-        vm.expectRevert("MidnightFacet/transfer-failed");
+        vm.expectRevert("MidnightFacet/transferFrom-failed");
         vm.prank(strategy);
         controller.fundFill(_marketId(), false, assets, FILL_UNITS, 0);
     }

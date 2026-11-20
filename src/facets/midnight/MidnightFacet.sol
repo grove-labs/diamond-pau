@@ -655,7 +655,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(
             returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
-            "MidnightFacet/transfer-failed"
+            "MidnightFacet/transferFrom-failed"
         );
 
         emit MidnightFillFunded(marketId, msg.sender, false, measured, units);
