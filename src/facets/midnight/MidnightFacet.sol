@@ -146,7 +146,12 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         require(maxBuyTick <= MAX_TICK, "MidnightFacet/max-buy-tick-oob");
-        require(minSellTick != 0 && minSellTick <= MAX_TICK, "MidnightFacet/min-sell-tick-oob");
+        require(
+            minSellTick != 0
+                && minSellTick <= MAX_TICK
+                && MidnightTickLib.tickToPrice(minSellTick) != 0,
+            "MidnightFacet/min-sell-tick-oob"
+        );
         require(
             MidnightUtils.continuousFeePerSecond(maxContinuousFee)
                 <= MidnightUtils.MAX_CONTINUOUS_FEE,
@@ -280,6 +285,9 @@ contract MidnightFacet is IMidnightFacet, Facet {
         address proxy = _getSharedControllerStorage().proxy;
 
         Market memory market = IMidnightLike(midnight).toMarket(marketId);
+
+        require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
+        require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
 
         ( uint256 credit, ) = _credit(market, marketId, proxy);
 
