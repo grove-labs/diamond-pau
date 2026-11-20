@@ -36,12 +36,14 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** outbound (loan token for credit units)
 - **Rate limit:** `LIMIT_MIDNIGHT_BUY`, `makeBytes32Key(_LIMIT_BUY, marketId)`; enforcing decrease
-  of the higher of the proxy's balance delta and Midnight's reported `buyerAssets`
+  of the take buffer's balance delta, which must equal Midnight's reported `buyerAssets`
 - **Refill:** none
 - **Loss bounds:** `maxAssetsIn` (non-zero); admin `maxBuyTick` and `minBuyYield` on the all-in
   price incl. settlement fee; `maxContinuousFee`, `maxLossFactor` gates
-- **External calls:** `ApproveLib.approve` to Midnight for `maxAssetsIn`, `take` via `doCall`
-  (taker = proxy), approval reset to zero; offer receiver may not be the proxy
+- **External calls:** `transfer` of `maxAssetsIn` from the proxy to the take buffer, `take` via
+  `doCall` (taker = proxy, taker callback = the take buffer, which Midnight pulls the payment from),
+  then `transferFrom` of the buffer's whole balance back to the proxy; offer receiver may not be the
+  proxy; reverts while the take buffer is unset
 - **Zero-amount semantics:** `units == 0` reverts `MidnightFacet/zero-units`
 - **Opaque bytes:** `ratifierData` is passed to Midnight unchanged; it is read only by the
   offer's ratifier (V-2 justification)
@@ -50,25 +52,27 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** outbound units, loan token returns to the proxy
 - **Rate limit:** `LIMIT_MIDNIGHT_SELL`, `makeBytes32Key(_LIMIT_SELL, marketId)`; enforcing
-  decrease of the loan token received
+  decrease of the take buffer's balance delta, which must equal Midnight's reported `sellerAssets`
 - **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
   are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
   and sells past the budget.
 - **Loss bounds:** `minAssetsOut` (non-zero); admin `minSellTick` and `maxSellYield` (floor off
   the fee the position carries); units capped at live credit
-- **External calls:** `take` via `doCall`, proceeds to the proxy
+- **External calls:** `take` via `doCall`, proceeds to the take buffer, then `transferFrom` of
+  the buffer's whole balance to the proxy; reverts while the take buffer is unset
 - **Zero-amount semantics:** zero units, or zero credit after the cap, revert
 
 ### `redeem(bytes32 marketId, uint256 units, uint256 minAssetsOut)`
 - **Role:** ALLOCATOR_ROLE
 - **Value direction:** returning (to proxy)
 - **Rate limit:** `LIMIT_MIDNIGHT_REDEEM`, `makeBytes32Key(_LIMIT_REDEEM, marketId)`; enforcing
-  decrease of the loan token received
+  decrease of the take buffer's balance delta
 - **Refill:** none, because the per-market BUY key is a gross entry budget set by governance; exits
   are metered on their own keys and do not reopen entry capacity, so an allocator cannot cycle buys
   and sells past the budget.
 - **Loss bounds:** `minAssetsOut` (non-zero); units capped at credit and `withdrawable`
-- **External calls:** `withdraw(market, units, proxy, proxy)` via `doCall`
+- **External calls:** `withdraw(market, units, proxy, takeBuffer)` via `doCall`, then
+  `transferFrom` of the buffer's whole balance to the proxy; reverts while the take buffer is unset
 
 ### `fundFill(bytes32 marketId, bool buying, uint256 assets, uint256 units, uint256 pendingFee)`
 - **Role:** none; this departs from rulebook A-1, A-2 and V-3; no exception has been requested yet.
@@ -112,8 +116,14 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 ### `setMarketConfig(Market market, uint16 maxBuyTick, uint16 minSellTick, uint16 minBuyYield, uint16 maxSellYield, uint16 maxContinuousFee, uint128 maxLossFactor, uint256 maxMakeOfferSize)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`;
   `maxMakeOfferSize != 0` enables making and caps each fill); every call restates every field
-- **External calls:** `toMarket(marketId)` (view), last; reverts unless the market exists on
-  Midnight
+- **External calls:** `toMarket(marketId)` (view), which reverts unless the market exists on
+  Midnight, then `approve(loanToken)` on the take buffer, before the config is stored; reverts
+  while the take buffer is unset
+
+### `setTakeBuffer(address buffer)`
+- **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (sets the take buffer that `buy`,
+  `sell` and `redeem` settle through; the zero address reverts)
+- **External calls:** none
 
 ### `setRatifierAuthorization(address ratifier, bool authorized)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config, a blanket grant on the singleton
@@ -127,7 +137,7 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 Views: `getBuyRateLimitKey`, `getSellRateLimitKey`, `getRedeemRateLimitKey`,
 `getStrategyBuyRateLimitKey`, `getStrategySellRateLimitKey`,
 `getMarketConfig`, `isCallbackAllowed`, `isStrategyEnabled`, `midnight`, `MIDNIGHT_FREEZER_ROLE`,
-`VERSION`.
+`takeBuffer`, `VERSION`.
 
 Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns false for buys, so the ratifier refuses buy offers, resting ones included, and maker buy fills, fabricated `fundFill` calls included, revert with `fill-price-too-high`.
 
@@ -143,29 +153,33 @@ post-checks run on the take only, because a make callback has no pre-fill hook.
 
 | # | Path | Destination | Bounded by |
 |---|------|-------------|------------|
-| 1 | `buy`: approval + `take` | offer maker (seller); proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
+| 1 | `buy`: `transfer` to the take buffer + `take` | offer maker (seller), pulled from the take buffer, the rest back to the proxy; proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
 | 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy enabled with `setStrategy`; strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price and yield ceilings, the yield ceiling at the live continuous fee |
-| 3 | `sell`: `take` | credit units to the offer maker; loan token to the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
+| 3 | `sell`: `take` | credit units to the offer maker; loan token to the take buffer, then the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
 | 4 | maker sell fill (units taken by Midnight before `fundFill`) | offer taker | strategy enabled with `setStrategy`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`; config price and yield floors |
 | 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
+| 6 | take buffer's allowance to Midnight | Midnight, as payment for a take by the proxy | the buffer's `onBuy` refuses any other buyer; every `buy`, `sell` and `redeem` returns the buffer's whole balance to the proxy |
 
 ## Storage & constructor
 
 - **ERC-7201 storage fields:** `marketConfigs` (per `marketId`), `enabledStrategies` (per
-  strategy), namespace `sky.pau.storage.MidnightFacet.v1`.
+  strategy), `takeBuffer`, namespace `sky.pau.storage.MidnightFacet.v1`.
 - **Immutables:** `midnight` (the singleton; zero-checked in the constructor).
 - **Auxiliary module:** none.
 
 ## Standing approvals & declared exceptions
 
-No standing ERC-20 approval (the `buy` approval is reset in the same call). Standing authorization:
+No standing ERC-20 approval from the proxy. The take buffer grants each onboarded loan token's
+allowance to the proxy and to Midnight; Midnight can use it only to pay for a take by the proxy
+(row 6 above). Standing authorization:
 the ratifier's `setIsAuthorized` grant on the singleton (row 5 above). The role and callback design
 of `fundFill` departs from rulebook A-1, A-2 and V-3, that of `cancelOfferGroup` from A-1 and A-2,
 and that of `disableMake` and `disableStrategy` from A-1; no exception has been requested yet.
 
 ## Dependencies
 
-None as a `lib/` submodule. Three source files are modified from
+None as a `lib/` submodule. The take buffer (`MidnightTakeBuffer`) ships from the periphery
+repository; the facet calls only its `approve`. Three source files are modified from
 `https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932`
 (`src/interfaces/IMidnight.sol`, `src/libraries/TickLib.sol`, `src/libraries/IdLib.sol`). They stay
 separate files with upstream's `GPL-2.0-or-later` licence. Line 1 is the SPDX identifier, line 2 the
@@ -180,12 +194,15 @@ departs from rulebook S-1 and S-2; no exception has been requested yet. `RateLim
   governance-supplied `marketId`.
 - **Async/multi-step state a rogue allocator could grief:** resting maker offers, offer
   groups, ratifier authorization.
-- **Value-manipulation surface:** loan token pushed into the proxy during a `take`; socialized
-  losses through `lossFactor`; fee changes between configuration and trade.
+- **Value-manipulation surface:** loan token pushed into the proxy during a `take` (not counted,
+  because accounting reads the take buffer) or into the take buffer (reverts on the equality with
+  Midnight's reported amount); socialized losses through `lossFactor`; fee changes between
+  configuration and trade.
 
 ## Operational requirements
 
-Order: `touchMarket` on Midnight, `setMarketConfig`, rate-limit keys, then for maker mode
+Order: `touchMarket` on Midnight, `setTakeBuffer` with the proxy's own take buffer,
+`setMarketConfig`, rate-limit keys, then for maker mode
 `setStrategy` for each strategy followed by its strategy keys, `setMarketConfig` again with a
 non-zero `maxMakeOfferSize` unless the first call set it
 (every call restates the whole config; the market must exist on Midnight), and
