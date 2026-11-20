@@ -634,11 +634,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
             _sellBounds(config, _timeToMaturity(config.maturity), feePerUnit);
 
         require(
-            measured * MidnightUtils.WAD >= units * tickBound,
+            assets * MidnightUtils.WAD >= units * tickBound,
             "MidnightFacet/fill-price-too-low"
         );
         require(
-            measured * MidnightUtils.WAD >= units * yieldBound,
+            assets * MidnightUtils.WAD >= units * yieldBound,
             "MidnightFacet/fill-yield-too-high"
         );
 

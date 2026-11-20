@@ -2861,6 +2861,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         _fundStrategySell(measured);
 
+        vm.expectCall(
+            loanToken, abi.encodeCall(IERC20Mock.transferFrom, (strategy, proxy, measured))
+        );
+
         vm.expectEmit(address(controller));
         emit IMidnightFacet.MidnightFillFunded(_marketId(), strategy, false, measured, FILL_UNITS);
 
@@ -2874,23 +2878,31 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(IERC20Mock(loanToken).balanceOf(strategy), 0);
     }
 
-    function test_fundFill_sell_floorUsesMeasuredProceeds() external {
+    function test_makerSell_floorUsesReportedAssetsBoundary() external {
         _onboardAndEnableMake(0);
         _onboardStrategy(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
-        uint256 honest = _honestSellAssets(FILL_UNITS);
+        bytes32 sellKey         = controller.getSellRateLimitKey(_marketId());
+        bytes32 strategySellKey = controller.getStrategySellRateLimitKey(strategy, _marketId());
 
-        _fundStrategySell(honest);
+        uint256 floor = _honestSellAssets(FILL_UNITS);
 
-        vm.prank(strategy);
-        controller.fundFill(_marketId(), false, honest - 1, FILL_UNITS, 0);
-
-        _fundStrategySell(honest - 1);
+        _fundStrategySell(floor + 1);
 
         vm.expectRevert("MidnightFacet/fill-price-too-low");
         vm.prank(strategy);
-        controller.fundFill(_marketId(), false, honest - 1, FILL_UNITS, 0);
+        controller.fundFill(_marketId(), false, floor - 1, FILL_UNITS, 0);
+
+        vm.expectCall(
+            loanToken, abi.encodeCall(IERC20Mock.transferFrom, (strategy, proxy, floor + 1))
+        );
+
+        vm.prank(strategy);
+        controller.fundFill(_marketId(), false, floor, FILL_UNITS, 0);
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         MAX_OFFER_SIZE - floor - 1);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), MAX_OFFER_SIZE - floor - 1);
     }
 
     function test_fundFill_sell_transferFromFailed() external {

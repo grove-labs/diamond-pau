@@ -1626,6 +1626,13 @@ contract MainnetController_MidnightMaker_Proceeds_Tests is Midnight_Maker_TestBa
 
         uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
 
+        vm.expectCall(
+            address(loanToken),
+            abi.encodeCall(
+                IERC20.transferFrom, (address(strategy), address(almProxy), proceeds + donation)
+            )
+        );
+
         ( , uint256 sellerAssets ) = _take(sell, units);
 
         assertEq(sellerAssets, proceeds);
@@ -1653,24 +1660,55 @@ contract MainnetController_MidnightMaker_Proceeds_Tests is Midnight_Maker_TestBa
         _take(sell, units);
     }
 
-    function test_makerSell_floorUsesMeasuredProceedsBoundary() external {
+    function test_makerSell_donationDoesNotRelaxTickFloor() external {
         uint256 floorPrice = MidnightTickLib.tickToPrice(TICK_98);
         uint256 tick       = _tickBelow(floorPrice);
 
-        uint256 floorAssets = _divUp(units * floorPrice, 1e18);
-        uint256 reported    = _makerSellerAssets(units, tick);
+        uint256 reported = _makerSellerAssets(units, tick);
+        uint256 donation = _divUp(units * floorPrice, 1e18) - reported;
 
-        assertLt(reported, floorAssets);
+        deal(address(loanToken), address(strategy), donation);
 
-        Offer memory sell = _makerOffer(false, tick, units);
+        _takeExpectRevert(
+            _makerOffer(false, tick, units), units, "MidnightFacet/fill-price-too-low"
+        );
 
-        deal(address(loanToken), address(strategy), floorAssets - reported - 1);
+        ( , uint256 sellerAssets ) = _take(_makerOffer(false, TICK_98, units), units);
 
-        _takeExpectRevert(sell, units, "MidnightFacet/fill-price-too-low");
+        uint256 spent = sellerAssets + donation;
 
-        deal(address(loanToken), address(strategy), floorAssets - reported);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - spent);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - spent);
+    }
 
-        _take(sell, units);
+    function test_makerSell_donationDoesNotRelaxYieldFloor() external {
+        _setConfig(
+            TICK_99, TICK_SPACING, MIN_BUY_YIELD, MAX_SELL_YIELD, MAX_CONTINUOUS_FEE_CBPS, 0
+        );
+
+        assertEq(_pendingFee(), 0);
+
+        uint256 floorPrice = _sellFloor(MAX_SELL_YIELD);
+        uint256 tick       = _tickBelow(floorPrice);
+
+        assertGt(floorPrice, MidnightTickLib.tickToPrice(TICK_SPACING));
+
+        uint256 reported = _makerSellerAssets(units, tick);
+        uint256 donation = _divUp(units * floorPrice, 1e18) - reported;
+
+        deal(address(loanToken), address(strategy), donation);
+
+        _takeExpectRevert(
+            _makerOffer(false, tick, units), units, "MidnightFacet/fill-yield-too-high"
+        );
+
+        ( , uint256 sellerAssets ) =
+            _take(_makerOffer(false, _tickAtOrAbove(floorPrice), units), units);
+
+        uint256 spent = sellerAssets + donation;
+
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),         rateLimit - spent);
+        assertEq(rateLimits.getCurrentRateLimit(strategySellKey), rateLimit - spent);
     }
 
 }
