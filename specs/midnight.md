@@ -78,20 +78,25 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Role:** none; this departs from rulebook A-1, A-2 and V-3; no exception has been requested yet.
   The caller must be enabled with `setStrategy`, checked first (`strategy-not-enabled`), and its
   strategy key is the size limit.
-- **Value direction:** buying: outbound to the calling strategy; selling: moves nothing (Midnight
-  has already taken the proxy's units)
+- **Value direction:** buying: outbound to the calling strategy; selling: inbound, the calling
+  strategy's loan-token balance (Midnight paid the proceeds to it, and has already taken the
+  proxy's units) is pulled into the proxy
 - **Rate limit:** buying: `LIMIT_MIDNIGHT_STRATEGY_BUY`,
   `makeAddressBytes32Key(_LIMIT_STRATEGY_BUY, msg.sender, marketId)`, then `LIMIT_MIDNIGHT_BUY`
   for the market, both enforcing decreases of `assets`; selling: `LIMIT_MIDNIGHT_STRATEGY_SELL`
-  then `LIMIT_MIDNIGHT_SELL`
+  then `LIMIT_MIDNIGHT_SELL`, both enforcing decreases of `measured`, the strategy's loan-token
+  balance
 - **Refill:** none
 - **Loss bounds:** `assets <= maxMakeOfferSize`; entry `assets * WAD <= units * tickBound`
   (`fill-price-too-high`), then `assets * WAD <= units * yieldBound` (`fill-yield-too-low`), the
-  yield bound priced at the live `continuousFee`; exit `assets * WAD >= units * tickBound`
-  (`fill-price-too-low`), then `assets * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
+  yield bound priced at the live `continuousFee`; exit `measured >= assets`
+  (`proceeds-below-reported`), then `measured * WAD >= units * tickBound` (`fill-price-too-low`),
+  then `measured * WAD >= units * yieldBound` (`fill-yield-too-high`); fee
   and loss-factor gates on entry; zero debt on exit. The gate (`_validateBuyMarketState`) and the
   bounds (`_buyBounds`, `_sellBounds`) are the ones `buy` and `sell` use, tick then yield
-- **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`
+- **External calls:** buying: `transfer(msg.sender, assets)` on the loan token via `doCall`;
+  selling: `transferFrom(msg.sender, proxy, measured)` on the loan token via `doCall`, against the
+  allowance the strategy grants the proxy in its callback
 - **Zero-amount semantics:** zero `assets` or `units` revert
 
 ### `cancelOfferGroup(bytes32 group)`
@@ -143,11 +148,12 @@ Setting `maxBuyTick` to zero closes entry: `isCallbackAllowed` then returns fals
 
 Take and make keep three differences in their price checks, because the logic forces them. Both
 modes take the time to maturity from the cached `config.maturity`. A take prices the offer tick plus
-or minus the settlement fee before the trade, while `fundFill` checks the booked `assets` per
-`units` after the fill. The sell fee per unit comes from the position before the trade on a take,
-and from the position after the fill on a make, capped by the reported `pendingFee`
-(`_sellFeePerUnit`), because the callback only sees the result. The balance and credit delta
-post-checks run on the take only, because a make callback has no pre-fill hook.
+or minus the settlement fee before the trade, while `fundFill` checks the booked `assets` on an
+entry, or the strategy's measured balance on an exit, per `units` after the fill. The sell fee per
+unit comes from the position before the trade on a take, and from the position after the fill on a
+make, capped by the reported `pendingFee` (`_sellFeePerUnit`), because the callback only sees the
+result. The balance and credit delta post-checks run on the take only, because a make callback has
+no pre-fill hook; a make exit measures the strategy's balance instead.
 
 ## Fund-exit map
 
@@ -156,7 +162,7 @@ post-checks run on the take only, because a make callback has no pre-fill hook.
 | 1 | `buy`: `transfer` to the take buffer + `take` | offer maker (seller), pulled from the take buffer, the rest back to the proxy; proxy receives credit units | `LIMIT_MIDNIGHT_BUY` per market; `maxAssetsIn`; price and yield ceilings |
 | 2 | `fundFill`, buying: `transfer` | calling strategy, which funds Midnight's pull in the same `take` | strategy enabled with `setStrategy`; strategy buy key per (strategy, market), then `LIMIT_MIDNIGHT_BUY`; `maxMakeOfferSize` per call; price and yield ceilings, the yield ceiling at the live continuous fee |
 | 3 | `sell`: `take` | credit units to the offer maker; loan token to the take buffer, then the proxy | `LIMIT_MIDNIGHT_SELL` per market; `minAssetsOut`; price and yield floors |
-| 4 | maker sell fill (units taken by Midnight before `fundFill`) | offer taker | strategy enabled with `setStrategy`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`; config price and yield floors |
+| 4 | maker sell fill (units taken by Midnight before `fundFill`; proceeds paid to the calling strategy, then pulled into the proxy) | offer taker | strategy enabled with `setStrategy`; the strategy's balance must cover the reported `assets`; strategy sell key, then `LIMIT_MIDNIGHT_SELL`, by that measured balance; config price and yield floors on it |
 | 5 | `setRatifierAuthorization` | authorized address can act on the proxy's position | `DEFAULT_ADMIN_ROLE` only |
 | 6 | take buffer's allowance to Midnight | Midnight, as payment for a take by the proxy | the buffer's `onBuy` refuses any other buyer; every `buy`, `sell` and `redeem` returns the buffer's whole balance to the proxy |
 
