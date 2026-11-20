@@ -278,7 +278,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         ( uint256 buyerAssets, ) = _take(ctx, offer, ratifierData, units);
 
-        assetsSpent = ctx.bufferBefore - IERC20Like(ctx.market.loanToken).balanceOf(ctx.buffer);
+        {
+            uint256 bufferAfter = IERC20Like(ctx.market.loanToken).balanceOf(ctx.buffer);
+
+            require(bufferAfter <= ctx.bufferBefore, "MidnightFacet/buffer-balance-increased");
+
+            assetsSpent = ctx.bufferBefore - bufferAfter;
+        }
 
         require(assetsSpent <= maxAssetsIn, "MidnightFacet/max-assets-in-exceeded");
         require(assetsSpent == buyerAssets, "MidnightFacet/buyer-assets-mismatch");

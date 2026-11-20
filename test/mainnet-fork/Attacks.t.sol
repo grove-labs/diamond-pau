@@ -1139,6 +1139,24 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         _buy(offer, attackUnits, expected);
     }
 
+    function test_buyMidnight_bufferBalanceIncreasedDuringTakeReverts() external {
+        uint256 expected = _buyerAssets(attackUnits, TICK_98);
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+        offer.callback     = address(donator);
+        offer.callbackData = abi.encode(address(takeBuffer), expected);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/buyer-assets-mismatch");
+        _buy(offer, attackUnits, expected);
+
+        offer.callbackData = abi.encode(address(takeBuffer), expected + 1);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/buffer-balance-increased");
+        _buy(offer, attackUnits, expected);
+    }
+
     function test_sellMidnight_bufferDonationDuringTakeReverts() external {
         Offer memory offer = _offer(true, TICK_99, attackUnits);
         offer.callback     = address(donator);
