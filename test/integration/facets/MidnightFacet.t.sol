@@ -9,7 +9,7 @@ import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableInte
 import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
-import { MAX_TICK } from "../../../src/facets/midnight/MidnightTickLib.sol";
+import { MAX_TICK, MidnightTickLib } from "../../../src/facets/midnight/MidnightTickLib.sol";
 
 import { Integration_TestBase } from "../TestBase.t.sol";
 
@@ -215,6 +215,18 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(admin);
         _setConfig(MARKET_ID, TICK_99, maxTick, CONTINUOUS_FEE);
+    }
+
+    function test_setMarketConfig_minSellTickZeroPriceBoundary() external {
+        assertEq(MidnightTickLib.tickToPrice(1), 0);
+        assertGt(MidnightTickLib.tickToPrice(2), 0);
+
+        vm.expectRevert("MidnightFacet/min-sell-tick-oob");
+        vm.prank(admin);
+        _setConfig(MARKET_ID, TICK_99, 1, CONTINUOUS_FEE);
+
+        vm.prank(admin);
+        _setConfig(MARKET_ID, TICK_99, 2, CONTINUOUS_FEE);
     }
 
     function test_setMarketConfig_maxContinuousFeeOutOfBoundsBoundary() external {
