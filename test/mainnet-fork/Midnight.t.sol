@@ -1634,6 +1634,38 @@ contract MainnetController_Midnight_Redeem_Tests is Midnight_TestBase {
         _redeem(seedUnits, 1);
     }
 
+    function test_redeemMidnight_invalidMidnight() external {
+        Market memory otherMarket = market;
+        otherMarket.midnight = makeAddr("otherMidnight");
+
+        _repay(seedUnits);
+
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeCall(IMidnightLike.toMarket, (marketId)),
+            abi.encode(otherMarket)
+        );
+
+        vm.expectRevert("MidnightFacet/invalid-midnight");
+        _redeem(seedUnits, 1);
+    }
+
+    function test_redeemMidnight_marketMismatch() external {
+        Market memory otherMarket = market;
+        otherMarket.maturity += 1 days;
+
+        _repay(seedUnits);
+
+        vm.mockCall(
+            MIDNIGHT,
+            abi.encodeCall(IMidnightLike.toMarket, (marketId)),
+            abi.encode(otherMarket)
+        );
+
+        vm.expectRevert("MidnightFacet/market-mismatch");
+        _redeem(seedUnits, 1);
+    }
+
     function test_redeemMidnight_zeroMinAssetsOut() external {
         vm.expectRevert("MidnightFacet/min-assets-out-not-set");
         _redeem(seedUnits, 0);
