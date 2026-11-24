@@ -41,9 +41,9 @@ Only one path moves loan tokens out of the ALMProxy: `buy`, which moves `maxAsse
 
 ### Take Buffer
 
-The take buffer is a `MidnightTakeBuffer` contract bound at deployment to the ALMProxy and the Midnight singleton. Every `buy`, `sell` and `redeem` routes the loan token through it, and the facet sizes each leg by the buffer's balance delta rather than the proxy's. The proxy itself never approves Midnight.
+The take buffer is a `MidnightTakeBufferStrategy` contract bound at deployment to the ALMProxy and the Midnight singleton. Every `buy`, `sell` and `redeem` routes the loan token through it, and the facet sizes each leg by the buffer's balance delta rather than the proxy's. The proxy itself never approves Midnight.
 
-- Midnight's `take` has no payer parameter: on a take buy it pulls the payment from the taker callback when one is set. The facet names the buffer as taker callback, and the buffer's `onBuy` consents only when Midnight calls it for a buy whose buyer is the ALMProxy (`NotMidnight()`, `BuyerNotProxy()` otherwise). Taking as the proxy needs the proxy's own call or an authorization it never grants, so no one else can make the buffer pay.
+- Midnight's `take` has no payer parameter: on a take buy it pulls the payment from the taker callback when one is set. The facet names the buffer as taker callback, and the buffer's `onBuy` consents only when Midnight calls it for a buy whose buyer is the ALMProxy (`AddressNotMidnight()`, `AddressNotProxy()` otherwise). Taking as the proxy needs the proxy's own call or an authorization it never grants, so no one else can make the buffer pay.
 - `approve(token)`, callable by anyone, grants the ALMProxy and Midnight the maximum allowance on that token. `setMarketConfig` calls it for every market it onboards. The buffer has no other function, no storage, no roles and no events, and implements none of Midnight's other callbacks, so repay, liquidation and flash-loan pulls from it revert.
 - The buffer holds loan token only inside a call. Each leg ends by pulling the buffer's whole balance to the ALMProxy with `transferFrom`, including anything donated to it beforehand.
 
@@ -271,7 +271,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/seller-assets-mismatch`   | facet       | the take buffer's delta on a sell differs from the `sellerAssets` the take reports        |
 | `MidnightFacet/transfer-failed`          | facet       | the loan token returned `false` when the ALMProxy moved `maxAssetsIn` to the take buffer  |
 | `MidnightFacet/transferFrom-failed`      | facet       | the loan token returned `false` when the ALMProxy pulled the take buffer's balance        |
-| `NotMidnight()`, `BuyerNotProxy()`       | take buffer | a take buffer deployed for another singleton or another ALMProxy                          |
+| `AddressNotMidnight()`, `AddressNotProxy()` | take buffer | a take buffer deployed for another singleton or another ALMProxy                          |
 | loan token's own revert                  | loan token  | `buy` with `maxAssetsIn` above the ALMProxy's balance, or below what the take costs       |
 | `MidnightFacet/credit-delta-mismatch`    | facet       | live credit did not move by exactly the units taken                                       |
 | `MidnightFacet/debt-not-zero`            | facet       | the venue reports debt against the ALMProxy after a trade                                 |
@@ -299,7 +299,7 @@ All interactive functions are `nonReentrant`.
 
 ### Configuration (before first trade)
 
-Once per facet: deploy a `MidnightTakeBuffer` bound to the ALMProxy and the Midnight singleton, and set it with `setTakeBuffer(buffer)` before onboarding any market. `setMarketConfig`, `buy`, `sell` and `redeem` revert until it is set.
+Once per facet: deploy a `MidnightTakeBufferStrategy` bound to the ALMProxy and the Midnight singleton, and set it with `setTakeBuffer(buffer)` before onboarding any market. `setMarketConfig`, `buy`, `sell` and `redeem` revert until it is set.
 
 Per market (`marketId`):
 
