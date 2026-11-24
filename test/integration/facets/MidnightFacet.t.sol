@@ -783,6 +783,20 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _setBounds(TICK_99, maxTick, CONTINUOUS_FEE);
     }
 
+    function test_setMarketConfig_minSellTickZeroPriceBoundary() external {
+        assertEq(MidnightTickLib.tickToPrice(1), 0);
+        assertGt(MidnightTickLib.tickToPrice(2), 0);
+
+        _mockToMarket(_market());
+
+        vm.expectRevert("MidnightFacet/min-sell-tick-oob");
+        vm.prank(admin);
+        _setBounds(TICK_99, 1, CONTINUOUS_FEE);
+
+        vm.prank(admin);
+        _setBounds(TICK_99, 2, CONTINUOUS_FEE);
+    }
+
     function test_setMarketConfig_maxContinuousFeeOutOfBoundsBoundary() external {
         _mockToMarket(_market());
 
@@ -2048,7 +2062,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _onboardStrategy(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
-        _setConfig(TICK_99, 1, CONTINUOUS_FEE);
+        _setConfig(TICK_99, 2, CONTINUOUS_FEE);
 
         uint256 floorPrice = MidnightUtils.minSellPrice(
             MAX_SELL_YIELD,
@@ -2057,7 +2071,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             0
         );
 
-        assertGt(floorPrice, MidnightTickLib.tickToPrice(1));
+        assertGt(floorPrice, MidnightTickLib.tickToPrice(2));
 
         uint256 honest =
             (FILL_UNITS * floorPrice + MidnightUtils.WAD - 1) / MidnightUtils.WAD;
@@ -2170,7 +2184,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _setSellLimit(MAX_OFFER_SIZE);
 
         // Lower the tick floor out of the way so the yield rail is what the fee moves.
-        _setConfig(TICK_99, 1, CONTINUOUS_FEE);
+        _setConfig(TICK_99, 2, CONTINUOUS_FEE);
 
         uint256 unencumbered = MidnightUtils.minSellPrice(
             MAX_SELL_YIELD,
@@ -2221,7 +2235,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _onboardStrategy(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
-        _setConfig(TICK_99, 1, CONTINUOUS_FEE);
+        _setConfig(TICK_99, 2, CONTINUOUS_FEE);
 
         // The position carries no fee at all, so no relief is corroborated.
         _mockPosition(uint128(FILL_UNITS), 0);
@@ -2250,7 +2264,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _onboardStrategy(MAX_OFFER_SIZE);
         _setSellLimit(MAX_OFFER_SIZE);
 
-        _setConfig(TICK_99, 1, CONTINUOUS_FEE);
+        _setConfig(TICK_99, 2, CONTINUOUS_FEE);
 
         _mockPosition(0, 0);
 
@@ -2370,7 +2384,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         external
     {
         units        = bound(units, 1, 2 * MAX_OFFER_SIZE);
-        minSellTick  = uint16(bound(minSellTick, 1, MAX_TICK));
+        minSellTick  = uint16(bound(minSellTick, 2, MAX_TICK));
         maxSellYield = uint16(bound(maxSellYield, 1, type(uint16).max));
 
         // creditPost, carriedFee, reportedFee
@@ -3388,7 +3402,7 @@ contract MidnightWiring_IntegrationTests is Integration_TestBase {
         );
 
         vm.startPrank(admin);
-        alias_.midnight_setMarketConfig(market, 1, 1, 0, 1, 0, 0, 1);
+        alias_.midnight_setMarketConfig(market, 1, 2, 0, 1, 0, 0, 1);
         alias_.midnight_setStrategy(callback, true);
         limits.setRateLimitData(strategyKey, 1, 0);
         limits.setRateLimitData(marketKey,   1, 0);

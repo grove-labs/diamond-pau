@@ -114,7 +114,7 @@ The key is salted with the governance-supplied `marketId` only. Nothing read fro
 **Flow:**
 
 1. Require the market to be onboarded, `minSellTick != 0` (`MidnightFacet/market-not-onboarded`). Redemption reads no other config value; the onboarded config is what authenticates the id. Require `minAssetsOut != 0` (`MidnightFacet/min-assets-out-not-set`), as on `sell`.
-2. Resolve the `Market` struct from the id on the singleton (`toMarket(marketId)`), so redemption never trusts a market from calldata.
+2. Resolve the `Market` struct from the id on the singleton (`toMarket(marketId)`), so redemption never trusts a market from calldata. Require the returned market to name the configured singleton (`MidnightFacet/invalid-midnight`) and to hash to `marketId` (`MidnightFacet/market-mismatch`).
 3. Cap `units` at both the proxy's live credit and the market's `withdrawable` amount (repaid, not yet withdrawn), then require the result to be non-zero (`MidnightFacet/zero-units`). Passing `type(uint256).max` redeems everything currently available.
 4. Snapshot the balance, `doCall` `midnight.withdraw(market, units, proxy, proxy)`, and measure `assetsWithdrawn` as the balance delta. Require `assetsWithdrawn >= minAssetsOut` (`MidnightFacet/min-assets-out-not-met`).
 5. Require the proxy's debt to be zero (`MidnightFacet/debt-not-zero`).
@@ -145,7 +145,7 @@ the first:
 | Field              | Type      | Meaning                                                                                                                                 |
 | ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `maxBuyTick`       | `uint16`  | Ceiling on an offer's price plus the settlement fee. `0` disables entry. Must be `<= 6744` (`MidnightFacet/max-buy-tick-oob`).   |
-| `minSellTick`      | `uint16`  | Floor an offer's price must clear once the settlement fee is added to it. Non-zero marks the market as onboarded and gates `sell` and `redeem`. Must be in `1..6744` (`MidnightFacet/min-sell-tick-oob`). |
+| `minSellTick`      | `uint16`  | Floor an offer's price must clear once the settlement fee is added to it. Non-zero marks the market as onboarded and gates `sell` and `redeem`. Must be `<= 6744` and price above zero (`tickToPrice(minSellTick) != 0`), so ticks `0` and `1` are rejected (`MidnightFacet/min-sell-tick-oob`). |
 | `minBuyYield`      | `uint16`  | Lowest implied yield a buy may accept, in basis points a year (max `655.35%`). `0` is the loosest setting that still refuses to pay more than a unit returns. |
 | `maxSellYield`     | `uint16`  | Highest implied yield a sell may give up, in basis points a year. Must be non-zero (`MidnightFacet/max-sell-yield-not-set`); zero would only clear at par and brick the exit. |
 | `maxContinuousFee` | `uint16`  | Highest market continuous fee a buy tolerates, in centi-basis points a year. Must be `<= 1_00_00`, one percent a year, Midnight's own ceiling (`MidnightFacet/max-continuous-fee-oob`). |
@@ -460,8 +460,8 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/market-not-onboarded`     | facet       | `redeem` on a market whose `minSellTick` is zero                                          |
 | `MidnightFacet/max-assets-in-not-set`    | facet       | `buy` with zero `maxAssetsIn`                                                             |
 | `MidnightFacet/min-assets-out-not-set`   | facet       | `sell` or `redeem` with zero `minAssetsOut`                                               |
-| `MidnightFacet/invalid-midnight`         | facet       | `offer.market.midnight`, or the `market.midnight` passed to `setMarketConfig`, is not the configured singleton |
-| `MidnightFacet/market-mismatch`          | facet       | the offer's market does not hash to `marketId`                                             |
+| `MidnightFacet/invalid-midnight`         | facet       | `offer.market.midnight`, the `market.midnight` passed to `setMarketConfig`, or on `redeem` the market `toMarket(marketId)` returns, is not the configured singleton |
+| `MidnightFacet/market-mismatch`          | facet       | the offer's market, or on `redeem` the market `toMarket(marketId)` returns, does not hash to `marketId` |
 | `MidnightFacet/invalid-offer-direction`  | facet       | a buy offer passed to `buy`, or a sell offer passed to `sell`                             |
 | `MidnightFacet/zero-units`               | facet       | a zero size, or a `redeem` that caps to nothing                                           |
 | `MidnightFacet/no-credit-to-sell`        | facet       | `sell` against a position with no live credit left                                        |
@@ -477,7 +477,7 @@ All interactive functions are `nonReentrant`, `fundFill` included, and the fundi
 | `MidnightFacet/credit-delta-mismatch`    | facet       | live credit did not move by exactly the units taken                                       |
 | `MidnightFacet/debt-not-zero`            | facet       | the venue reports debt against the ALMProxy after a trade                                 |
 | `MidnightFacet/max-buy-tick-oob`         | facet       | `setMarketConfig` with `maxBuyTick > 6744`                                                |
-| `MidnightFacet/min-sell-tick-oob`        | facet       | `setMarketConfig` with `minSellTick` zero or `> 6744`                                     |
+| `MidnightFacet/min-sell-tick-oob`        | facet       | `setMarketConfig` with `minSellTick` zero, `> 6744`, or a tick whose price rounds to zero (tick `1`) |
 | `MidnightFacet/max-continuous-fee-oob`   | facet       | `setMarketConfig` with `maxContinuousFee` above Midnight's ceiling                        |
 | `MidnightFacet/max-sell-yield-not-set`   | facet       | `setMarketConfig` with a zero `maxSellYield`                                               |
 | `MidnightTickLib/tick-out-of-range`      | facet       | an offer tick above `6744`                                                                |
