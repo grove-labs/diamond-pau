@@ -184,7 +184,7 @@ and that of `disableMake` and `disableStrategy` from A-1; no exception has been 
 
 ## Dependencies
 
-None as a `lib/` submodule. The take buffer (`MidnightTakeBuffer`) ships from the periphery
+None as a `lib/` submodule. The take buffer (`MidnightTakeBufferStrategy`) ships from the periphery
 repository; the facet calls only its `approve`. Three source files are modified from
 `https://github.com/morpho-org/midnight/tree/70607569ac348e9880b512ffd3b574be55405932`
 (`src/interfaces/IMidnight.sol`, `src/libraries/TickLib.sol`, `src/libraries/IdLib.sol`). They stay
