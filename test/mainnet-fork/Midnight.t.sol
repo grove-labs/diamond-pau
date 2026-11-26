@@ -299,7 +299,7 @@ abstract contract Midnight_TestBase is ForkTestBase {
         sellKey   = mainnetController.midnight_getSellRateLimitKey(marketId);
         redeemKey = mainnetController.midnight_getRedeemRateLimitKey(marketId);
 
-        takeBuffer = new MidnightTakeBuffer(address(almProxy), MIDNIGHT);
+        takeBuffer = new MidnightTakeBuffer(MIDNIGHT, address(almProxy));
 
         vm.startPrank(Ethereum.SPARK_PROXY);
 

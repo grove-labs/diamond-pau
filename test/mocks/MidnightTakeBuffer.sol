@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.25;
 
-import { IERC20 }    from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import { IERC20 }          from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 }       from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import { ReentrancyGuard } from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 struct CollateralParams {
     address token;
@@ -22,9 +23,15 @@ struct Market {
     address            liquidatorGate;
 }
 
-contract MidnightTakeBuffer {
+contract MidnightTakeBuffer is ReentrancyGuard {
 
     using SafeERC20 for IERC20;
+
+    /**********************************************************************************************/
+    /*** Events                                                                                 ***/
+    /**********************************************************************************************/
+
+    event Rescued(address indexed token, uint256 amount);
 
     /**********************************************************************************************/
     /*** Errors                                                                                 ***/
@@ -33,24 +40,27 @@ contract MidnightTakeBuffer {
     error ZeroMidnight();
     error ZeroProxy();
 
-    error BuyerNotProxy();
-    error NotMidnight();
+    error AddressNotMidnight();
+    error AddressNotProxy();
+    error AddressNotStrategy();
+    error NothingToRescue();
+    error NotSupported();
 
     /**********************************************************************************************/
     /*** Constants and Immutables                                                               ***/
     /**********************************************************************************************/
 
-    bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+    bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
 
-    address public immutable proxy;
     address public immutable midnight;
+    address public immutable proxy;
 
-    constructor(address proxy_, address midnight_) {
-        if (proxy_    == address(0)) revert ZeroProxy();
+    constructor(address midnight_, address proxy_) {
         if (midnight_ == address(0)) revert ZeroMidnight();
+        if (proxy_    == address(0)) revert ZeroProxy();
 
-        proxy    = proxy_;
         midnight = midnight_;
+        proxy    = proxy_;
     }
 
     /**********************************************************************************************/
@@ -72,13 +82,58 @@ contract MidnightTakeBuffer {
         bytes   memory
     )
         external
-        view
+        nonReentrant
         returns (bytes32)
     {
-        if (msg.sender != midnight) revert NotMidnight();
-        if (buyer      != proxy)    revert BuyerNotProxy();
+        _onlyMidnight(msg.sender);
+        _onlyProxy(buyer);
 
         return CALLBACK_SUCCESS;
+    }
+
+    function onSell(
+        bytes32,
+        Market  memory market,
+        uint256,
+        uint256,
+        uint256,
+        address        seller,
+        address        receiver,
+        bytes   memory
+    )
+        external
+        nonReentrant
+        returns (bytes32)
+    {
+        _onlyMidnight(msg.sender);
+        _onlyProxy(seller);
+        _onlyStrategy(receiver);
+
+        IERC20(market.loanToken).forceApprove(
+            proxy, IERC20(market.loanToken).balanceOf(address(this))
+        );
+
+        revert NotSupported();
+    }
+
+    function rescue(address) external pure {
+        revert NotSupported();
+    }
+
+    /**********************************************************************************************/
+    /*** Internal Functions                                                                     ***/
+    /**********************************************************************************************/
+
+    function _onlyMidnight(address midnight_) internal view {
+        require(midnight_ == midnight, AddressNotMidnight());
+    }
+
+    function _onlyProxy(address proxy_) internal view {
+        require(proxy_ == proxy, AddressNotProxy());
+    }
+
+    function _onlyStrategy(address strategy_) internal view {
+        require(strategy_ == address(this), AddressNotStrategy());
     }
 
 }
