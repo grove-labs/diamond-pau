@@ -44,7 +44,7 @@ Only one path moves loan tokens out of the ALMProxy: `buy`, which moves `maxAsse
 The take buffer is a `MidnightTakeBufferStrategy` contract bound at deployment to the ALMProxy and the Midnight singleton. Every `buy`, `sell` and `redeem` routes the loan token through it, and the facet sizes each leg by the buffer's balance delta rather than the proxy's. The proxy itself never approves Midnight.
 
 - Midnight's `take` has no payer parameter: on a take buy it pulls the payment from the taker callback when one is set. The facet names the buffer as taker callback, and the buffer's `onBuy` consents only when Midnight calls it for a buy whose buyer is the ALMProxy (`AddressNotMidnight()`, `AddressNotProxy()` otherwise). Taking as the proxy needs the proxy's own call or an authorization it never grants, so no one else can make the buffer pay.
-- `approve(token)`, callable by anyone, grants the ALMProxy and Midnight the maximum allowance on that token. `setMarketConfig` calls it for every market it onboards. The buffer has no other function, no storage, no roles and no events, and implements none of Midnight's other callbacks, so repay, liquidation and flash-loan pulls from it revert.
+- `approve(token)`, callable by anyone, grants the ALMProxy and Midnight the maximum allowance on that token. `setMarketConfig` calls it for every market it onboards. Its `onSell` and `rescue` revert (`NotSupported()`): it cannot settle a maker sell, and its balance leaves only through the allowances `approve` grants. It has no roles and implements none of Midnight's other callbacks, so repay, liquidation and flash-loan pulls from it revert.
 - The buffer holds loan token only inside a call. Each leg ends by pulling the buffer's whole balance to the ALMProxy with `transferFrom`, including anything donated to it beforehand.
 
 ---
@@ -160,7 +160,7 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 
 Sets the take buffer that `buy`, `sell` and `redeem` route the loan token through, stored at the end of the facet's ERC-7201 storage. Refuses the zero address (`MidnightFacet/zero-take-buffer`). While no buffer is set, `buy`, `sell`, `redeem` and `setMarketConfig` revert (`MidnightFacet/take-buffer-not-set`).
 
-The buffer has to be deployed with this ALMProxy and the facet's Midnight singleton. Loan tokens onboarded before a change of buffer are not approved on the new one: call its `approve(token)` for each of them, or onboard their markets again.
+The buffer has to be deployed with this ALMProxy and the facet's Midnight singleton: the setter requires `buffer.proxy()` to be the ALMProxy (`MidnightFacet/invalid-take-buffer-proxy`) and `buffer.midnight()` to be the singleton (`MidnightFacet/invalid-take-buffer-midnight`), which also catches a buffer deployed with its two constructor arguments swapped. Loan tokens onboarded before a change of buffer are not approved on the new one: call its `approve(token)` for each of them, or onboard their markets again.
 
 **Event:** `MidnightTakeBufferSet(buffer)`
 
@@ -266,12 +266,14 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/min-assets-out-not-met`   | facet       | measured proceeds below `minAssetsOut`                                                    |
 | `MidnightFacet/take-buffer-not-set`      | facet       | `buy`, `sell`, `redeem` or `setMarketConfig` while no take buffer is set                  |
 | `MidnightFacet/zero-take-buffer`         | facet       | `setTakeBuffer` with the zero address                                                     |
+| `MidnightFacet/invalid-take-buffer-proxy` | facet      | `setTakeBuffer` with a buffer whose `proxy()` is not the ALMProxy                         |
+| `MidnightFacet/invalid-take-buffer-midnight` | facet   | `setTakeBuffer` with a buffer whose `midnight()` is not the Midnight singleton            |
 | `MidnightFacet/buffer-balance-increased` | facet       | the buffer's balance grew during a buy's take: a donation larger than the spend           |
 | `MidnightFacet/buyer-assets-mismatch`    | facet       | the take buffer's delta on a buy differs from the `buyerAssets` the take reports          |
 | `MidnightFacet/seller-assets-mismatch`   | facet       | the take buffer's delta on a sell differs from the `sellerAssets` the take reports        |
 | `MidnightFacet/transfer-failed`          | facet       | the loan token returned `false` when the ALMProxy moved `maxAssetsIn` to the take buffer  |
 | `MidnightFacet/transferFrom-failed`      | facet       | the loan token returned `false` when the ALMProxy pulled the take buffer's balance        |
-| `AddressNotMidnight()`, `AddressNotProxy()` | take buffer | a take buffer deployed for another singleton or another ALMProxy                          |
+| `AddressNotMidnight()`, `AddressNotProxy()` | take buffer | an `onBuy` call that is not Midnight's, or for a buyer other than the ALMProxy            |
 | loan token's own revert                  | loan token  | `buy` with `maxAssetsIn` above the ALMProxy's balance, or below what the take costs       |
 | `MidnightFacet/credit-delta-mismatch`    | facet       | live credit did not move by exactly the units taken                                       |
 | `MidnightFacet/debt-not-zero`            | facet       | the venue reports debt against the ALMProxy after a trade                                 |
