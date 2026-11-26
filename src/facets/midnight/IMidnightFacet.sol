@@ -80,8 +80,8 @@ interface IMidnightFacet is IFacet {
      * @param  marketId Identifier of the Midnight market.
      * @param  strategy Funding strategy, named as the offer's callback, that reported the fill.
      * @param  buy      True when the proxy was the buyer, in which case the loan token was sent.
-     * @param  assets   Loan token sent to the strategy on a buy, or received by the proxy on a
-     *                  sell.
+     * @param  assets   Loan token sent to the strategy on a buy, or pulled from the strategy into
+     *                  the proxy on a sell.
      * @param  units    Credit units the fill moves for the proxy.
      */
     event MidnightFillFunded(
@@ -246,21 +246,23 @@ interface IMidnightFacet is IFacet {
      *         fill must clear the configured loss factor, meet the configured fee ceiling against
      *         the market's live continuous fee, and price at or below the stricter of the
      *         configured entry tick and entry yield, the yield priced at that live fee. On a sell
-     *         the proceeds have already reached the proxy, so nothing moves here; the fill must
-     *         price at or above the stricter of the configured exit tick and exit yield, and must
-     *         leave the proxy free of debt on the market, which is what stops an exit from opening
-     *         a short.
+     *         Midnight has paid the proceeds to the caller, which approves the proxy for its whole
+     *         loan-token balance. That balance must cover `assets`, must price at or above the
+     *         stricter of the configured exit tick and exit yield, and is pulled into the proxy;
+     *         the fill must also leave the proxy free of debt on the market, which is what stops
+     *         an exit from opening a short.
      * @dev    In both directions `assets` must not exceed the market's `maxMakeOfferSize`, which
      *         caps each fill rather than an offer's total size.
      * @dev    `pendingFee` only ever tightens the exit bound. It is clamped to the fee the proxy's
      *         position actually carries, read back from the venue, so a caller cannot widen its own
      *         floor by overstating the lien it sheds.
      * @dev    A fill decreases two keys for its direction, the caller's strategy key first and then
-     *         the per-market key it shares with the taker legs. Neither direction restores
-     *         anything.
+     *         the per-market key it shares with the taker legs, by `assets` on a buy and by the
+     *         caller's balance on a sell. Neither direction restores anything.
      * @param  marketId   Identifier of the Midnight market.
      * @param  buying     True when the proxy is the buyer, so the fill is an entry.
-     * @param  assets     Loan token the settlement moves, as reported by the caller.
+     * @param  assets     Loan token the settlement moves, as reported by the caller. On a sell it
+     *                    is only a lower bound on the caller's balance, which is what is used.
      * @param  units      Credit units the fill moves for the proxy, as reported by the caller.
      * @param  pendingFee Pending fee the fill adds on a buy or sheds on a sell, as reported by the
      *                    caller. Used only on a sell, and only as far as the venue corroborates it.
