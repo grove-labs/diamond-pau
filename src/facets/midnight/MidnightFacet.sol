@@ -173,11 +173,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
 
-        address buffer = _getFacetStorage().takeBuffer;
-
-        require(buffer != address(0), "MidnightFacet/take-buffer-not-set");
-
-        IMidnightTakeBufferLike(buffer).approve(
+        IMidnightTakeBufferLike(_getFacetStorage().takeBuffer).approve(
             IMidnightLike(midnight).toMarket(marketId).loanToken
         );
 

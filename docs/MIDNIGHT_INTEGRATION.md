@@ -141,7 +141,7 @@ together in a single slot:
 | `maxLossFactor`    | `uint128` | Highest market loss factor a buy tolerates, as a fraction of `type(uint128).max`. `0` means no socialized loss is tolerated.            |
 
 - All values default to zero, the strictest setting: nothing is onboarded, nothing can be entered.
-- Onboarding readies the take buffer for the market's loan token. The call requires the buffer to be set (`MidnightFacet/take-buffer-not-set`), reads the loan token from the singleton with `toMarket(marketId)`, which reverts `MarketNotCreated()` for a market never created there, and calls the buffer's `approve(loanToken)` before storing the config. The buffer has to be set and the market has to exist before the market is onboarded.
+- Onboarding readies the take buffer for the market's loan token. The call reads the loan token from the singleton with `toMarket(marketId)`, which reverts `MarketNotCreated()` for a market never created there, and calls the buffer's `approve(loanToken)` before storing the config; while no buffer is set that call reverts without a reason. The buffer has to be set and the market has to exist before the market is onboarded.
 - `minSellTick` is an exit floor and has to stay reachable: below par net of the settlement fee, or every sell reverts on price. `setMarketConfig` rejects a zero `minSellTick` outright, so a market once onboarded cannot be un-onboarded through the facet; closing a market means zeroing `maxBuyTick` and leaving the exits configured.
 - Each leg carries a tick bound and a yield bound, and the stricter binds. Ticks are absolute prices and go stale as the term shortens: a tick that is a fair entry at 180 days is a giveaway at 5. The yield bounds are denominated in rate, so they track the term on their own and need no spell as maturity approaches. Both fees are inside the comparison, so a fee change does not need a reconfiguration either.
 - Yield granularity is one basis point a year, worth about `1.0` basis points of price at a 360 day term, `0.5` at 180 days and `0.02` at 7 days. Set `maxSellYield` well above the market rate: it is a gross-mispricing rail, not a spread control, and it tightens towards par on its own as maturity approaches.
@@ -158,7 +158,7 @@ Together with the rate-limit keys, a non-zero `minSellTick` acts as the per-mark
 
 **Function:** `setTakeBuffer(buffer)` (`DEFAULT_ADMIN_ROLE`)
 
-Sets the take buffer that `buy`, `sell` and `redeem` route the loan token through, stored at the end of the facet's ERC-7201 storage. Refuses the zero address (`MidnightFacet/zero-take-buffer`). While no buffer is set, `buy`, `sell`, `redeem` and `setMarketConfig` revert (`MidnightFacet/take-buffer-not-set`).
+Sets the take buffer that `buy`, `sell` and `redeem` route the loan token through, stored at the end of the facet's ERC-7201 storage. Refuses the zero address (`MidnightFacet/zero-take-buffer`). While no buffer is set, `buy`, `sell` and `redeem` revert (`MidnightFacet/take-buffer-not-set`), and `setMarketConfig` reverts without a reason on the buffer's `approve`.
 
 The buffer has to be deployed with this ALMProxy and the facet's Midnight singleton: the setter requires `buffer.proxy()` to be the ALMProxy (`MidnightFacet/invalid-take-buffer-proxy`) and `buffer.midnight()` to be the singleton (`MidnightFacet/invalid-take-buffer-midnight`), which also catches a buffer deployed with its two constructor arguments swapped. Loan tokens onboarded before a change of buffer are not approved on the new one: call its `approve(token)` for each of them, or onboard their markets again.
 
@@ -264,7 +264,7 @@ All interactive functions are `nonReentrant`.
 | `MidnightFacet/invalid-offer-receiver`   | facet       | a sell offer paying its proceeds to the ALMProxy                                          |
 | `MidnightFacet/max-assets-in-exceeded`   | facet       | measured spend above `maxAssetsIn`                                                        |
 | `MidnightFacet/min-assets-out-not-met`   | facet       | measured proceeds below `minAssetsOut`                                                    |
-| `MidnightFacet/take-buffer-not-set`      | facet       | `buy`, `sell`, `redeem` or `setMarketConfig` while no take buffer is set                  |
+| `MidnightFacet/take-buffer-not-set`      | facet       | `buy`, `sell` or `redeem` while no take buffer is set                                     |
 | `MidnightFacet/zero-take-buffer`         | facet       | `setTakeBuffer` with the zero address                                                     |
 | `MidnightFacet/invalid-take-buffer-proxy` | facet      | `setTakeBuffer` with a buffer whose `proxy()` is not the ALMProxy                         |
 | `MidnightFacet/invalid-take-buffer-midnight` | facet   | `setTakeBuffer` with a buffer whose `midnight()` is not the Midnight singleton            |

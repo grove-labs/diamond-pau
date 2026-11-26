@@ -313,7 +313,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
     function test_setMarketConfig_takeBufferNotSet() external {
         _clearTakeBuffer();
 
-        vm.expectRevert("MidnightFacet/take-buffer-not-set");
+        vm.expectRevert(bytes(""));
         vm.prank(admin);
         _setConfig(MARKET_ID, TICK_99, TICK_98, CONTINUOUS_FEE);
     }
