@@ -560,8 +560,7 @@ contract MainnetController_Maple_Attack_Tests is Maple_TestBase {
 
 }
 
-// A maker whose sell callback runs inside the proxy's buy, after the transfers, while the proxy's
-// approval to Midnight is still open.
+// A maker whose callback runs inside the proxy's take and tries to act for the proxy.
 contract MidnightHostileMaker {
 
     bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
@@ -623,7 +622,7 @@ contract MidnightHostileMaker {
 
         allowanceSeen = IERC20(market.loanToken).allowance(proxy, midnight);
 
-        // Take an offer of our own choosing while the proxy's approval is live.
+        // Take an offer that makes the proxy the payer.
         try IMidnightAttackLike(midnight).take(
             attackOffer, ratifierData, units, address(this), address(0), address(0), ""
         ) {
@@ -712,8 +711,7 @@ contract MidnightSlashingMaker {
 
 }
 
-// A maker callback that sends loan token to the proxy mid-fill, shrinking the balance delta the
-// buy would otherwise meter and inflating the one the sell meters.
+// A maker callback that sends loan token mid-fill to the address its callback data names.
 contract MidnightDonatingMaker {
 
     bytes32 internal constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
@@ -755,9 +753,9 @@ contract MidnightDonatingMaker {
     }
 
     function _donate(Market memory market, bytes memory data) internal {
-        ( address proxy, uint256 amount ) = abi.decode(data, (address, uint256));
+        ( address recipient, uint256 amount ) = abi.decode(data, (address, uint256));
 
-        IERC20(market.loanToken).transfer(proxy, amount);
+        IERC20(market.loanToken).transfer(recipient, amount);
     }
 
 }
@@ -766,7 +764,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
     address internal victim = makeAddr("victim");
 
-    uint256 internal attackUnits;  // 1k units, small enough to leave the approval mostly open
+    uint256 internal attackUnits;  // 1k units
 
     MidnightHostileMaker  internal hostile;
     MidnightSlashingMaker internal slasher;
@@ -802,7 +800,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         victimOffer.receiverIfMakerIsSeller = victim;
         _ratify(victimOffer);
 
-        _buy(victimOffer, seedUnits, type(uint256).max);
+        _buy(victimOffer, seedUnits, _proxyBalance());
 
         slasher = new MidnightSlashingMaker(MIDNIGHT, oracle, victim);
 
@@ -852,14 +850,14 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         return abi.encode(uint128(credit), uint128(pendingFee), uint128(0));
     }
 
-    function _mockProxyBalances(uint256 balanceBefore, uint256 balanceAfter) internal {
+    function _mockBufferBalances(uint256 balanceBefore, uint256 balanceAfter) internal {
         bytes[] memory balances = new bytes[](2);
         balances[0] = abi.encode(balanceBefore);
         balances[1] = abi.encode(balanceAfter);
 
         vm.mockCalls(
             address(loanToken),
-            abi.encodeWithSignature("balanceOf(address)", address(almProxy)),
+            abi.encodeWithSignature("balanceOf(address)", address(takeBuffer)),
             balances
         );
     }
@@ -877,11 +875,9 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         uint256 balanceBefore = loanToken.balanceOf(address(almProxy));
 
-        // An unbounded maxAssetsIn leaves the approval open while the callback runs; the exact
-        // bound would be fully spent before `onSell` and make the take leg fail on allowance alone.
-        assertEq(_buy(offer, attackUnits, type(uint256).max), expected);
+        assertEq(_buy(offer, attackUnits, expected), expected);
 
-        assertGt(hostile.allowanceSeen(), 0);
+        assertEq(hostile.allowanceSeen(), 0);
 
         assertFalse(hostile.tookOffer());
         assertFalse(hostile.withdrew());
@@ -899,7 +895,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     }
 
     // The same callback on the other leg, where the proxy gives up units instead of paying for
-    // them, so there is no approval for the callback to spend in the first place.
+    // them.
     function test_attack_hostileMakerCallback_sellMidnight() external {
         uint256 expected     = _sellerAssets(attackUnits, TICK_99);
         uint256 creditBefore = _credit();
@@ -955,7 +951,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         );
         _ratify(offer);
 
-        assertEq(_buy(offer, attackUnits, type(uint256).max), expected);
+        assertEq(_buy(offer, attackUnits, expected), expected);
 
         assertFalse(hostile.reenteredController());
 
@@ -1015,8 +1011,10 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         offer.callback = address(slasher);
         _ratify(offer);
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert("MidnightFacet/credit-delta-mismatch");
-        _buy(offer, attackUnits, type(uint256).max);
+        _buy(offer, attackUnits, maxAssetsIn);
     }
 
     function test_attack_slashedMidFill_sellMidnight() external {
@@ -1041,8 +1039,10 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         vm.mockCalls(MIDNIGHT, _positionCall(), positions);
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert("MidnightFacet/credit-delta-mismatch");
-        _buy(offer, attackUnits, type(uint256).max);
+        _buy(offer, attackUnits, maxAssetsIn);
     }
 
     function test_attack_undercreditedFill_sellMidnight() external {
@@ -1058,25 +1058,24 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         _sell(offer, attackUnits, 1);
     }
 
-    // The approval bounds what Midnight can pull, so the spend can only overshoot the bound if the
-    // loan token itself moves more than Midnight asked for. Mocked because no live token does.
+    // With nothing else in the take buffer, the spend can only overshoot the bound if the loan
+    // token itself moves more than Midnight asked for. Mocked because no live token does.
     function test_attack_loanTokenOvercharges_buyMidnight() external {
         uint256 maxAssetsIn = _buyerAssets(attackUnits, TICK_98);
-        uint256 balance     = loanToken.balanceOf(address(almProxy));
 
         Offer memory offer = _offer(false, TICK_98, attackUnits);
 
-        _mockProxyBalances(balance, balance - maxAssetsIn - 1);
+        _mockBufferBalances(maxAssetsIn + 1, 0);
 
         vm.expectRevert("MidnightFacet/max-assets-in-exceeded");
         _buy(offer, attackUnits, maxAssetsIn);
     }
 
-    // Loan token arriving inside the take shrinks the balance delta, so the buy meters the higher
-    // of that delta and the assets Midnight reports the buyer paid.
-    function test_attack_donatedMidFill_buyMidnight() external {
+    // Loan token reaching the proxy inside the take, as a bridge delivery could, lands outside the
+    // take buffer, so the buy meters exactly what Midnight pulled.
+    function test_buyMidnight_proxyInflowDuringTakeNotCounted() external {
         // A live fee separates what the buyer pays from what the maker receives, pinning which
-        // half of the take return the facet meters.
+        // half of the take return the facet checks.
         _setSettlementFee(SETTLEMENT_FEE);
 
         uint256 expected = _buyerAssets(attackUnits, TICK_98);
@@ -1095,14 +1094,13 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
 
         assertEq(_buy(offer, attackUnits, expected), expected);
 
-        // The balance delta understates the spend by the donation; the rate limit does not.
-        assertEq(loanToken.balanceOf(address(almProxy)), balanceBefore - expected + donation);
-        assertEq(rateLimits.getCurrentRateLimit(buyKey), buyRoom - expected);
+        assertEq(loanToken.balanceOf(address(almProxy)),   balanceBefore - expected + donation);
+        assertEq(loanToken.balanceOf(address(takeBuffer)), 0);
+        assertEq(rateLimits.getCurrentRateLimit(buyKey),   buyRoom - expected);
     }
 
-    // On the other leg the donation inflates the delta instead, and the sell is metered on it: the
-    // key is charged for loan token the trade never earned.
-    function test_attack_donatedMidFill_sellMidnight() external {
+    // On the other leg the inflow can neither meet minAssetsOut nor charge the sell limit.
+    function test_sellMidnight_proxyInflowDuringTakeNotCounted() external {
         _setSettlementFee(SETTLEMENT_FEE);
 
         uint256 expected = _sellerAssets(attackUnits, TICK_99);
@@ -1116,15 +1114,58 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
         offer.callbackData = abi.encode(address(almProxy), donation);
         _ratify(offer);
 
+        vm.expectRevert("MidnightFacet/min-assets-out-not-met");
+        _sell(offer, attackUnits, expected + 1);
+
         vm.expectEmit(address(mainnetController));
-        emit IMidnightFacet.MidnightSell(marketId, attackUnits, expected + donation);
+        emit IMidnightFacet.MidnightSell(marketId, attackUnits, expected);
 
-        assertEq(_sell(offer, attackUnits, expected), expected + donation);
+        assertEq(_sell(offer, attackUnits, expected), expected);
 
-        assertEq(loanToken.balanceOf(address(almProxy)),  balanceBefore + expected + donation);
-        assertEq(rateLimits.getCurrentRateLimit(sellKey), sellRoom - expected - donation);
+        assertEq(loanToken.balanceOf(address(almProxy)),   balanceBefore + expected + donation);
+        assertEq(loanToken.balanceOf(address(takeBuffer)), 0);
+        assertEq(rateLimits.getCurrentRateLimit(sellKey),  sellRoom - expected);
     }
 
+    function test_buyMidnight_bufferDonationDuringTakeReverts() external {
+        uint256 expected = _buyerAssets(attackUnits, TICK_98);
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+        offer.callback     = address(donator);
+        offer.callbackData = abi.encode(address(takeBuffer), 1);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/buyer-assets-mismatch");
+        _buy(offer, attackUnits, expected);
+    }
+
+    function test_buyMidnight_bufferBalanceIncreasedDuringTakeReverts() external {
+        uint256 expected = _buyerAssets(attackUnits, TICK_98);
+
+        Offer memory offer = _offer(false, TICK_98, attackUnits);
+        offer.callback     = address(donator);
+        offer.callbackData = abi.encode(address(takeBuffer), expected);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/buyer-assets-mismatch");
+        _buy(offer, attackUnits, expected);
+
+        offer.callbackData = abi.encode(address(takeBuffer), expected + 1);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/buffer-balance-increased");
+        _buy(offer, attackUnits, expected);
+    }
+
+    function test_sellMidnight_bufferDonationDuringTakeReverts() external {
+        Offer memory offer = _offer(true, TICK_99, attackUnits);
+        offer.callback     = address(donator);
+        offer.callbackData = abi.encode(address(takeBuffer), 1);
+        _ratify(offer);
+
+        vm.expectRevert("MidnightFacet/seller-assets-mismatch");
+        _sell(offer, attackUnits, 1);
+    }
     // Every take is capped at the proxy's credit, so debt can only appear if the venue reports it
     // against the proxy anyway. Mocked because Midnight cannot be driven into that state.
     function test_attack_debtReported_buyMidnight() external {
@@ -1136,8 +1177,10 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
             abi.encode(uint128(1))
         );
 
+        uint256 maxAssetsIn = _proxyBalance();
+
         vm.expectRevert("MidnightFacet/debt-not-zero");
-        _buy(offer, attackUnits, type(uint256).max);
+        _buy(offer, attackUnits, maxAssetsIn);
     }
 
     function test_attack_debtReported_sellMidnight() external {
@@ -1171,10 +1214,9 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     function test_attack_loanTokenUnderpays_redeemMidnight() external {
         _victimRepays();
 
-        uint256 balance    = loanToken.balanceOf(address(almProxy));
         uint256 redeemRoom = rateLimits.getCurrentRateLimit(redeemKey);
 
-        _mockProxyBalances(balance, balance + attackUnits - 1);
+        _mockBufferBalances(0, attackUnits - 1);
 
         vm.expectEmit(address(mainnetController));
         emit IMidnightFacet.MidnightRedeem(marketId, attackUnits, attackUnits - 1);
@@ -1187,9 +1229,7 @@ contract MainnetController_Midnight_Attack_Tests is Midnight_TestBase {
     function test_attack_loanTokenUnderpays_redeemMidnight_minAssetsOut() external {
         _victimRepays();
 
-        uint256 balance = loanToken.balanceOf(address(almProxy));
-
-        _mockProxyBalances(balance, balance + attackUnits - 1);
+        _mockBufferBalances(0, attackUnits - 1);
 
         vm.expectRevert("MidnightFacet/min-assets-out-not-met");
         _redeem(attackUnits, attackUnits);

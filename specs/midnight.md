@@ -122,13 +122,14 @@ called back from inside Midnight's `take`. Purpose: fixed-rate yield on idle loa
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (onboards a market; `minSellTick != 0`;
   `maxMakeOfferSize != 0` enables making and caps each fill); every call restates every field
 - **External calls:** `toMarket(marketId)` (view), which reverts unless the market exists on
-  Midnight, then `approve(loanToken)` on the take buffer, before the config is stored; reverts
-  while the take buffer is unset
+  Midnight, then `approve(loanToken)` on the take buffer, before the config is stored; that call
+  reverts without a reason while the take buffer is unset
 
 ### `setTakeBuffer(address buffer)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config (sets the take buffer that `buy`,
-  `sell` and `redeem` settle through; the zero address reverts)
-- **External calls:** none
+  `sell` and `redeem` settle through; the zero address, and a buffer whose `proxy()` or
+  `midnight()` is not this ALMProxy or singleton, revert)
+- **External calls:** `proxy()` and `midnight()` on the buffer (view)
 
 ### `setRatifierAuthorization(address ratifier, bool authorized)`
 - **Role:** DEFAULT_ADMIN_ROLE. **Value direction:** config, a blanket grant on the singleton

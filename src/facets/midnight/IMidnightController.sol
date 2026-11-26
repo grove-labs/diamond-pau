@@ -18,6 +18,8 @@ interface IMidnightController {
         uint128 maxLossFactor
     ) external;
 
+    function midnight_setTakeBuffer(address buffer) external;
+
     function midnight_buy(
         bytes32         marketId,
         Offer  calldata offer,
@@ -54,5 +56,7 @@ interface IMidnightController {
     function midnight_getSellRateLimitKey(bytes32 marketId) external pure returns (bytes32 key);
 
     function midnight_midnight() external view returns (address);
+
+    function midnight_takeBuffer() external view returns (address);
 
 }

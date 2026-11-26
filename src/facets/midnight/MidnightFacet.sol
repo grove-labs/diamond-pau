@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { ApproveLib } from "../../libraries/ApproveLib.sol";
-
 import { makeBytes32Key } from "../../libraries/RateLimitHelpers.sol";
 
 import { IALMProxy } from "../../interfaces/IALMProxy.sol";
@@ -61,6 +59,20 @@ interface IERC20Like {
 
     function balanceOf(address account) external view returns (uint256);
 
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+}
+
+interface IMidnightTakeBufferLike {
+
+    function approve(address token) external;
+
+    function midnight() external view returns (address);
+
+    function proxy() external view returns (address);
+
 }
 
 contract MidnightFacet is IMidnightFacet, Facet {
@@ -72,6 +84,7 @@ contract MidnightFacet is IMidnightFacet, Facet {
     /// @custom:storage-location erc7201:sky.pau.storage.MidnightFacet.v1
     struct FacetStorage {
         mapping (bytes32 marketId => MarketConfig config) marketConfigs;
+        address takeBuffer;
     }
 
     // keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -90,12 +103,13 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
     struct TakeContext {
         address proxy;
+        address buffer;
         Market  market;
         uint256 timeToMaturity;
         uint256 settlementFee;
         uint256 creditBefore;
         uint256 pendingFeeBefore;
-        uint256 balanceBefore;
+        uint256 bufferBefore;
     }
 
     /**********************************************************************************************/
@@ -159,6 +173,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         require(maxSellYield != 0, "MidnightFacet/max-sell-yield-not-set");
 
+        IMidnightTakeBufferLike(_getFacetStorage().takeBuffer).approve(
+            IMidnightLike(midnight).toMarket(marketId).loanToken
+        );
+
         _getFacetStorage().marketConfigs[marketId] = MarketConfig({
             maxBuyTick       : maxBuyTick,
             minSellTick      : minSellTick,
@@ -177,6 +195,28 @@ contract MidnightFacet is IMidnightFacet, Facet {
             maxContinuousFee,
             maxLossFactor
         );
+    }
+
+    /// @inheritdoc IMidnightFacet
+    function setTakeBuffer(address buffer)
+        external
+        override
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(buffer != address(0), "MidnightFacet/zero-take-buffer");
+        require(
+            IMidnightTakeBufferLike(buffer).proxy() == _getSharedControllerStorage().proxy,
+            "MidnightFacet/invalid-take-buffer-proxy"
+        );
+        require(
+            IMidnightTakeBufferLike(buffer).midnight() == midnight,
+            "MidnightFacet/invalid-take-buffer-midnight"
+        );
+
+        _getFacetStorage().takeBuffer = buffer;
+
+        emit MidnightTakeBufferSet(buffer);
     }
 
     /**********************************************************************************************/
@@ -236,23 +276,28 @@ contract MidnightFacet is IMidnightFacet, Facet {
             );
         }
 
-        // Paying the proxy would net out the transfer and hide the spend from the rate limit.
+        // Paying the proxy would charge the buy limit for assets that come straight back.
         require(
             offer.receiverIfMakerIsSeller != ctx.proxy,
             "MidnightFacet/invalid-offer-receiver"
         );
 
-        ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, maxAssetsIn);
+        _transfer(ctx.proxy, ctx.market.loanToken, ctx.buffer, maxAssetsIn);
 
-        uint256 buyerAssets = _take(ctx, offer, ratifierData, units, address(0));
+        ( uint256 buyerAssets, ) = _take(ctx, offer, ratifierData, units);
 
-        ApproveLib.approve(ctx.market.loanToken, ctx.proxy, midnight, 0);
+        {
+            uint256 bufferAfter = IERC20Like(ctx.market.loanToken).balanceOf(ctx.buffer);
 
-        assetsSpent = ctx.balanceBefore - IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy);
+            require(bufferAfter <= ctx.bufferBefore, "MidnightFacet/buffer-balance-increased");
 
-        if (buyerAssets > assetsSpent) assetsSpent = buyerAssets;
+            assetsSpent = ctx.bufferBefore - bufferAfter;
+        }
 
         require(assetsSpent <= maxAssetsIn, "MidnightFacet/max-assets-in-exceeded");
+        require(assetsSpent == buyerAssets, "MidnightFacet/buyer-assets-mismatch");
+
+        _pullTakeBuffer(ctx.proxy, ctx.market.loanToken, ctx.buffer);
 
         ( uint256 creditAfter, ) = _credit(ctx.market, marketId, ctx.proxy);
 
@@ -282,6 +327,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
         );
         require(minAssetsOut != 0, "MidnightFacet/min-assets-out-not-set");
 
+        address buffer = _getFacetStorage().takeBuffer;
+
+        require(buffer != address(0), "MidnightFacet/take-buffer-not-set");
+
         address proxy = _getSharedControllerStorage().proxy;
 
         Market memory market = IMidnightLike(midnight).toMarket(marketId);
@@ -298,16 +347,18 @@ contract MidnightFacet is IMidnightFacet, Facet {
 
         require(units != 0, "MidnightFacet/zero-units");
 
-        uint256 balanceBefore = IERC20Like(market.loanToken).balanceOf(proxy);
+        uint256 bufferBefore = IERC20Like(market.loanToken).balanceOf(buffer);
 
         IALMProxy(proxy).doCall(
             midnight,
-            abi.encodeCall(IMidnightLike.withdraw, (market, units, proxy, proxy))
+            abi.encodeCall(IMidnightLike.withdraw, (market, units, proxy, buffer))
         );
 
-        assetsWithdrawn = IERC20Like(market.loanToken).balanceOf(proxy) - balanceBefore;
+        assetsWithdrawn = IERC20Like(market.loanToken).balanceOf(buffer) - bufferBefore;
 
         require(assetsWithdrawn >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
+
+        _pullTakeBuffer(proxy, market.loanToken, buffer);
 
         _requireDebtFree(marketId, proxy);
 
@@ -360,11 +411,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
             "MidnightFacet/sell-yield-too-high"
         );
 
-        _take(ctx, offer, ratifierData, units, ctx.proxy);
+        ( , uint256 sellerAssets ) = _take(ctx, offer, ratifierData, units);
 
-        assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.proxy) - ctx.balanceBefore;
+        assetsReceived = IERC20Like(ctx.market.loanToken).balanceOf(ctx.buffer) - ctx.bufferBefore;
 
+        require(assetsReceived == sellerAssets, "MidnightFacet/seller-assets-mismatch");
         require(assetsReceived >= minAssetsOut, "MidnightFacet/min-assets-out-not-met");
+
+        _pullTakeBuffer(ctx.proxy, ctx.market.loanToken, ctx.buffer);
 
         ( uint256 creditAfter, ) = _credit(ctx.market, marketId, ctx.proxy);
 
@@ -409,6 +463,11 @@ contract MidnightFacet is IMidnightFacet, Facet {
         return makeBytes32Key(_LIMIT_SELL, marketId);
     }
 
+    /// @inheritdoc IMidnightFacet
+    function takeBuffer() external view override returns (address) {
+        return _getFacetStorage().takeBuffer;
+    }
+
     /**********************************************************************************************/
     /*** Internal Interactive Functions                                                         ***/
     /**********************************************************************************************/
@@ -417,29 +476,56 @@ contract MidnightFacet is IMidnightFacet, Facet {
         TakeContext memory ctx,
         Offer     calldata offer,
         bytes     calldata ratifierData,
-        uint256            units,
-        address            receiverIfTakerIsSeller
+        uint256            units
     )
         internal
-        returns (uint256 buyerAssets)
+        returns (uint256 buyerAssets, uint256 sellerAssets)
     {
-        bytes memory result = IALMProxy(ctx.proxy).doCall(
-            midnight,
-            abi.encodeCall(
-                IMidnightLike.take,
-                (
-                    offer,
-                    ratifierData,
-                    units,
-                    ctx.proxy,
-                    receiverIfTakerIsSeller,
-                    address(0),
-                    new bytes(0)
-                )
+        ctx.bufferBefore = IERC20Like(ctx.market.loanToken).balanceOf(ctx.buffer);
+
+        bytes memory data = abi.encodeCall(
+            IMidnightLike.take,
+            (
+                offer,
+                ratifierData,
+                units,
+                ctx.proxy,
+                offer.buy ? ctx.buffer : address(0),
+                offer.buy ? address(0) : ctx.buffer,
+                new bytes(0)
             )
         );
 
-        ( buyerAssets, ) = abi.decode(result, (uint256, uint256));
+        bytes memory result = IALMProxy(ctx.proxy).doCall(midnight, data);
+
+        ( buyerAssets, sellerAssets ) = abi.decode(result, (uint256, uint256));
+    }
+
+    function _pullTakeBuffer(address proxy, address token, address buffer) internal {
+        bytes memory returnData = IALMProxy(proxy).doCall(
+            token,
+            abi.encodeCall(
+                IERC20Like.transferFrom,
+                (buffer, proxy, IERC20Like(token).balanceOf(buffer))
+            )
+        );
+
+        require(
+            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
+            "MidnightFacet/transferFrom-failed"
+        );
+    }
+
+    function _transfer(address proxy, address token, address to, uint256 amount) internal {
+        bytes memory returnData = IALMProxy(proxy).doCall(
+            token,
+            abi.encodeCall(IERC20Like.transfer, (to, amount))
+        );
+
+        require(
+            returnData.length == 0 || (returnData.length == 32 && abi.decode(returnData, (bool))),
+            "MidnightFacet/transfer-failed"
+        );
     }
 
     /**********************************************************************************************/
@@ -451,6 +537,10 @@ contract MidnightFacet is IMidnightFacet, Facet {
         view
         returns (TakeContext memory ctx)
     {
+        ctx.buffer = _getFacetStorage().takeBuffer;
+
+        require(ctx.buffer != address(0), "MidnightFacet/take-buffer-not-set");
+
         require(market.midnight == midnight,            "MidnightFacet/invalid-midnight");
         require(MidnightIdLib.toId(market) == marketId, "MidnightFacet/market-mismatch");
 
@@ -460,7 +550,6 @@ contract MidnightFacet is IMidnightFacet, Facet {
             ? market.maturity - block.timestamp
             : 0;
         ctx.settlementFee  = IMidnightLike(midnight).settlementFee(marketId, ctx.timeToMaturity);
-        ctx.balanceBefore  = IERC20Like(market.loanToken).balanceOf(ctx.proxy);
 
         ( ctx.creditBefore, ctx.pendingFeeBefore ) = _credit(ctx.market, marketId, ctx.proxy);
     }

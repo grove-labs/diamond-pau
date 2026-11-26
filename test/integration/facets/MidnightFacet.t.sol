@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { ERC20Mock } from "../../../lib/openzeppelin-contracts/contracts/mocks/token/ERC20Mock.sol";
+
 import { ReentrancyGuard } from "../../../lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 import { IMidnightFacet }          from "../../../src/facets/midnight/IMidnightFacet.sol";
@@ -9,7 +11,10 @@ import { IEnumerableIntegrations } from "../../../src/interfaces/IEnumerableInte
 import { makeBytes32Key } from "../../../src/libraries/RateLimitHelpers.sol";
 
 import { MidnightFacet } from "../../../src/facets/midnight/MidnightFacet.sol";
+import { Market }        from "../../../src/facets/midnight/MidnightInterfaces.sol";
 import { MAX_TICK, MidnightTickLib } from "../../../src/facets/midnight/MidnightTickLib.sol";
+
+import { MidnightTakeBuffer } from "../../mocks/MidnightTakeBuffer.sol";
 
 import { Integration_TestBase } from "../TestBase.t.sol";
 
@@ -38,6 +43,12 @@ interface IControllerLike {
 
     function midnight() external view returns (address);
 
+    function proxy() external view returns (address);
+
+    function setTakeBuffer(address buffer) external;
+
+    function takeBuffer() external view returns (address);
+
     function updateIntegrations(bytes32[] memory integrationIds) external;
 
 }
@@ -61,6 +72,10 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
     IControllerLike internal controller;
 
+    address internal takeBuffer;
+
+    ERC20Mock internal loanToken;
+
     function setUp() external {
         controller = IControllerLike(_deploy());
 
@@ -68,7 +83,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.label(facet, "MidnightFacet");
 
-        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](6);
+        IEnumerableIntegrations.Wire[] memory wires = new IEnumerableIntegrations.Wire[](8);
 
         wires[0] = IEnumerableIntegrations.Wire(
             IControllerLike.setMarketConfig.selector,
@@ -100,6 +115,16 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             IMidnightFacet.midnight.selector
         );
 
+        wires[6] = IEnumerableIntegrations.Wire(
+            IControllerLike.setTakeBuffer.selector,
+            IMidnightFacet.setTakeBuffer.selector
+        );
+
+        wires[7] = IEnumerableIntegrations.Wire(
+            IControllerLike.takeBuffer.selector,
+            IMidnightFacet.takeBuffer.selector
+        );
+
         IEnumerableIntegrations.Config memory config = IEnumerableIntegrations.Config(facet, wires);
 
         vm.prank(beaconAdmin);
@@ -110,6 +135,18 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
 
         vm.prank(admin);
         controller.updateIntegrations(integrationIds);
+
+        takeBuffer = address(new MidnightTakeBuffer(midnight, controller.proxy()));
+
+        vm.prank(admin);
+        controller.setTakeBuffer(takeBuffer);
+
+        loanToken = new ERC20Mock();
+
+        Market memory market;
+        market.loanToken = address(loanToken);
+
+        vm.mockCall(midnight, abi.encodeWithSignature("toMarket(bytes32)"), abi.encode(market));
     }
 
     function _setConfig(
@@ -145,6 +182,33 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         assertEq(config.maxSellYield,     maxSellYield);
         assertEq(config.maxContinuousFee, maxContinuousFee);
         assertEq(config.maxLossFactor,    maxLossFactor);
+    }
+
+    function _clearTakeBuffer() internal {
+        bytes32 location =
+            keccak256(abi.encode(uint256(keccak256("sky.pau.storage.MidnightFacet.v1")) - 1)) & ~bytes32(uint256(0xff));
+
+        bytes32 buffer = bytes32(uint256(uint160(controller.takeBuffer())));
+
+        assertNotEq(buffer, bytes32(0));
+
+        bytes32 slot;
+        uint256 matches;
+
+        for (uint256 i; i < 8; ++i) {
+            bytes32 candidate = bytes32(uint256(location) + i);
+
+            if (vm.load(address(controller), candidate) == buffer) {
+                slot = candidate;
+                ++matches;
+            }
+        }
+
+        assertEq(matches, 1);
+
+        vm.store(address(controller), slot, bytes32(0));
+
+        assertEq(controller.takeBuffer(), address(0));
     }
 
     /**********************************************************************************************/
@@ -246,6 +310,14 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         );
     }
 
+    function test_setMarketConfig_takeBufferNotSet() external {
+        _clearTakeBuffer();
+
+        vm.expectRevert(bytes(""));
+        vm.prank(admin);
+        _setConfig(MARKET_ID, TICK_99, TICK_98, CONTINUOUS_FEE);
+    }
+
     function test_setMarketConfig() external {
         _assertConfig(MARKET_ID, 0, 0, 0, 0, 0, 0);
 
@@ -282,6 +354,24 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         _assertConfig(MARKET_ID, 0, TICK_98, 0, MAX_SELL_YIELD, 0, 0);
     }
 
+    function test_setMarketConfig_approvesLoanToken() external {
+        assertEq(MidnightTakeBuffer.approve.selector, bytes4(keccak256("approve(address)")));
+
+        address proxy = controller.proxy();
+
+        assertEq(loanToken.allowance(takeBuffer, proxy),    0);
+        assertEq(loanToken.allowance(takeBuffer, midnight), 0);
+
+        vm.expectCall(midnight, abi.encodeWithSignature("toMarket(bytes32)", MARKET_ID));
+        vm.expectCall(takeBuffer, abi.encodeCall(MidnightTakeBuffer.approve, (address(loanToken))));
+
+        vm.prank(admin);
+        _setConfig(MARKET_ID, TICK_99, TICK_98, CONTINUOUS_FEE);
+
+        assertEq(loanToken.allowance(takeBuffer, proxy),    type(uint256).max);
+        assertEq(loanToken.allowance(takeBuffer, midnight), type(uint256).max);
+    }
+
     function test_setMarketConfig_perMarket() external {
         bytes32 otherMarketId = keccak256("other-market");
 
@@ -295,6 +385,82 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             MARKET_ID, TICK_99, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, CONTINUOUS_FEE, 0
         );
         _assertConfig(otherMarketId, TICK_98, TICK_98, MIN_BUY_YIELD, MAX_SELL_YIELD, 0, 0);
+    }
+
+    /**********************************************************************************************/
+    /*** setTakeBuffer Tests                                                                    ***/
+    /**********************************************************************************************/
+
+    function test_setTakeBuffer_reentrancy() external {
+        _setEntered(address(controller));
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        controller.setTakeBuffer(takeBuffer);
+    }
+
+    function test_setTakeBuffer_unauthorized() external {
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            address(this),
+            DEFAULT_ADMIN_ROLE
+        ));
+        controller.setTakeBuffer(takeBuffer);
+    }
+
+    function test_setTakeBuffer_zeroAddress() external {
+        vm.expectRevert("MidnightFacet/zero-take-buffer");
+        vm.prank(admin);
+        controller.setTakeBuffer(address(0));
+    }
+
+    function test_setTakeBuffer_proxyMismatch() external {
+        address buffer = address(new MidnightTakeBuffer(midnight, makeAddr("otherProxy")));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-proxy");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
+    function test_setTakeBuffer_midnightMismatch() external {
+        address buffer =
+            address(new MidnightTakeBuffer(makeAddr("otherMidnight"), controller.proxy()));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-midnight");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
+    function test_setTakeBuffer_swappedConstructorArguments() external {
+        address buffer = address(new MidnightTakeBuffer(controller.proxy(), midnight));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-proxy");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
+    function test_setTakeBuffer() external {
+        assertEq(IMidnightFacet.setTakeBuffer.selector, bytes4(keccak256("setTakeBuffer(address)")));
+        assertEq(IMidnightFacet.takeBuffer.selector,    bytes4(keccak256("takeBuffer()")));
+
+        assertEq(
+            IMidnightFacet.MidnightTakeBufferSet.selector,
+            keccak256("MidnightTakeBufferSet(address)")
+        );
+
+        address newBuffer = address(new MidnightTakeBuffer(midnight, controller.proxy()));
+
+        assertEq(controller.takeBuffer(), takeBuffer);
+
+        vm.record();
+
+        vm.expectEmit(address(controller));
+        emit IMidnightFacet.MidnightTakeBufferSet(newBuffer);
+
+        vm.prank(admin);
+        controller.setTakeBuffer(newBuffer);
+
+        _assertReentrancyGuardWrittenToTwice(address(controller));
+
+        assertEq(controller.takeBuffer(), newBuffer);
     }
 
     /**********************************************************************************************/
