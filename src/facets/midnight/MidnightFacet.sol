@@ -69,6 +69,10 @@ interface IMidnightTakeBufferLike {
 
     function approve(address token) external;
 
+    function midnight() external view returns (address);
+
+    function proxy() external view returns (address);
+
 }
 
 contract MidnightFacet is IMidnightFacet, Facet {
@@ -205,6 +209,14 @@ contract MidnightFacet is IMidnightFacet, Facet {
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         require(buffer != address(0), "MidnightFacet/zero-take-buffer");
+        require(
+            IMidnightTakeBufferLike(buffer).proxy() == _getSharedControllerStorage().proxy,
+            "MidnightFacet/invalid-take-buffer-proxy"
+        );
+        require(
+            IMidnightTakeBufferLike(buffer).midnight() == midnight,
+            "MidnightFacet/invalid-take-buffer-midnight"
+        );
 
         _getFacetStorage().takeBuffer = buffer;
 

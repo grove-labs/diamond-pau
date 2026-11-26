@@ -136,7 +136,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         vm.prank(admin);
         controller.updateIntegrations(integrationIds);
 
-        takeBuffer = address(new MidnightTakeBuffer(controller.proxy(), midnight));
+        takeBuffer = address(new MidnightTakeBuffer(midnight, controller.proxy()));
 
         vm.prank(admin);
         controller.setTakeBuffer(takeBuffer);
@@ -412,6 +412,31 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
         controller.setTakeBuffer(address(0));
     }
 
+    function test_setTakeBuffer_proxyMismatch() external {
+        address buffer = address(new MidnightTakeBuffer(midnight, makeAddr("otherProxy")));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-proxy");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
+    function test_setTakeBuffer_midnightMismatch() external {
+        address buffer =
+            address(new MidnightTakeBuffer(makeAddr("otherMidnight"), controller.proxy()));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-midnight");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
+    function test_setTakeBuffer_swappedConstructorArguments() external {
+        address buffer = address(new MidnightTakeBuffer(controller.proxy(), midnight));
+
+        vm.expectRevert("MidnightFacet/invalid-take-buffer-proxy");
+        vm.prank(admin);
+        controller.setTakeBuffer(buffer);
+    }
+
     function test_setTakeBuffer() external {
         assertEq(IMidnightFacet.setTakeBuffer.selector, bytes4(keccak256("setTakeBuffer(address)")));
         assertEq(IMidnightFacet.takeBuffer.selector,    bytes4(keccak256("takeBuffer()")));
@@ -421,7 +446,7 @@ contract Controller_MidnightFacet_Tests is Integration_TestBase {
             keccak256("MidnightTakeBufferSet(address)")
         );
 
-        address newBuffer = makeAddr("newBuffer");
+        address newBuffer = address(new MidnightTakeBuffer(midnight, controller.proxy()));
 
         assertEq(controller.takeBuffer(), takeBuffer);
 

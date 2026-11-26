@@ -201,8 +201,10 @@ interface IMidnightFacet is IFacet {
 
     /**
      * @notice Sets the take buffer that buy, sell and redeem route the loan token through.
-     * @dev    Reverts on the zero address. Loan tokens onboarded before a change are approved on
-     *         the new buffer by calling its `approve` for each of them, or by onboarding again.
+     * @dev    Reverts on the zero address and on a buffer whose `proxy()` is not the ALMProxy or
+     *         whose `midnight()` is not the Midnight singleton. Loan tokens onboarded before a
+     *         change are approved on the new buffer by calling its `approve` for each of them,
+     *         or by onboarding again.
      * @param  buffer Address of the take buffer.
      */
     function setTakeBuffer(address buffer) external;
